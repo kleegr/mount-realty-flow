@@ -111,6 +111,19 @@ export async function executeImport(jobId: string, validation: ValidationResult)
       }
     }
 
+    // 3b) Populate unit_state cache so the live webhook can recompute rollups instantly.
+    const unitStateRows = [...unitCrm.entries()].map(([importId, u]) => ({
+      unit_crm_id: u.crmId,
+      building_crm_id: u.buildingImportId ? buildingCrm.get(u.buildingImportId) ?? null : null,
+      project_crm_id: u.projectImportId ? projectCrm.get(u.projectImportId) ?? null : null,
+      availability: u.availability || null,
+      stage: u.stage || null,
+    }));
+    if (unitStateRows.length > 0) {
+      const { error: usErr } = await supabaseAdmin.from("unit_state").upsert(unitStateRows, { onConflict: "unit_crm_id" });
+      if (usErr) report.warnings.push(`unit_state cache write failed: ${usErr.message}`);
+    }
+
     // 4) Associations
     for (const b of validation.buildings) {
       const bId = buildingCrm.get(b.buildingImportId);
