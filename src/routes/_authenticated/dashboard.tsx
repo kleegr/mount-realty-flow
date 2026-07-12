@@ -4,10 +4,11 @@ import { useServerFn } from "@tanstack/react-start";
 import { getDashboardSnapshot } from "@/lib/inventory.functions";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Building2, Home, Layers, Upload, Activity, Webhook } from "lucide-react";
+import { Building2, Home, Layers, Upload, Activity, Webhook, CheckCircle2, Clock, FileSignature, DollarSign } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { PendingEventsCard } from "@/components/kleegr/PendingEventsCard";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   component: Dashboard,
@@ -29,10 +30,23 @@ function Dashboard() {
         </Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard label="Projects" value={data?.counts.projects ?? "—"} icon={Layers} loading={isLoading} />
-        <StatCard label="Buildings" value={data?.counts.buildings ?? "—"} icon={Building2} loading={isLoading} />
-        <StatCard label="Units" value={data?.counts.units ?? "—"} icon={Home} loading={isLoading} />
+      <div>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Portfolio</h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <StatCard label="Projects" value={data?.counts.projects ?? "—"} icon={Layers} loading={isLoading} />
+          <StatCard label="Buildings" value={data?.counts.buildings ?? "—"} icon={Building2} loading={isLoading} />
+          <StatCard label="Units" value={data?.counts.units ?? "—"} icon={Home} loading={isLoading} />
+        </div>
+      </div>
+
+      <div>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Unit Status</h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard label="Available" value={data?.availability.available ?? "—"} icon={CheckCircle2} tone="success" loading={isLoading} />
+          <StatCard label="Reserved" value={data?.availability.reserved ?? "—"} icon={Clock} tone="warning" loading={isLoading} />
+          <StatCard label="Under Contract" value={data?.availability.under_contract ?? "—"} icon={FileSignature} tone="info" loading={isLoading} />
+          <StatCard label="Sold" value={data?.availability.sold ?? "—"} icon={DollarSign} tone="danger" loading={isLoading} />
+        </div>
       </div>
 
       <PendingEventsCard />
@@ -101,11 +115,18 @@ function Dashboard() {
   );
 }
 
-function StatCard({ label, value, icon: Icon, loading }: { label: string; value: string | number; icon: React.ComponentType<{ className?: string }>; loading?: boolean }) {
+function StatCard({ label, value, icon: Icon, loading, tone = "primary" }: { label: string; value: string | number; icon: React.ComponentType<{ className?: string }>; loading?: boolean; tone?: "primary" | "success" | "warning" | "info" | "danger" }) {
+  const toneClasses: Record<string, string> = {
+    primary: "bg-primary/10 text-primary",
+    success: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+    warning: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    info: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+    danger: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  };
   return (
     <Card className="shadow-card">
       <CardContent className="flex items-center gap-4 p-6">
-        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <div className={cn("flex h-12 w-12 items-center justify-center rounded-lg", toneClasses[tone])}>
           <Icon className="h-6 w-6" />
         </div>
         <div>
