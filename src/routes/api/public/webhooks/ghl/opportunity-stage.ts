@@ -98,6 +98,7 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
 });
 
 async function processStageChange(params: {
+  pipelineId: string | null;
   stageId: string | null;
   opportunityId: string | null;
   unitCrmIdHint: string | null;
