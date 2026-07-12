@@ -61,17 +61,33 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     buildingCrmId = map.data?.crm_record_id ?? null;
   }
 
+  // AUTO-FETCH: if we still have no unit/building reference but we do have an
+  // opportunity ID, ask GHL for the opportunity's associations. This lets the
+  // salesperson simply move the stage in GHL — the app figures out the linked
+  // unit itself, no custom field / no manual paste required.
+  if (!unitCrmId && !buildingCrmId && params.opportunityId && params.autoFetchAssociations !== false) {
+    try {
+      const { createCrmClient } = await import("./client.server");
+      const { fetchOpportunityAssociations } = await import("./opportunities.server");
+      const found = await fetchOpportunityAssociations(await createCrmClient(), params.opportunityId);
+      unitCrmId = found.unitCrmId;
+      buildingCrmId = found.buildingCrmId;
+    } catch (err) {
+      console.warn("Auto-fetch of opportunity associations failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
   if (!unitCrmId && !buildingCrmId) return { outcome: "no_unit_reference" };
 
   // Resolve stage mapping (shared between Unit and Building paths)
-  const stageMapping = await resolveStageMapping(supabaseAdmin, params.pipelineId, cfg.data);
-  const target = classifyStage(params.stageId, stageMapping);
+  const stageMapping = await resolveStageMapping(supabaseAdmin, params.pipelineId, params.pipelineName ?? null, cfg.data);
+  const target = classifyStage(params.stageId, params.stageName ?? null, stageMapping);
   if (!target) {
     return {
       outcome: "stage_not_mapped",
       unitCrmId: unitCrmId ?? undefined,
       buildingCrmId: buildingCrmId ?? undefined,
-      message: `Stage ${params.stageId ?? "unknown"} in pipeline ${params.pipelineId ?? "unknown"} is not mapped in Settings.`,
+      message: `Stage "${params.stageName ?? params.stageId ?? "unknown"}" in pipeline "${params.pipelineName ?? params.pipelineId ?? "unknown"}" is not mapped in Settings.`,
     };
   }
 
