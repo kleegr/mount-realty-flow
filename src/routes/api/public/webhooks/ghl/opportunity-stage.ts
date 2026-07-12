@@ -81,7 +81,7 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
           .single();
 
         const outcome = await processStageChange({
-          stageId, opportunityId, unitCrmIdHint, unitExternalId,
+          pipelineId, stageId, opportunityId, unitCrmIdHint, unitExternalId,
         });
 
         await supabaseAdmin
@@ -98,6 +98,7 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
 });
 
 async function processStageChange(params: {
+  pipelineId: string | null;
   stageId: string | null;
   opportunityId: string | null;
   unitCrmIdHint: string | null;
@@ -121,17 +122,44 @@ async function processStageChange(params: {
   }
   if (!unitCrmId) return { outcome: "no_unit_reference" };
 
-  // Determine the target state
+  // Determine the target state — look up the mapping for THIS pipeline first,
+  // then fall back to the legacy single-pipeline config on crm_config.
   const s = params.stageId;
+  const pid = params.pipelineId;
+
+  let mapping: {
+    stage_reserved_id: string | null;
+    stage_under_contract_id: string | null;
+    stage_closed_id: string | null;
+    stage_release_id: string | null;
+  } | null = null;
+
+  if (pid) {
+    const pl = await supabaseAdmin
+      .from("crm_pipelines")
+      .select("stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id")
+      .eq("pipeline_id", pid)
+      .maybeSingle();
+    if (pl.data) mapping = pl.data;
+  }
+  if (!mapping) {
+    mapping = {
+      stage_reserved_id: cfg.data.stage_reserved_id,
+      stage_under_contract_id: cfg.data.stage_under_contract_id,
+      stage_closed_id: cfg.data.stage_closed_id,
+      stage_release_id: cfg.data.stage_release_id,
+    };
+  }
+
   let availability: string | null = null;
   let stage: string | null = null;
   let inventoryDeducted: string | null = null;
 
-  if (s && s === cfg.data.stage_reserved_id) { availability = "Not Available"; stage = "Reserved/Locked"; inventoryDeducted = "Yes"; }
-  else if (s && s === cfg.data.stage_under_contract_id) { availability = "Not Available"; stage = "Under Contract"; inventoryDeducted = "Yes"; }
-  else if (s && s === cfg.data.stage_closed_id) { availability = "Not Available"; stage = "Closed/Sold"; inventoryDeducted = "Yes"; }
-  else if (s && s === cfg.data.stage_release_id) { availability = "Available"; stage = ""; inventoryDeducted = "No"; }
-  else return { outcome: "stage_not_mapped", unitCrmId, message: `Stage ${s ?? "unknown"} is not mapped in Settings.` };
+  if (s && s === mapping.stage_reserved_id) { availability = "Not Available"; stage = "Reserved/Locked"; inventoryDeducted = "Yes"; }
+  else if (s && s === mapping.stage_under_contract_id) { availability = "Not Available"; stage = "Under Contract"; inventoryDeducted = "Yes"; }
+  else if (s && s === mapping.stage_closed_id) { availability = "Not Available"; stage = "Closed/Sold"; inventoryDeducted = "Yes"; }
+  else if (s && s === mapping.stage_release_id) { availability = "Available"; stage = ""; inventoryDeducted = "No"; }
+  else return { outcome: "stage_not_mapped", unitCrmId, message: `Stage ${s ?? "unknown"} in pipeline ${pid ?? "unknown"} is not mapped in Settings.` };
 
   // Fetch current Unit state, apply guards
   const { createCrmClient } = await import("@/lib/kleegr/client.server");

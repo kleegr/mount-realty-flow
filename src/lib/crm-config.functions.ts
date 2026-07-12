@@ -54,3 +54,60 @@ export const getMyRoles = createServerFn({ method: "GET" })
     const { data } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId);
     return { roles: (data ?? []).map((r) => r.role) };
   });
+
+export const listPipelines = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async () => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data, error } = await supabaseAdmin
+      .from("crm_pipelines")
+      .select("*")
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(error.message);
+    return { pipelines: data ?? [] };
+  });
+
+const pipelineSchema = z.object({
+  id: z.string().uuid().optional().nullable(),
+  pipeline_id: z.string().min(1),
+  label: z.string().optional().nullable(),
+  stage_reserved_id: z.string().optional().nullable(),
+  stage_under_contract_id: z.string().optional().nullable(),
+  stage_closed_id: z.string().optional().nullable(),
+  stage_release_id: z.string().optional().nullable(),
+});
+
+export const upsertPipeline = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => pipelineSchema.parse(d))
+  .handler(async ({ data, context }) => {
+    await requireAdmin(context.userId);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const payload = {
+      pipeline_id: data.pipeline_id,
+      label: data.label ?? null,
+      stage_reserved_id: data.stage_reserved_id ?? null,
+      stage_under_contract_id: data.stage_under_contract_id ?? null,
+      stage_closed_id: data.stage_closed_id ?? null,
+      stage_release_id: data.stage_release_id ?? null,
+    };
+    if (data.id) {
+      const { error } = await supabaseAdmin.from("crm_pipelines").update(payload).eq("id", data.id);
+      if (error) throw new Error(error.message);
+    } else {
+      const { error } = await supabaseAdmin.from("crm_pipelines").upsert(payload, { onConflict: "pipeline_id" });
+      if (error) throw new Error(error.message);
+    }
+    return { ok: true };
+  });
+
+export const deletePipeline = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    await requireAdmin(context.userId);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { error } = await supabaseAdmin.from("crm_pipelines").delete().eq("id", data.id);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
