@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Building2, Home, Layers, Upload, Activity, Webhook } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
+import { PendingEventsCard } from "@/components/kleegr/PendingEventsCard";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   component: Dashboard,
@@ -34,7 +35,10 @@ function Dashboard() {
         <StatCard label="Units" value={data?.counts.units ?? "—"} icon={Home} loading={isLoading} />
       </div>
 
+      <PendingEventsCard />
+
       <div className="grid gap-6 lg:grid-cols-2">
+
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg"><Upload className="h-4 w-4" />Recent Imports</CardTitle>
