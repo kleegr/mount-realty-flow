@@ -243,7 +243,6 @@ function matchByName(stageName: string | null, m: StageMapping): StageTarget | n
   if (eq(m.stage_release_name)) return { availability: "Available", stage: "", inventoryDeducted: "No" };
   return null;
 }
-}
 
 function buildingStatusFor(stage: string): string {
   if (stage === "Reserved/Locked") return "Reserved / Locked";
