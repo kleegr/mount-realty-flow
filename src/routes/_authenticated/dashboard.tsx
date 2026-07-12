@@ -8,6 +8,7 @@ import { Building2, Home, Layers, Upload, Activity, Webhook, CheckCircle2, Clock
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { PendingEventsCard } from "@/components/kleegr/PendingEventsCard";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   component: Dashboard,
