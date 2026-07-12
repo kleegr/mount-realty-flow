@@ -1,0 +1,1 @@
+UPDATE public.sync_jobs SET status='failed', finished_at=now(), error_summary=COALESCE(error_summary,'')||' [auto-cleaned: stuck running]' WHERE status='running';
