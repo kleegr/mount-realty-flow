@@ -142,6 +142,31 @@ async function syncScope(jobId: string, scope: SyncScope, counters: SyncCounters
           else counters.created++;
         }
       }
+
+      if (scope === "unit") {
+        const unitStateRows = records
+          .map((rec) => {
+            const crmId = typeof rec.id === "string" ? rec.id : null;
+            if (!crmId) return null;
+            const props = extractProps(rec);
+            return {
+              unit_crm_id: crmId,
+              availability: String(props[FIELDS.unit.availability] ?? "") || null,
+              stage: String(props[FIELDS.unit.stage] ?? "") || null,
+            };
+          })
+          .filter((r): r is NonNullable<typeof r> => r !== null);
+
+        if (unitStateRows.length > 0) {
+          const { error } = await supabaseAdmin
+            .from("unit_state")
+            .upsert(unitStateRows, { onConflict: "unit_crm_id" });
+          if (error) {
+            counters.errors += unitStateRows.length;
+            counters.errorSummary.push(`unit state cache: ${error.message}`.slice(0, 200));
+          }
+        }
+      }
     }
 
     counters.processed += records.length;
