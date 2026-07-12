@@ -1,6 +1,13 @@
 /**
  * Shared stage-change application logic.
  * Used by both the opportunity-stage webhook and the unit-associated replay webhook.
+ *
+ * Two application targets:
+ *   1. Unit    — default. Applies availability/stage to the Unit + rolls up
+ *                totals to parent Building & Project.
+ *   2. Building — for "whole building" sales (villa/house sold as a single
+ *                unit at the Building level). Applies status directly to the
+ *                Building record; no rollup, since the Building IS the unit.
  */
 export interface StageChangeInput {
   pipelineId: string | null;
@@ -8,13 +15,17 @@ export interface StageChangeInput {
   opportunityId: string | null;
   unitCrmIdHint: string | null;
   unitExternalId: string | null;
+  buildingCrmIdHint?: string | null;
+  buildingExternalId?: string | null;
 }
 
 export interface StageChangeOutcome {
   outcome: string;
   unitCrmId?: string;
+  buildingCrmId?: string;
   message?: string;
 }
+
 
 export async function processStageChange(params: StageChangeInput): Promise<StageChangeOutcome> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
