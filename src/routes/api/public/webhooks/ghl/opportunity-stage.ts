@@ -3,20 +3,20 @@
  * URL: /api/public/webhooks/ghl/opportunity-stage
  * Auth: HMAC `x-kleegr-signature: sha256=<hex>` OR shared header `x-kleegr-secret: <secret>`.
  *
- * Payload (GHL "Custom Webhook" action):
+ * Payload (GHL "Custom Webhook" action) — FULLY AUTOMATED shape:
  *   {
  *     event_id?: string,
- *     pipeline_id: string,
- *     stage_id: string,
- *     opportunity_id: string,
- *     unit_crm_id?: string,               // preferred — comes from Associated Object
- *     unit_external_import_id?: string,   // fallback
+ *     opportunity_id: string,          // REQUIRED
+ *     pipeline_name?: string,          // preferred (from picker: Pipeline Name)
+ *     stage_name?: string,             // preferred (from picker: Stage Name)
+ *     pipeline_id?: string,            // legacy / fallback
+ *     stage_id?: string,               // legacy / fallback
+ *     unit_crm_id?: string,            // optional override — normally we auto-fetch
+ *     building_crm_id?: string,        // optional — for whole-building sales
  *   }
  *
- * Grace window: if the stage change fires BEFORE a unit is associated to the
- * opportunity, the event is stored as `pending_no_unit`. Once the salesperson
- * associates a unit, the companion `/unit-associated` webhook replays the
- * pending events. A manual reprocess endpoint is also available.
+ * The backend automatically calls the GHL API to find the Unit/Building
+ * associated with the opportunity — no manual custom field required.
  */
 import { createFileRoute } from "@tanstack/react-router";
 import { createHmac, timingSafeEqual } from "crypto";
@@ -34,17 +34,20 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
         let payload: Record<string, unknown>;
         try { payload = JSON.parse(raw); } catch { return json({ error: "Invalid JSON" }, 400); }
 
-        const eventId = String(
-          payload.event_id ??
-            `${payload.opportunity_id ?? "unknown"}-${payload.stage_id ?? "unknown"}-${Date.now()}`,
-        );
+        const opportunityId = strOrNull(payload.opportunity_id);
         const pipelineId = strOrNull(payload.pipeline_id);
         const stageId = strOrNull(payload.stage_id);
-        const opportunityId = strOrNull(payload.opportunity_id);
+        const pipelineName = strOrNull(payload.pipeline_name);
+        const stageName = strOrNull(payload.stage_name);
         const unitCrmIdHint = strOrNull(payload.unit_crm_id);
         const unitExternalId = strOrNull(payload.unit_external_import_id);
         const buildingCrmIdHint = strOrNull(payload.building_crm_id);
         const buildingExternalId = strOrNull(payload.building_external_import_id);
+
+        const eventId = String(
+          payload.event_id ??
+            `${opportunityId ?? "unknown"}-${stageId ?? stageName ?? "unknown"}-${Date.now()}`,
+        );
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
@@ -72,9 +75,10 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
 
         const { processStageChange } = await import("@/lib/kleegr/stage-apply.server");
         const outcome = await processStageChange({
-          pipelineId, stageId, opportunityId,
+          pipelineId, stageId, pipelineName, stageName, opportunityId,
           unitCrmIdHint, unitExternalId,
           buildingCrmIdHint, buildingExternalId,
+          autoFetchAssociations: true,
         });
 
         // Grace window: no unit yet → keep event pending so it can be replayed

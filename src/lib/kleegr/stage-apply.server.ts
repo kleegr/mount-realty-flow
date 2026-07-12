@@ -12,11 +12,15 @@
 export interface StageChangeInput {
   pipelineId: string | null;
   stageId: string | null;
+  pipelineName?: string | null;
+  stageName?: string | null;
   opportunityId: string | null;
   unitCrmIdHint: string | null;
   unitExternalId: string | null;
   buildingCrmIdHint?: string | null;
   buildingExternalId?: string | null;
+  /** When true and no unit/building reference is provided, look them up via the GHL API using opportunityId. */
+  autoFetchAssociations?: boolean;
 }
 
 export interface StageChangeOutcome {
@@ -57,17 +61,33 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     buildingCrmId = map.data?.crm_record_id ?? null;
   }
 
+  // AUTO-FETCH: if we still have no unit/building reference but we do have an
+  // opportunity ID, ask GHL for the opportunity's associations. This lets the
+  // salesperson simply move the stage in GHL — the app figures out the linked
+  // unit itself, no custom field / no manual paste required.
+  if (!unitCrmId && !buildingCrmId && params.opportunityId && params.autoFetchAssociations !== false) {
+    try {
+      const { createCrmClient } = await import("./client.server");
+      const { fetchOpportunityAssociations } = await import("./opportunities.server");
+      const found = await fetchOpportunityAssociations(await createCrmClient(), params.opportunityId);
+      unitCrmId = found.unitCrmId;
+      buildingCrmId = found.buildingCrmId;
+    } catch (err) {
+      console.warn("Auto-fetch of opportunity associations failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
   if (!unitCrmId && !buildingCrmId) return { outcome: "no_unit_reference" };
 
   // Resolve stage mapping (shared between Unit and Building paths)
-  const stageMapping = await resolveStageMapping(supabaseAdmin, params.pipelineId, cfg.data);
-  const target = classifyStage(params.stageId, stageMapping);
+  const stageMapping = await resolveStageMapping(supabaseAdmin, params.pipelineId, params.pipelineName ?? null, cfg.data);
+  const target = classifyStage(params.stageId, params.stageName ?? null, stageMapping);
   if (!target) {
     return {
       outcome: "stage_not_mapped",
       unitCrmId: unitCrmId ?? undefined,
       buildingCrmId: buildingCrmId ?? undefined,
-      message: `Stage ${params.stageId ?? "unknown"} in pipeline ${params.pipelineId ?? "unknown"} is not mapped in Settings.`,
+      message: `Stage "${params.stageName ?? params.stageId ?? "unknown"}" in pipeline "${params.pipelineName ?? params.pipelineId ?? "unknown"}" is not mapped in Settings.`,
     };
   }
 
@@ -167,6 +187,10 @@ interface StageMapping {
   stage_under_contract_id: string | null;
   stage_closed_id: string | null;
   stage_release_id: string | null;
+  stage_reserved_name?: string | null;
+  stage_under_contract_name?: string | null;
+  stage_closed_name?: string | null;
+  stage_release_name?: string | null;
 }
 
 interface StageTarget {
@@ -178,25 +202,45 @@ interface StageTarget {
 async function resolveStageMapping(
   supabaseAdmin: Awaited<ReturnType<typeof importAdmin>>,
   pipelineId: string | null,
+  pipelineName: string | null,
   cfg: StageMapping,
 ): Promise<StageMapping> {
+  const cols = "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name";
   if (pipelineId) {
-    const pl = await supabaseAdmin
-      .from("crm_pipelines")
-      .select("stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id")
-      .eq("pipeline_id", pipelineId)
-      .maybeSingle();
-    if (pl.data) return pl.data;
+    const pl = await supabaseAdmin.from("crm_pipelines").select(cols).eq("pipeline_id", pipelineId).maybeSingle();
+    if (pl.data) return pl.data as StageMapping;
+  }
+  if (pipelineName) {
+    const pl = await supabaseAdmin.from("crm_pipelines").select(cols).eq("pipeline_name", pipelineName).maybeSingle();
+    if (pl.data) return pl.data as StageMapping;
   }
   return cfg;
 }
 
-function classifyStage(stageId: string | null, m: StageMapping): StageTarget | null {
+function classifyStage(stageId: string | null, stageName: string | null, m: StageMapping): StageTarget | null {
+  // Match by ID first (exact), then by name (case-insensitive)
+  const idMatch = matchById(stageId, m);
+  if (idMatch) return idMatch;
+  return matchByName(stageName, m);
+}
+
+function matchById(stageId: string | null, m: StageMapping): StageTarget | null {
   if (!stageId) return null;
   if (stageId === m.stage_reserved_id) return { availability: "Not Available", stage: "Reserved/Locked", inventoryDeducted: "Yes" };
   if (stageId === m.stage_under_contract_id) return { availability: "Not Available", stage: "Under Contract", inventoryDeducted: "Yes" };
   if (stageId === m.stage_closed_id) return { availability: "Not Available", stage: "Closed/Sold", inventoryDeducted: "Yes" };
   if (stageId === m.stage_release_id) return { availability: "Available", stage: "", inventoryDeducted: "No" };
+  return null;
+}
+
+function matchByName(stageName: string | null, m: StageMapping): StageTarget | null {
+  if (!stageName) return null;
+  const s = stageName.trim().toLowerCase();
+  const eq = (v?: string | null) => v && v.trim().toLowerCase() === s;
+  if (eq(m.stage_reserved_name)) return { availability: "Not Available", stage: "Reserved/Locked", inventoryDeducted: "Yes" };
+  if (eq(m.stage_under_contract_name)) return { availability: "Not Available", stage: "Under Contract", inventoryDeducted: "Yes" };
+  if (eq(m.stage_closed_name)) return { availability: "Not Available", stage: "Closed/Sold", inventoryDeducted: "Yes" };
+  if (eq(m.stage_release_name)) return { availability: "Available", stage: "", inventoryDeducted: "No" };
   return null;
 }
 
