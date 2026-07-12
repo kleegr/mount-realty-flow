@@ -29,7 +29,8 @@ function objectKey(client: CrmClient, scope: SyncScope): string {
 function extractRecords(data: unknown): Array<Record<string, unknown>> {
   if (!data || typeof data !== "object") return [];
   const d = data as Record<string, unknown>;
-  const arr = (d.records ?? d.data ?? []) as unknown;
+  const nestedData = d.data && typeof d.data === "object" ? (d.data as Record<string, unknown>) : null;
+  const arr = (d.records ?? d.items ?? d.results ?? nestedData?.records ?? nestedData?.items ?? d.data ?? []) as unknown;
   return Array.isArray(arr) ? (arr as Array<Record<string, unknown>>) : [];
 }
 
