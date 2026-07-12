@@ -114,11 +114,18 @@ function Dashboard() {
   );
 }
 
-function StatCard({ label, value, icon: Icon, loading }: { label: string; value: string | number; icon: React.ComponentType<{ className?: string }>; loading?: boolean }) {
+function StatCard({ label, value, icon: Icon, loading, tone = "primary" }: { label: string; value: string | number; icon: React.ComponentType<{ className?: string }>; loading?: boolean; tone?: "primary" | "success" | "warning" | "info" | "danger" }) {
+  const toneClasses: Record<string, string> = {
+    primary: "bg-primary/10 text-primary",
+    success: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+    warning: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    info: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+    danger: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  };
   return (
     <Card className="shadow-card">
       <CardContent className="flex items-center gap-4 p-6">
-        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <div className={cn("flex h-12 w-12 items-center justify-center rounded-lg", toneClasses[tone])}>
           <Icon className="h-6 w-6" />
         </div>
         <div>
