@@ -72,7 +72,9 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
 
         const { processStageChange } = await import("@/lib/kleegr/stage-apply.server");
         const outcome = await processStageChange({
-          pipelineId, stageId, opportunityId, unitCrmIdHint, unitExternalId,
+          pipelineId, stageId, opportunityId,
+          unitCrmIdHint, unitExternalId,
+          buildingCrmIdHint, buildingExternalId,
         });
 
         // Grace window: no unit yet → keep event pending so it can be replayed
