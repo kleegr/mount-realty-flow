@@ -15,6 +15,8 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedInventoryIndexRouteImport } from './routes/_authenticated/inventory/index'
 import { Route as AuthenticatedImportIndexRouteImport } from './routes/_authenticated/import/index'
+import { Route as AuthenticatedToolsIdLookupRouteImport } from './routes/_authenticated/tools/id-lookup'
+import { Route as AuthenticatedSettingsSyncRouteImport } from './routes/_authenticated/settings/sync'
 import { Route as AuthenticatedSettingsCrmRouteImport } from './routes/_authenticated/settings/crm'
 import { Route as AuthenticatedImportHistoryRouteImport } from './routes/_authenticated/import/history'
 import { Route as AuthenticatedImportJobIdRouteImport } from './routes/_authenticated/import/$jobId'
@@ -50,6 +52,18 @@ const AuthenticatedImportIndexRoute =
   AuthenticatedImportIndexRouteImport.update({
     id: '/import/',
     path: '/import/',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedToolsIdLookupRoute =
+  AuthenticatedToolsIdLookupRouteImport.update({
+    id: '/tools/id-lookup',
+    path: '/tools/id-lookup',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsSyncRoute =
+  AuthenticatedSettingsSyncRouteImport.update({
+    id: '/settings/sync',
+    path: '/settings/sync',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
 const AuthenticatedSettingsCrmRoute =
@@ -90,6 +104,8 @@ export interface FileRoutesByFullPath {
   '/import/$jobId': typeof AuthenticatedImportJobIdRoute
   '/import/history': typeof AuthenticatedImportHistoryRoute
   '/settings/crm': typeof AuthenticatedSettingsCrmRoute
+  '/settings/sync': typeof AuthenticatedSettingsSyncRoute
+  '/tools/id-lookup': typeof AuthenticatedToolsIdLookupRoute
   '/import/': typeof AuthenticatedImportIndexRoute
   '/inventory/': typeof AuthenticatedInventoryIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
@@ -102,6 +118,8 @@ export interface FileRoutesByTo {
   '/import/$jobId': typeof AuthenticatedImportJobIdRoute
   '/import/history': typeof AuthenticatedImportHistoryRoute
   '/settings/crm': typeof AuthenticatedSettingsCrmRoute
+  '/settings/sync': typeof AuthenticatedSettingsSyncRoute
+  '/tools/id-lookup': typeof AuthenticatedToolsIdLookupRoute
   '/import': typeof AuthenticatedImportIndexRoute
   '/inventory': typeof AuthenticatedInventoryIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
@@ -116,6 +134,8 @@ export interface FileRoutesById {
   '/_authenticated/import/$jobId': typeof AuthenticatedImportJobIdRoute
   '/_authenticated/import/history': typeof AuthenticatedImportHistoryRoute
   '/_authenticated/settings/crm': typeof AuthenticatedSettingsCrmRoute
+  '/_authenticated/settings/sync': typeof AuthenticatedSettingsSyncRoute
+  '/_authenticated/tools/id-lookup': typeof AuthenticatedToolsIdLookupRoute
   '/_authenticated/import/': typeof AuthenticatedImportIndexRoute
   '/_authenticated/inventory/': typeof AuthenticatedInventoryIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
@@ -130,6 +150,8 @@ export interface FileRouteTypes {
     | '/import/$jobId'
     | '/import/history'
     | '/settings/crm'
+    | '/settings/sync'
+    | '/tools/id-lookup'
     | '/import/'
     | '/inventory/'
     | '/api/public/webhooks/ghl/opportunity-stage'
@@ -142,6 +164,8 @@ export interface FileRouteTypes {
     | '/import/$jobId'
     | '/import/history'
     | '/settings/crm'
+    | '/settings/sync'
+    | '/tools/id-lookup'
     | '/import'
     | '/inventory'
     | '/api/public/webhooks/ghl/opportunity-stage'
@@ -155,6 +179,8 @@ export interface FileRouteTypes {
     | '/_authenticated/import/$jobId'
     | '/_authenticated/import/history'
     | '/_authenticated/settings/crm'
+    | '/_authenticated/settings/sync'
+    | '/_authenticated/tools/id-lookup'
     | '/_authenticated/import/'
     | '/_authenticated/inventory/'
     | '/api/public/webhooks/ghl/opportunity-stage'
@@ -213,6 +239,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedImportIndexRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/tools/id-lookup': {
+      id: '/_authenticated/tools/id-lookup'
+      path: '/tools/id-lookup'
+      fullPath: '/tools/id-lookup'
+      preLoaderRoute: typeof AuthenticatedToolsIdLookupRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/sync': {
+      id: '/_authenticated/settings/sync'
+      path: '/settings/sync'
+      fullPath: '/settings/sync'
+      preLoaderRoute: typeof AuthenticatedSettingsSyncRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/settings/crm': {
       id: '/_authenticated/settings/crm'
       path: '/settings/crm'
@@ -256,6 +296,8 @@ interface AuthenticatedRouteChildren {
   AuthenticatedImportJobIdRoute: typeof AuthenticatedImportJobIdRoute
   AuthenticatedImportHistoryRoute: typeof AuthenticatedImportHistoryRoute
   AuthenticatedSettingsCrmRoute: typeof AuthenticatedSettingsCrmRoute
+  AuthenticatedSettingsSyncRoute: typeof AuthenticatedSettingsSyncRoute
+  AuthenticatedToolsIdLookupRoute: typeof AuthenticatedToolsIdLookupRoute
   AuthenticatedImportIndexRoute: typeof AuthenticatedImportIndexRoute
   AuthenticatedInventoryIndexRoute: typeof AuthenticatedInventoryIndexRoute
 }
@@ -265,6 +307,8 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedImportJobIdRoute: AuthenticatedImportJobIdRoute,
   AuthenticatedImportHistoryRoute: AuthenticatedImportHistoryRoute,
   AuthenticatedSettingsCrmRoute: AuthenticatedSettingsCrmRoute,
+  AuthenticatedSettingsSyncRoute: AuthenticatedSettingsSyncRoute,
+  AuthenticatedToolsIdLookupRoute: AuthenticatedToolsIdLookupRoute,
   AuthenticatedImportIndexRoute: AuthenticatedImportIndexRoute,
   AuthenticatedInventoryIndexRoute: AuthenticatedInventoryIndexRoute,
 }

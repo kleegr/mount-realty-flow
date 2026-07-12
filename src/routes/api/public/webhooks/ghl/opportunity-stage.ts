@@ -43,6 +43,8 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
         const opportunityId = strOrNull(payload.opportunity_id);
         const unitCrmIdHint = strOrNull(payload.unit_crm_id);
         const unitExternalId = strOrNull(payload.unit_external_import_id);
+        const buildingCrmIdHint = strOrNull(payload.building_crm_id);
+        const buildingExternalId = strOrNull(payload.building_external_import_id);
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
@@ -70,7 +72,9 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
 
         const { processStageChange } = await import("@/lib/kleegr/stage-apply.server");
         const outcome = await processStageChange({
-          pipelineId, stageId, opportunityId, unitCrmIdHint, unitExternalId,
+          pipelineId, stageId, opportunityId,
+          unitCrmIdHint, unitExternalId,
+          buildingCrmIdHint, buildingExternalId,
         });
 
         // Grace window: no unit yet → keep event pending so it can be replayed

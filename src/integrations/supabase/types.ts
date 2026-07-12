@@ -148,29 +148,38 @@ export type Database = {
       }
       external_id_map: {
         Row: {
+          code: string | null
           created_at: string
           crm_record_id: string
+          display_name: string | null
           external_import_id: string
           first_seen_job_id: string | null
           id: string
+          parent_crm_id: string | null
           scope: Database["public"]["Enums"]["import_scope"]
           updated_at: string
         }
         Insert: {
+          code?: string | null
           created_at?: string
           crm_record_id: string
+          display_name?: string | null
           external_import_id: string
           first_seen_job_id?: string | null
           id?: string
+          parent_crm_id?: string | null
           scope: Database["public"]["Enums"]["import_scope"]
           updated_at?: string
         }
         Update: {
+          code?: string | null
           created_at?: string
           crm_record_id?: string
+          display_name?: string | null
           external_import_id?: string
           first_seen_job_id?: string | null
           id?: string
+          parent_crm_id?: string | null
           scope?: Database["public"]["Enums"]["import_scope"]
           updated_at?: string
         }
@@ -337,6 +346,51 @@ export type Database = {
           full_name?: string | null
           id?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      sync_jobs: {
+        Row: {
+          created_count: number
+          error_count: number
+          error_summary: string | null
+          finished_at: string | null
+          id: string
+          processed: number
+          scope: string
+          started_at: string
+          started_by: string | null
+          status: string
+          total: number
+          updated_count: number
+        }
+        Insert: {
+          created_count?: number
+          error_count?: number
+          error_summary?: string | null
+          finished_at?: string | null
+          id?: string
+          processed?: number
+          scope: string
+          started_at?: string
+          started_by?: string | null
+          status?: string
+          total?: number
+          updated_count?: number
+        }
+        Update: {
+          created_count?: number
+          error_count?: number
+          error_summary?: string | null
+          finished_at?: string | null
+          id?: string
+          processed?: number
+          scope?: string
+          started_at?: string
+          started_by?: string | null
+          status?: string
+          total?: number
+          updated_count?: number
         }
         Relationships: []
       }
