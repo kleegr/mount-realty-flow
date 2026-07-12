@@ -12,11 +12,15 @@
 export interface StageChangeInput {
   pipelineId: string | null;
   stageId: string | null;
+  pipelineName?: string | null;
+  stageName?: string | null;
   opportunityId: string | null;
   unitCrmIdHint: string | null;
   unitExternalId: string | null;
   buildingCrmIdHint?: string | null;
   buildingExternalId?: string | null;
+  /** When true and no unit/building reference is provided, look them up via the GHL API using opportunityId. */
+  autoFetchAssociations?: boolean;
 }
 
 export interface StageChangeOutcome {
