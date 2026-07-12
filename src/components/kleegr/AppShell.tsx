@@ -9,6 +9,7 @@ import {
   LogOut,
   RefreshCw,
   Search,
+  BarChart3,
 
 } from "lucide-react";
 import { KleegrLogo } from "./KleegrLogo";
@@ -18,6 +19,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/report", label: "Unit Report", icon: BarChart3 },
   { to: "/import", label: "Import Center", icon: Upload },
   { to: "/import/history", label: "Import History", icon: History },
   { to: "/inventory", label: "Inventory", icon: Building2 },
