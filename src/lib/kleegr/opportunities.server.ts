@@ -25,6 +25,7 @@ export async function fetchOpportunityAssociations(
   const locationId = client.config.location_id;
   const unitObjectKey = client.config.unit_object_key;
   const buildingObjectKey = client.config.building_object_key;
+  if (!locationId) return { unitCrmId: null, buildingCrmId: null };
 
   // Try the associations endpoint first
   const relatedIds = await fetchRelatedRecordIds(client, opportunityId, locationId);
