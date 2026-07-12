@@ -110,6 +110,42 @@ export type Database = {
         }
         Relationships: []
       }
+      crm_pipelines: {
+        Row: {
+          created_at: string
+          id: string
+          label: string | null
+          pipeline_id: string
+          stage_closed_id: string | null
+          stage_release_id: string | null
+          stage_reserved_id: string | null
+          stage_under_contract_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          label?: string | null
+          pipeline_id: string
+          stage_closed_id?: string | null
+          stage_release_id?: string | null
+          stage_reserved_id?: string | null
+          stage_under_contract_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          label?: string | null
+          pipeline_id?: string
+          stage_closed_id?: string | null
+          stage_release_id?: string | null
+          stage_reserved_id?: string | null
+          stage_under_contract_id?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       external_id_map: {
         Row: {
           created_at: string
