@@ -190,7 +190,7 @@ export async function executeImport(jobId: string, validation: ValidationResult)
     units_updated: report.units_updated,
     warnings_count: (validation.warnings.length + report.warnings.length),
     errors_count: report.errors.length,
-    report: report as unknown as Record<string, unknown>,
+    report: JSON.parse(JSON.stringify(report)),
     error_message: report.errors[0]?.message ?? null,
   }).eq("id", jobId);
 
