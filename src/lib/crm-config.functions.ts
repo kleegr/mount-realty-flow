@@ -40,9 +40,9 @@ export const updateCrmConfig = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     await requireAdmin(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const payload: Record<string, unknown> = { ...data };
+    const payload = { ...data };
     if (payload.template_xlsx_url === "") payload.template_xlsx_url = null;
-    const { error } = await supabaseAdmin.from("crm_config").update(payload).eq("id", 1);
+    const { error } = await supabaseAdmin.from("crm_config").update(payload as never).eq("id", 1);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
