@@ -18,7 +18,7 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "project"),
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "building"),
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "unit"),
-      supabaseAdmin.from("unit_state").select("availability"),
+      supabaseAdmin.from("unit_state").select("availability, stage"),
       supabaseAdmin.from("import_jobs").select("id, filename, status, created_at, units_created, units_updated, errors_count").order("created_at", { ascending: false }).limit(5),
       supabaseAdmin.from("audit_events").select("id, kind, entity_crm_id, reason, created_at").order("created_at", { ascending: false }).limit(5),
       supabaseAdmin.from("webhook_events").select("id, outcome, opportunity_id, stage_id, received_at").order("received_at", { ascending: false }).limit(5),
@@ -26,8 +26,15 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
 
     const byAvail: Record<string, number> = { available: 0, reserved: 0, under_contract: 0, sold: 0 };
     for (const row of unitStates.data ?? []) {
-      const k = (row.availability ?? "available").toLowerCase().replace(/[\s-]/g, "_");
-      if (k in byAvail) byAvail[k]++;
+      const stage = (row.stage ?? "").trim().toLowerCase();
+      const availability = (row.availability ?? "").trim().toLowerCase();
+      if (stage === "reserved/locked" || stage === "reserved" || stage === "locked") byAvail.reserved++;
+      else if (stage === "under contract") byAvail.under_contract++;
+      else if (stage === "closed/sold" || stage === "sold" || stage === "closed") byAvail.sold++;
+      else if (availability.includes("reserved") || availability.includes("locked")) byAvail.reserved++;
+      else if (availability.includes("under") && availability.includes("contract")) byAvail.under_contract++;
+      else if (availability.includes("sold") || availability.includes("closed")) byAvail.sold++;
+      else if (availability === "available" || !availability) byAvail.available++;
     }
 
     return {

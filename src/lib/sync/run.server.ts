@@ -29,7 +29,8 @@ function objectKey(client: CrmClient, scope: SyncScope): string {
 function extractRecords(data: unknown): Array<Record<string, unknown>> {
   if (!data || typeof data !== "object") return [];
   const d = data as Record<string, unknown>;
-  const arr = (d.records ?? d.data ?? []) as unknown;
+  const nestedData = d.data && typeof d.data === "object" ? (d.data as Record<string, unknown>) : null;
+  const arr = (d.records ?? d.items ?? d.results ?? nestedData?.records ?? nestedData?.items ?? d.data ?? []) as unknown;
   return Array.isArray(arr) ? (arr as Array<Record<string, unknown>>) : [];
 }
 
@@ -139,6 +140,31 @@ async function syncScope(jobId: string, scope: SyncScope, counters: SyncCounters
         for (const r of rows) {
           if (existingIds.has(r.crm_record_id)) counters.updated++;
           else counters.created++;
+        }
+      }
+
+      if (scope === "unit") {
+        const unitStateRows = records
+          .map((rec) => {
+            const crmId = typeof rec.id === "string" ? rec.id : null;
+            if (!crmId) return null;
+            const props = extractProps(rec);
+            return {
+              unit_crm_id: crmId,
+              availability: String(props[FIELDS.unit.availability] ?? "") || null,
+              stage: String(props[FIELDS.unit.stage] ?? "") || null,
+            };
+          })
+          .filter((r): r is NonNullable<typeof r> => r !== null);
+
+        if (unitStateRows.length > 0) {
+          const { error } = await supabaseAdmin
+            .from("unit_state")
+            .upsert(unitStateRows, { onConflict: "unit_crm_id" });
+          if (error) {
+            counters.errors += unitStateRows.length;
+            counters.errorSummary.push(`unit state cache: ${error.message}`.slice(0, 200));
+          }
         }
       }
     }
