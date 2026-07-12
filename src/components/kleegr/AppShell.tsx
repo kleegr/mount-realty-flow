@@ -9,7 +9,7 @@ import {
   LogOut,
   RefreshCw,
   Search,
-  Webhook,
+
 } from "lucide-react";
 import { KleegrLogo } from "./KleegrLogo";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,6 @@ const NAV = [
   { to: "/inventory", label: "Inventory", icon: Building2 },
   { to: "/tools/id-lookup", label: "CRM ID Lookup", icon: Search },
   { to: "/settings/sync", label: "Sync from CRM", icon: RefreshCw },
-  { to: "/settings/webhook-guide", label: "Webhook Guide", icon: Webhook },
   { to: "/settings/crm", label: "Settings", icon: Settings },
 ] as const;
 
