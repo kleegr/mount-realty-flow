@@ -9,7 +9,7 @@ import {
   LogOut,
   RefreshCw,
   Search,
-  Webhook,
+
 } from "lucide-react";
 import { KleegrLogo } from "./KleegrLogo";
 import { Button } from "@/components/ui/button";
