@@ -101,10 +101,16 @@ function Settings() {
           </CardContent>
         </Card>
 
+        {/* Legacy single-pipeline fields kept as fallback; the multi-pipeline manager below is preferred. */}
+      </form>
+
+      <PipelinesManager isAdmin={isAdmin} />
+
+      <form onSubmit={onSubmit} className="space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle>Opportunity → Unit Stage Mapping</CardTitle>
-            <CardDescription>The stage IDs that trigger inventory transitions. Any other stage is ignored.</CardDescription>
+            <CardTitle>Legacy Single-Pipeline Mapping (Fallback)</CardTitle>
+            <CardDescription>Used only when a webhook arrives for a pipeline that is not listed above.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2">
             <Field label="Pipeline ID" k="opportunity_pipeline_id" form={form} setForm={setForm} readOnly={!isAdmin} />
