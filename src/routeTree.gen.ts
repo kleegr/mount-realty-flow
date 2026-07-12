@@ -18,6 +18,7 @@ import { Route as AuthenticatedImportIndexRouteImport } from './routes/_authenti
 import { Route as AuthenticatedSettingsCrmRouteImport } from './routes/_authenticated/settings/crm'
 import { Route as AuthenticatedImportHistoryRouteImport } from './routes/_authenticated/import/history'
 import { Route as AuthenticatedImportJobIdRouteImport } from './routes/_authenticated/import/$jobId'
+import { Route as ApiPublicWebhooksGhlUnitAssociatedRouteImport } from './routes/api/public/webhooks/ghl/unit-associated'
 import { Route as ApiPublicWebhooksGhlOpportunityStageRouteImport } from './routes/api/public/webhooks/ghl/opportunity-stage'
 
 const AuthRoute = AuthRouteImport.update({
@@ -69,6 +70,12 @@ const AuthenticatedImportJobIdRoute =
     path: '/import/$jobId',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
+const ApiPublicWebhooksGhlUnitAssociatedRoute =
+  ApiPublicWebhooksGhlUnitAssociatedRouteImport.update({
+    id: '/api/public/webhooks/ghl/unit-associated',
+    path: '/api/public/webhooks/ghl/unit-associated',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicWebhooksGhlOpportunityStageRoute =
   ApiPublicWebhooksGhlOpportunityStageRouteImport.update({
     id: '/api/public/webhooks/ghl/opportunity-stage',
@@ -86,6 +93,7 @@ export interface FileRoutesByFullPath {
   '/import/': typeof AuthenticatedImportIndexRoute
   '/inventory/': typeof AuthenticatedInventoryIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
+  '/api/public/webhooks/ghl/unit-associated': typeof ApiPublicWebhooksGhlUnitAssociatedRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -97,6 +105,7 @@ export interface FileRoutesByTo {
   '/import': typeof AuthenticatedImportIndexRoute
   '/inventory': typeof AuthenticatedInventoryIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
+  '/api/public/webhooks/ghl/unit-associated': typeof ApiPublicWebhooksGhlUnitAssociatedRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -110,6 +119,7 @@ export interface FileRoutesById {
   '/_authenticated/import/': typeof AuthenticatedImportIndexRoute
   '/_authenticated/inventory/': typeof AuthenticatedInventoryIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
+  '/api/public/webhooks/ghl/unit-associated': typeof ApiPublicWebhooksGhlUnitAssociatedRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -123,6 +133,7 @@ export interface FileRouteTypes {
     | '/import/'
     | '/inventory/'
     | '/api/public/webhooks/ghl/opportunity-stage'
+    | '/api/public/webhooks/ghl/unit-associated'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -134,6 +145,7 @@ export interface FileRouteTypes {
     | '/import'
     | '/inventory'
     | '/api/public/webhooks/ghl/opportunity-stage'
+    | '/api/public/webhooks/ghl/unit-associated'
   id:
     | '__root__'
     | '/'
@@ -146,6 +158,7 @@ export interface FileRouteTypes {
     | '/_authenticated/import/'
     | '/_authenticated/inventory/'
     | '/api/public/webhooks/ghl/opportunity-stage'
+    | '/api/public/webhooks/ghl/unit-associated'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -153,6 +166,7 @@ export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   AuthRoute: typeof AuthRoute
   ApiPublicWebhooksGhlOpportunityStageRoute: typeof ApiPublicWebhooksGhlOpportunityStageRoute
+  ApiPublicWebhooksGhlUnitAssociatedRoute: typeof ApiPublicWebhooksGhlUnitAssociatedRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -220,6 +234,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedImportJobIdRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/api/public/webhooks/ghl/unit-associated': {
+      id: '/api/public/webhooks/ghl/unit-associated'
+      path: '/api/public/webhooks/ghl/unit-associated'
+      fullPath: '/api/public/webhooks/ghl/unit-associated'
+      preLoaderRoute: typeof ApiPublicWebhooksGhlUnitAssociatedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/webhooks/ghl/opportunity-stage': {
       id: '/api/public/webhooks/ghl/opportunity-stage'
       path: '/api/public/webhooks/ghl/opportunity-stage'
@@ -258,6 +279,8 @@ const rootRouteChildren: RootRouteChildren = {
   AuthRoute: AuthRoute,
   ApiPublicWebhooksGhlOpportunityStageRoute:
     ApiPublicWebhooksGhlOpportunityStageRoute,
+  ApiPublicWebhooksGhlUnitAssociatedRoute:
+    ApiPublicWebhooksGhlUnitAssociatedRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
