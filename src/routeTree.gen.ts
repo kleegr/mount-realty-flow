@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiPublicWebhooksGhlOpportunityStageRouteImport } from './routes/api/public/webhooks/ghl/opportunity-stage'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
@@ -22,31 +23,41 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicWebhooksGhlOpportunityStageRoute =
+  ApiPublicWebhooksGhlOpportunityStageRouteImport.update({
+    id: '/api/public/webhooks/ghl/opportunity-stage',
+    path: '/api/public/webhooks/ghl/opportunity-stage',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth'
+  fullPaths: '/' | '/auth' | '/api/public/webhooks/ghl/opportunity-stage'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth'
-  id: '__root__' | '/' | '/auth'
+  to: '/' | '/auth' | '/api/public/webhooks/ghl/opportunity-stage'
+  id: '__root__' | '/' | '/auth' | '/api/public/webhooks/ghl/opportunity-stage'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRoute
+  ApiPublicWebhooksGhlOpportunityStageRoute: typeof ApiPublicWebhooksGhlOpportunityStageRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +76,21 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/webhooks/ghl/opportunity-stage': {
+      id: '/api/public/webhooks/ghl/opportunity-stage'
+      path: '/api/public/webhooks/ghl/opportunity-stage'
+      fullPath: '/api/public/webhooks/ghl/opportunity-stage'
+      preLoaderRoute: typeof ApiPublicWebhooksGhlOpportunityStageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRoute,
+  ApiPublicWebhooksGhlOpportunityStageRoute:
+    ApiPublicWebhooksGhlOpportunityStageRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
