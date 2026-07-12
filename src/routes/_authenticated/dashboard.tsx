@@ -29,10 +29,23 @@ function Dashboard() {
         </Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard label="Projects" value={data?.counts.projects ?? "—"} icon={Layers} loading={isLoading} />
-        <StatCard label="Buildings" value={data?.counts.buildings ?? "—"} icon={Building2} loading={isLoading} />
-        <StatCard label="Units" value={data?.counts.units ?? "—"} icon={Home} loading={isLoading} />
+      <div>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Portfolio</h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <StatCard label="Projects" value={data?.counts.projects ?? "—"} icon={Layers} loading={isLoading} />
+          <StatCard label="Buildings" value={data?.counts.buildings ?? "—"} icon={Building2} loading={isLoading} />
+          <StatCard label="Units" value={data?.counts.units ?? "—"} icon={Home} loading={isLoading} />
+        </div>
+      </div>
+
+      <div>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Unit Status</h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard label="Available" value={data?.availability.available ?? "—"} icon={CheckCircle2} tone="success" loading={isLoading} />
+          <StatCard label="Reserved" value={data?.availability.reserved ?? "—"} icon={Clock} tone="warning" loading={isLoading} />
+          <StatCard label="Under Contract" value={data?.availability.under_contract ?? "—"} icon={FileSignature} tone="info" loading={isLoading} />
+          <StatCard label="Sold" value={data?.availability.sold ?? "—"} icon={DollarSign} tone="danger" loading={isLoading} />
+        </div>
       </div>
 
       <PendingEventsCard />
