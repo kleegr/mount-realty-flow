@@ -10,7 +10,14 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedInventoryIndexRouteImport } from './routes/_authenticated/inventory/index'
+import { Route as AuthenticatedImportIndexRouteImport } from './routes/_authenticated/import/index'
+import { Route as AuthenticatedSettingsCrmRouteImport } from './routes/_authenticated/settings/crm'
+import { Route as AuthenticatedImportHistoryRouteImport } from './routes/_authenticated/import/history'
+import { Route as AuthenticatedImportJobIdRouteImport } from './routes/_authenticated/import/$jobId'
 import { Route as ApiPublicWebhooksGhlOpportunityStageRouteImport } from './routes/api/public/webhooks/ghl/opportunity-stage'
 
 const AuthRoute = AuthRouteImport.update({
@@ -18,11 +25,50 @@ const AuthRoute = AuthRouteImport.update({
   path: '/auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedRoute = AuthenticatedRouteImport.update({
+  id: '/_authenticated',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedInventoryIndexRoute =
+  AuthenticatedInventoryIndexRouteImport.update({
+    id: '/inventory/',
+    path: '/inventory/',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedImportIndexRoute =
+  AuthenticatedImportIndexRouteImport.update({
+    id: '/import/',
+    path: '/import/',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsCrmRoute =
+  AuthenticatedSettingsCrmRouteImport.update({
+    id: '/settings/crm',
+    path: '/settings/crm',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedImportHistoryRoute =
+  AuthenticatedImportHistoryRouteImport.update({
+    id: '/import/history',
+    path: '/import/history',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedImportJobIdRoute =
+  AuthenticatedImportJobIdRouteImport.update({
+    id: '/import/$jobId',
+    path: '/import/$jobId',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
 const ApiPublicWebhooksGhlOpportunityStageRoute =
   ApiPublicWebhooksGhlOpportunityStageRouteImport.update({
     id: '/api/public/webhooks/ghl/opportunity-stage',
@@ -33,29 +79,78 @@ const ApiPublicWebhooksGhlOpportunityStageRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/dashboard': typeof AuthenticatedDashboardRoute
+  '/import/$jobId': typeof AuthenticatedImportJobIdRoute
+  '/import/history': typeof AuthenticatedImportHistoryRoute
+  '/settings/crm': typeof AuthenticatedSettingsCrmRoute
+  '/import/': typeof AuthenticatedImportIndexRoute
+  '/inventory/': typeof AuthenticatedInventoryIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/dashboard': typeof AuthenticatedDashboardRoute
+  '/import/$jobId': typeof AuthenticatedImportJobIdRoute
+  '/import/history': typeof AuthenticatedImportHistoryRoute
+  '/settings/crm': typeof AuthenticatedSettingsCrmRoute
+  '/import': typeof AuthenticatedImportIndexRoute
+  '/inventory': typeof AuthenticatedInventoryIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/_authenticated': typeof AuthenticatedRouteWithChildren
   '/auth': typeof AuthRoute
+  '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/import/$jobId': typeof AuthenticatedImportJobIdRoute
+  '/_authenticated/import/history': typeof AuthenticatedImportHistoryRoute
+  '/_authenticated/settings/crm': typeof AuthenticatedSettingsCrmRoute
+  '/_authenticated/import/': typeof AuthenticatedImportIndexRoute
+  '/_authenticated/inventory/': typeof AuthenticatedInventoryIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth' | '/api/public/webhooks/ghl/opportunity-stage'
+  fullPaths:
+    | '/'
+    | '/auth'
+    | '/dashboard'
+    | '/import/$jobId'
+    | '/import/history'
+    | '/settings/crm'
+    | '/import/'
+    | '/inventory/'
+    | '/api/public/webhooks/ghl/opportunity-stage'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth' | '/api/public/webhooks/ghl/opportunity-stage'
-  id: '__root__' | '/' | '/auth' | '/api/public/webhooks/ghl/opportunity-stage'
+  to:
+    | '/'
+    | '/auth'
+    | '/dashboard'
+    | '/import/$jobId'
+    | '/import/history'
+    | '/settings/crm'
+    | '/import'
+    | '/inventory'
+    | '/api/public/webhooks/ghl/opportunity-stage'
+  id:
+    | '__root__'
+    | '/'
+    | '/_authenticated'
+    | '/auth'
+    | '/_authenticated/dashboard'
+    | '/_authenticated/import/$jobId'
+    | '/_authenticated/import/history'
+    | '/_authenticated/settings/crm'
+    | '/_authenticated/import/'
+    | '/_authenticated/inventory/'
+    | '/api/public/webhooks/ghl/opportunity-stage'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   AuthRoute: typeof AuthRoute
   ApiPublicWebhooksGhlOpportunityStageRoute: typeof ApiPublicWebhooksGhlOpportunityStageRoute
 }
@@ -69,12 +164,61 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated': {
+      id: '/_authenticated'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AuthenticatedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/dashboard': {
+      id: '/_authenticated/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof AuthenticatedDashboardRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/inventory/': {
+      id: '/_authenticated/inventory/'
+      path: '/inventory'
+      fullPath: '/inventory/'
+      preLoaderRoute: typeof AuthenticatedInventoryIndexRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/import/': {
+      id: '/_authenticated/import/'
+      path: '/import'
+      fullPath: '/import/'
+      preLoaderRoute: typeof AuthenticatedImportIndexRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/crm': {
+      id: '/_authenticated/settings/crm'
+      path: '/settings/crm'
+      fullPath: '/settings/crm'
+      preLoaderRoute: typeof AuthenticatedSettingsCrmRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/import/history': {
+      id: '/_authenticated/import/history'
+      path: '/import/history'
+      fullPath: '/import/history'
+      preLoaderRoute: typeof AuthenticatedImportHistoryRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/import/$jobId': {
+      id: '/_authenticated/import/$jobId'
+      path: '/import/$jobId'
+      fullPath: '/import/$jobId'
+      preLoaderRoute: typeof AuthenticatedImportJobIdRouteImport
+      parentRoute: typeof AuthenticatedRoute
     }
     '/api/public/webhooks/ghl/opportunity-stage': {
       id: '/api/public/webhooks/ghl/opportunity-stage'
@@ -86,8 +230,31 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AuthenticatedRouteChildren {
+  AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedImportJobIdRoute: typeof AuthenticatedImportJobIdRoute
+  AuthenticatedImportHistoryRoute: typeof AuthenticatedImportHistoryRoute
+  AuthenticatedSettingsCrmRoute: typeof AuthenticatedSettingsCrmRoute
+  AuthenticatedImportIndexRoute: typeof AuthenticatedImportIndexRoute
+  AuthenticatedInventoryIndexRoute: typeof AuthenticatedInventoryIndexRoute
+}
+
+const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
+  AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedImportJobIdRoute: AuthenticatedImportJobIdRoute,
+  AuthenticatedImportHistoryRoute: AuthenticatedImportHistoryRoute,
+  AuthenticatedSettingsCrmRoute: AuthenticatedSettingsCrmRoute,
+  AuthenticatedImportIndexRoute: AuthenticatedImportIndexRoute,
+  AuthenticatedInventoryIndexRoute: AuthenticatedInventoryIndexRoute,
+}
+
+const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
+  AuthenticatedRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuthenticatedRoute: AuthenticatedRouteWithChildren,
   AuthRoute: AuthRoute,
   ApiPublicWebhooksGhlOpportunityStageRoute:
     ApiPublicWebhooksGhlOpportunityStageRoute,
