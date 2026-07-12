@@ -16,6 +16,7 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedInventoryIndexRouteImport } from './routes/_authenticated/inventory/index'
 import { Route as AuthenticatedImportIndexRouteImport } from './routes/_authenticated/import/index'
 import { Route as AuthenticatedToolsIdLookupRouteImport } from './routes/_authenticated/tools/id-lookup'
+import { Route as AuthenticatedSettingsWebhookGuideRouteImport } from './routes/_authenticated/settings/webhook-guide'
 import { Route as AuthenticatedSettingsSyncRouteImport } from './routes/_authenticated/settings/sync'
 import { Route as AuthenticatedSettingsCrmRouteImport } from './routes/_authenticated/settings/crm'
 import { Route as AuthenticatedImportHistoryRouteImport } from './routes/_authenticated/import/history'
@@ -58,6 +59,12 @@ const AuthenticatedToolsIdLookupRoute =
   AuthenticatedToolsIdLookupRouteImport.update({
     id: '/tools/id-lookup',
     path: '/tools/id-lookup',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsWebhookGuideRoute =
+  AuthenticatedSettingsWebhookGuideRouteImport.update({
+    id: '/settings/webhook-guide',
+    path: '/settings/webhook-guide',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
 const AuthenticatedSettingsSyncRoute =
@@ -105,6 +112,7 @@ export interface FileRoutesByFullPath {
   '/import/history': typeof AuthenticatedImportHistoryRoute
   '/settings/crm': typeof AuthenticatedSettingsCrmRoute
   '/settings/sync': typeof AuthenticatedSettingsSyncRoute
+  '/settings/webhook-guide': typeof AuthenticatedSettingsWebhookGuideRoute
   '/tools/id-lookup': typeof AuthenticatedToolsIdLookupRoute
   '/import/': typeof AuthenticatedImportIndexRoute
   '/inventory/': typeof AuthenticatedInventoryIndexRoute
@@ -119,6 +127,7 @@ export interface FileRoutesByTo {
   '/import/history': typeof AuthenticatedImportHistoryRoute
   '/settings/crm': typeof AuthenticatedSettingsCrmRoute
   '/settings/sync': typeof AuthenticatedSettingsSyncRoute
+  '/settings/webhook-guide': typeof AuthenticatedSettingsWebhookGuideRoute
   '/tools/id-lookup': typeof AuthenticatedToolsIdLookupRoute
   '/import': typeof AuthenticatedImportIndexRoute
   '/inventory': typeof AuthenticatedInventoryIndexRoute
@@ -135,6 +144,7 @@ export interface FileRoutesById {
   '/_authenticated/import/history': typeof AuthenticatedImportHistoryRoute
   '/_authenticated/settings/crm': typeof AuthenticatedSettingsCrmRoute
   '/_authenticated/settings/sync': typeof AuthenticatedSettingsSyncRoute
+  '/_authenticated/settings/webhook-guide': typeof AuthenticatedSettingsWebhookGuideRoute
   '/_authenticated/tools/id-lookup': typeof AuthenticatedToolsIdLookupRoute
   '/_authenticated/import/': typeof AuthenticatedImportIndexRoute
   '/_authenticated/inventory/': typeof AuthenticatedInventoryIndexRoute
@@ -151,6 +161,7 @@ export interface FileRouteTypes {
     | '/import/history'
     | '/settings/crm'
     | '/settings/sync'
+    | '/settings/webhook-guide'
     | '/tools/id-lookup'
     | '/import/'
     | '/inventory/'
@@ -165,6 +176,7 @@ export interface FileRouteTypes {
     | '/import/history'
     | '/settings/crm'
     | '/settings/sync'
+    | '/settings/webhook-guide'
     | '/tools/id-lookup'
     | '/import'
     | '/inventory'
@@ -180,6 +192,7 @@ export interface FileRouteTypes {
     | '/_authenticated/import/history'
     | '/_authenticated/settings/crm'
     | '/_authenticated/settings/sync'
+    | '/_authenticated/settings/webhook-guide'
     | '/_authenticated/tools/id-lookup'
     | '/_authenticated/import/'
     | '/_authenticated/inventory/'
@@ -246,6 +259,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedToolsIdLookupRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/settings/webhook-guide': {
+      id: '/_authenticated/settings/webhook-guide'
+      path: '/settings/webhook-guide'
+      fullPath: '/settings/webhook-guide'
+      preLoaderRoute: typeof AuthenticatedSettingsWebhookGuideRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/settings/sync': {
       id: '/_authenticated/settings/sync'
       path: '/settings/sync'
@@ -297,6 +317,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedImportHistoryRoute: typeof AuthenticatedImportHistoryRoute
   AuthenticatedSettingsCrmRoute: typeof AuthenticatedSettingsCrmRoute
   AuthenticatedSettingsSyncRoute: typeof AuthenticatedSettingsSyncRoute
+  AuthenticatedSettingsWebhookGuideRoute: typeof AuthenticatedSettingsWebhookGuideRoute
   AuthenticatedToolsIdLookupRoute: typeof AuthenticatedToolsIdLookupRoute
   AuthenticatedImportIndexRoute: typeof AuthenticatedImportIndexRoute
   AuthenticatedInventoryIndexRoute: typeof AuthenticatedInventoryIndexRoute
@@ -308,6 +329,8 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedImportHistoryRoute: AuthenticatedImportHistoryRoute,
   AuthenticatedSettingsCrmRoute: AuthenticatedSettingsCrmRoute,
   AuthenticatedSettingsSyncRoute: AuthenticatedSettingsSyncRoute,
+  AuthenticatedSettingsWebhookGuideRoute:
+    AuthenticatedSettingsWebhookGuideRoute,
   AuthenticatedToolsIdLookupRoute: AuthenticatedToolsIdLookupRoute,
   AuthenticatedImportIndexRoute: AuthenticatedImportIndexRoute,
   AuthenticatedInventoryIndexRoute: AuthenticatedInventoryIndexRoute,
