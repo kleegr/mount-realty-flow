@@ -43,6 +43,8 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
         const opportunityId = strOrNull(payload.opportunity_id);
         const unitCrmIdHint = strOrNull(payload.unit_crm_id);
         const unitExternalId = strOrNull(payload.unit_external_import_id);
+        const buildingCrmIdHint = strOrNull(payload.building_crm_id);
+        const buildingExternalId = strOrNull(payload.building_external_import_id);
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
