@@ -33,7 +33,7 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
   const cfg = await supabaseAdmin.from("crm_config").select("*").eq("id", 1).maybeSingle();
   if (!cfg.data) return { outcome: "no_config" };
 
-  // Determine which Unit to update
+  // Resolve Unit reference (preferred)
   let unitCrmId = params.unitCrmIdHint ?? null;
   if (!unitCrmId && params.unitExternalId) {
     const map = await supabaseAdmin
@@ -44,7 +44,21 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
       .maybeSingle();
     unitCrmId = map.data?.crm_record_id ?? null;
   }
-  if (!unitCrmId) return { outcome: "no_unit_reference" };
+
+  // Resolve Building reference (fallback: whole-building sale)
+  let buildingCrmId = params.buildingCrmIdHint ?? null;
+  if (!unitCrmId && !buildingCrmId && params.buildingExternalId) {
+    const map = await supabaseAdmin
+      .from("external_id_map")
+      .select("crm_record_id")
+      .eq("scope", "building")
+      .eq("external_import_id", params.buildingExternalId)
+      .maybeSingle();
+    buildingCrmId = map.data?.crm_record_id ?? null;
+  }
+
+  if (!unitCrmId && !buildingCrmId) return { outcome: "no_unit_reference" };
+
 
   // Determine target state — per-pipeline mapping first, then legacy fallback.
   const s = params.stageId;
