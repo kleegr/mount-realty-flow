@@ -87,7 +87,7 @@ export const FIELDS = {
   unit: {
     name: "unit_name",
     number: "unit_number",
-    availability: "availablenot_available",
+    availability: "unit_status",
     stage: "stages",
     rooms: "rooms",
     bedrooms: "bedrooms",
