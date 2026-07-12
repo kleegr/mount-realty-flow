@@ -31,6 +31,9 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
       if (stage === "reserved/locked" || stage === "reserved" || stage === "locked") byAvail.reserved++;
       else if (stage === "under contract") byAvail.under_contract++;
       else if (stage === "closed/sold" || stage === "sold" || stage === "closed") byAvail.sold++;
+      else if (availability.includes("reserved") || availability.includes("locked")) byAvail.reserved++;
+      else if (availability.includes("under") && availability.includes("contract")) byAvail.under_contract++;
+      else if (availability.includes("sold") || availability.includes("closed")) byAvail.sold++;
       else if (availability === "available" || !availability) byAvail.available++;
     }
 
