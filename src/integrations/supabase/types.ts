@@ -116,10 +116,15 @@ export type Database = {
           id: string
           label: string | null
           pipeline_id: string
+          pipeline_name: string | null
           stage_closed_id: string | null
+          stage_closed_name: string | null
           stage_release_id: string | null
+          stage_release_name: string | null
           stage_reserved_id: string | null
+          stage_reserved_name: string | null
           stage_under_contract_id: string | null
+          stage_under_contract_name: string | null
           updated_at: string
         }
         Insert: {
@@ -127,10 +132,15 @@ export type Database = {
           id?: string
           label?: string | null
           pipeline_id: string
+          pipeline_name?: string | null
           stage_closed_id?: string | null
+          stage_closed_name?: string | null
           stage_release_id?: string | null
+          stage_release_name?: string | null
           stage_reserved_id?: string | null
+          stage_reserved_name?: string | null
           stage_under_contract_id?: string | null
+          stage_under_contract_name?: string | null
           updated_at?: string
         }
         Update: {
@@ -138,10 +148,15 @@ export type Database = {
           id?: string
           label?: string | null
           pipeline_id?: string
+          pipeline_name?: string | null
           stage_closed_id?: string | null
+          stage_closed_name?: string | null
           stage_release_id?: string | null
+          stage_release_name?: string | null
           stage_reserved_id?: string | null
+          stage_reserved_name?: string | null
           stage_under_contract_id?: string | null
+          stage_under_contract_name?: string | null
           updated_at?: string
         }
         Relationships: []
