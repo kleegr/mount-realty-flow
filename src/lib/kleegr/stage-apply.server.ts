@@ -187,6 +187,10 @@ interface StageMapping {
   stage_under_contract_id: string | null;
   stage_closed_id: string | null;
   stage_release_id: string | null;
+  stage_reserved_name?: string | null;
+  stage_under_contract_name?: string | null;
+  stage_closed_name?: string | null;
+  stage_release_name?: string | null;
 }
 
 interface StageTarget {
@@ -198,26 +202,47 @@ interface StageTarget {
 async function resolveStageMapping(
   supabaseAdmin: Awaited<ReturnType<typeof importAdmin>>,
   pipelineId: string | null,
+  pipelineName: string | null,
   cfg: StageMapping,
 ): Promise<StageMapping> {
+  const cols = "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name";
   if (pipelineId) {
-    const pl = await supabaseAdmin
-      .from("crm_pipelines")
-      .select("stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id")
-      .eq("pipeline_id", pipelineId)
-      .maybeSingle();
-    if (pl.data) return pl.data;
+    const pl = await supabaseAdmin.from("crm_pipelines").select(cols).eq("pipeline_id", pipelineId).maybeSingle();
+    if (pl.data) return pl.data as StageMapping;
+  }
+  if (pipelineName) {
+    const pl = await supabaseAdmin.from("crm_pipelines").select(cols).eq("pipeline_name", pipelineName).maybeSingle();
+    if (pl.data) return pl.data as StageMapping;
   }
   return cfg;
 }
 
-function classifyStage(stageId: string | null, m: StageMapping): StageTarget | null {
+function classifyStage(stageId: string | null, stageName: string | null, m: StageMapping): StageTarget | null {
+  // Match by ID first (exact), then by name (case-insensitive)
+  const idMatch = matchById(stageId, m);
+  if (idMatch) return idMatch;
+  return matchByName(stageName, m);
+}
+
+function matchById(stageId: string | null, m: StageMapping): StageTarget | null {
   if (!stageId) return null;
   if (stageId === m.stage_reserved_id) return { availability: "Not Available", stage: "Reserved/Locked", inventoryDeducted: "Yes" };
   if (stageId === m.stage_under_contract_id) return { availability: "Not Available", stage: "Under Contract", inventoryDeducted: "Yes" };
   if (stageId === m.stage_closed_id) return { availability: "Not Available", stage: "Closed/Sold", inventoryDeducted: "Yes" };
   if (stageId === m.stage_release_id) return { availability: "Available", stage: "", inventoryDeducted: "No" };
   return null;
+}
+
+function matchByName(stageName: string | null, m: StageMapping): StageTarget | null {
+  if (!stageName) return null;
+  const s = stageName.trim().toLowerCase();
+  const eq = (v?: string | null) => v && v.trim().toLowerCase() === s;
+  if (eq(m.stage_reserved_name)) return { availability: "Not Available", stage: "Reserved/Locked", inventoryDeducted: "Yes" };
+  if (eq(m.stage_under_contract_name)) return { availability: "Not Available", stage: "Under Contract", inventoryDeducted: "Yes" };
+  if (eq(m.stage_closed_name)) return { availability: "Not Available", stage: "Closed/Sold", inventoryDeducted: "Yes" };
+  if (eq(m.stage_release_name)) return { availability: "Available", stage: "", inventoryDeducted: "No" };
+  return null;
+}
 }
 
 function buildingStatusFor(stage: string): string {
