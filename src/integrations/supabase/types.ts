@@ -304,6 +304,33 @@ export type Database = {
         }
         Relationships: []
       }
+      unit_state: {
+        Row: {
+          availability: string | null
+          building_crm_id: string | null
+          project_crm_id: string | null
+          stage: string | null
+          unit_crm_id: string
+          updated_at: string
+        }
+        Insert: {
+          availability?: string | null
+          building_crm_id?: string | null
+          project_crm_id?: string | null
+          stage?: string | null
+          unit_crm_id: string
+          updated_at?: string
+        }
+        Update: {
+          availability?: string | null
+          building_crm_id?: string | null
+          project_crm_id?: string | null
+          stage?: string | null
+          unit_crm_id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           created_at: string

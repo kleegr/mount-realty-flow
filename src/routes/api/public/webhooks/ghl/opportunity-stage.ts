@@ -170,6 +170,37 @@ async function processStageChange(params: {
     },
   });
 
+  // Update local unit_state cache and recompute Building + Project rollups in real time.
+  await supabaseAdmin.from("unit_state").upsert(
+    { unit_crm_id: unitCrmId, availability: availability ?? "", stage: stage ?? "" },
+    { onConflict: "unit_crm_id" },
+  );
+  const { data: cached } = await supabaseAdmin
+    .from("unit_state")
+    .select("building_crm_id, project_crm_id")
+    .eq("unit_crm_id", unitCrmId)
+    .maybeSingle();
+  const buildingId = cached?.building_crm_id ?? null;
+  const projectId = cached?.project_crm_id ?? null;
+
+  if (buildingId || projectId) {
+    const { summarize, writeBuildingRollup, writeProjectRollup } = await import("@/lib/kleegr/rollups.server");
+    if (buildingId) {
+      const { data: siblings } = await supabaseAdmin
+        .from("unit_state").select("availability, stage").eq("building_crm_id", buildingId);
+      try {
+        await writeBuildingRollup(client, buildingId, summarize((siblings ?? []).map((s) => ({ availability: s.availability ?? "", stage: s.stage ?? "" }))));
+      } catch (err) { console.error("Building rollup failed:", err); }
+    }
+    if (projectId) {
+      const { data: siblings } = await supabaseAdmin
+        .from("unit_state").select("availability, stage").eq("project_crm_id", projectId);
+      try {
+        await writeProjectRollup(client, projectId, summarize((siblings ?? []).map((s) => ({ availability: s.availability ?? "", stage: s.stage ?? "" }))));
+      } catch (err) { console.error("Project rollup failed:", err); }
+    }
+  }
+
   // Audit
   await supabaseAdmin.from("audit_events").insert({
     kind: "opportunity_stage_change",
