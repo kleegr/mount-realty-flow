@@ -13,6 +13,7 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedReportIndexRouteImport } from './routes/_authenticated/report/index'
 import { Route as AuthenticatedInventoryIndexRouteImport } from './routes/_authenticated/inventory/index'
 import { Route as AuthenticatedImportIndexRouteImport } from './routes/_authenticated/import/index'
 import { Route as AuthenticatedToolsIdLookupRouteImport } from './routes/_authenticated/tools/id-lookup'
@@ -43,6 +44,12 @@ const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
+const AuthenticatedReportIndexRoute =
+  AuthenticatedReportIndexRouteImport.update({
+    id: '/report/',
+    path: '/report/',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
 const AuthenticatedInventoryIndexRoute =
   AuthenticatedInventoryIndexRouteImport.update({
     id: '/inventory/',
@@ -116,6 +123,7 @@ export interface FileRoutesByFullPath {
   '/tools/id-lookup': typeof AuthenticatedToolsIdLookupRoute
   '/import/': typeof AuthenticatedImportIndexRoute
   '/inventory/': typeof AuthenticatedInventoryIndexRoute
+  '/report/': typeof AuthenticatedReportIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
   '/api/public/webhooks/ghl/unit-associated': typeof ApiPublicWebhooksGhlUnitAssociatedRoute
 }
@@ -131,6 +139,7 @@ export interface FileRoutesByTo {
   '/tools/id-lookup': typeof AuthenticatedToolsIdLookupRoute
   '/import': typeof AuthenticatedImportIndexRoute
   '/inventory': typeof AuthenticatedInventoryIndexRoute
+  '/report': typeof AuthenticatedReportIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
   '/api/public/webhooks/ghl/unit-associated': typeof ApiPublicWebhooksGhlUnitAssociatedRoute
 }
@@ -148,6 +157,7 @@ export interface FileRoutesById {
   '/_authenticated/tools/id-lookup': typeof AuthenticatedToolsIdLookupRoute
   '/_authenticated/import/': typeof AuthenticatedImportIndexRoute
   '/_authenticated/inventory/': typeof AuthenticatedInventoryIndexRoute
+  '/_authenticated/report/': typeof AuthenticatedReportIndexRoute
   '/api/public/webhooks/ghl/opportunity-stage': typeof ApiPublicWebhooksGhlOpportunityStageRoute
   '/api/public/webhooks/ghl/unit-associated': typeof ApiPublicWebhooksGhlUnitAssociatedRoute
 }
@@ -165,6 +175,7 @@ export interface FileRouteTypes {
     | '/tools/id-lookup'
     | '/import/'
     | '/inventory/'
+    | '/report/'
     | '/api/public/webhooks/ghl/opportunity-stage'
     | '/api/public/webhooks/ghl/unit-associated'
   fileRoutesByTo: FileRoutesByTo
@@ -180,6 +191,7 @@ export interface FileRouteTypes {
     | '/tools/id-lookup'
     | '/import'
     | '/inventory'
+    | '/report'
     | '/api/public/webhooks/ghl/opportunity-stage'
     | '/api/public/webhooks/ghl/unit-associated'
   id:
@@ -196,6 +208,7 @@ export interface FileRouteTypes {
     | '/_authenticated/tools/id-lookup'
     | '/_authenticated/import/'
     | '/_authenticated/inventory/'
+    | '/_authenticated/report/'
     | '/api/public/webhooks/ghl/opportunity-stage'
     | '/api/public/webhooks/ghl/unit-associated'
   fileRoutesById: FileRoutesById
@@ -236,6 +249,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof AuthenticatedDashboardRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/report/': {
+      id: '/_authenticated/report/'
+      path: '/report'
+      fullPath: '/report/'
+      preLoaderRoute: typeof AuthenticatedReportIndexRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/inventory/': {
@@ -321,6 +341,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedToolsIdLookupRoute: typeof AuthenticatedToolsIdLookupRoute
   AuthenticatedImportIndexRoute: typeof AuthenticatedImportIndexRoute
   AuthenticatedInventoryIndexRoute: typeof AuthenticatedInventoryIndexRoute
+  AuthenticatedReportIndexRoute: typeof AuthenticatedReportIndexRoute
 }
 
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
@@ -334,6 +355,7 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedToolsIdLookupRoute: AuthenticatedToolsIdLookupRoute,
   AuthenticatedImportIndexRoute: AuthenticatedImportIndexRoute,
   AuthenticatedInventoryIndexRoute: AuthenticatedInventoryIndexRoute,
+  AuthenticatedReportIndexRoute: AuthenticatedReportIndexRoute,
 }
 
 const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
