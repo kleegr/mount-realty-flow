@@ -91,7 +91,7 @@ async function syncScope(jobId: string, scope: SyncScope, counters: SyncCounters
     const res = await client.request<unknown>(
       "POST",
       `/objects/${key}/records/search`,
-      { body: { locationId, page, pageLimit, query: {} } },
+      { body: { locationId, page, pageLimit, query: "" } },
     );
     const records = extractRecords(res.data);
     if (records.length === 0) break;
