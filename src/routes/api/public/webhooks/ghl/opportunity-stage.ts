@@ -81,7 +81,7 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
           .single();
 
         const outcome = await processStageChange({
-          stageId, opportunityId, unitCrmIdHint, unitExternalId,
+          pipelineId, stageId, opportunityId, unitCrmIdHint, unitExternalId,
         });
 
         await supabaseAdmin
