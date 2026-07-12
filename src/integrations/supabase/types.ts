@@ -14,16 +14,381 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      audit_events: {
+        Row: {
+          actor_user_id: string | null
+          correlation_id: string | null
+          created_at: string
+          entity_crm_id: string | null
+          entity_scope: Database["public"]["Enums"]["import_scope"] | null
+          id: string
+          kind: string
+          next: Json | null
+          previous: Json | null
+          reason: string | null
+        }
+        Insert: {
+          actor_user_id?: string | null
+          correlation_id?: string | null
+          created_at?: string
+          entity_crm_id?: string | null
+          entity_scope?: Database["public"]["Enums"]["import_scope"] | null
+          id?: string
+          kind: string
+          next?: Json | null
+          previous?: Json | null
+          reason?: string | null
+        }
+        Update: {
+          actor_user_id?: string | null
+          correlation_id?: string | null
+          created_at?: string
+          entity_crm_id?: string | null
+          entity_scope?: Database["public"]["Enums"]["import_scope"] | null
+          id?: string
+          kind?: string
+          next?: Json | null
+          previous?: Json | null
+          reason?: string | null
+        }
+        Relationships: []
+      }
+      crm_config: {
+        Row: {
+          api_base_url: string
+          building_object_id: string | null
+          building_object_key: string
+          id: number
+          location_id: string | null
+          opportunity_pipeline_id: string | null
+          project_object_id: string | null
+          project_object_key: string
+          stage_closed_id: string | null
+          stage_release_id: string | null
+          stage_reserved_id: string | null
+          stage_under_contract_id: string | null
+          template_xlsx_url: string | null
+          unit_object_id: string | null
+          unit_object_key: string
+          updated_at: string
+        }
+        Insert: {
+          api_base_url?: string
+          building_object_id?: string | null
+          building_object_key?: string
+          id?: number
+          location_id?: string | null
+          opportunity_pipeline_id?: string | null
+          project_object_id?: string | null
+          project_object_key?: string
+          stage_closed_id?: string | null
+          stage_release_id?: string | null
+          stage_reserved_id?: string | null
+          stage_under_contract_id?: string | null
+          template_xlsx_url?: string | null
+          unit_object_id?: string | null
+          unit_object_key?: string
+          updated_at?: string
+        }
+        Update: {
+          api_base_url?: string
+          building_object_id?: string | null
+          building_object_key?: string
+          id?: number
+          location_id?: string | null
+          opportunity_pipeline_id?: string | null
+          project_object_id?: string | null
+          project_object_key?: string
+          stage_closed_id?: string | null
+          stage_release_id?: string | null
+          stage_reserved_id?: string | null
+          stage_under_contract_id?: string | null
+          template_xlsx_url?: string | null
+          unit_object_id?: string | null
+          unit_object_key?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      external_id_map: {
+        Row: {
+          created_at: string
+          crm_record_id: string
+          external_import_id: string
+          first_seen_job_id: string | null
+          id: string
+          scope: Database["public"]["Enums"]["import_scope"]
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          crm_record_id: string
+          external_import_id: string
+          first_seen_job_id?: string | null
+          id?: string
+          scope: Database["public"]["Enums"]["import_scope"]
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          crm_record_id?: string
+          external_import_id?: string
+          first_seen_job_id?: string | null
+          id?: string
+          scope?: Database["public"]["Enums"]["import_scope"]
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      import_items: {
+        Row: {
+          action: Database["public"]["Enums"]["import_action"]
+          correlation_id: string | null
+          created_at: string
+          existing: Json | null
+          external_import_id: string | null
+          id: string
+          import_row_id: string | null
+          job_id: string
+          matched_crm_id: string | null
+          messages: Json | null
+          proposed: Json | null
+          row_number: number | null
+          scope: Database["public"]["Enums"]["import_scope"]
+          source: Json | null
+          status: string | null
+        }
+        Insert: {
+          action: Database["public"]["Enums"]["import_action"]
+          correlation_id?: string | null
+          created_at?: string
+          existing?: Json | null
+          external_import_id?: string | null
+          id?: string
+          import_row_id?: string | null
+          job_id: string
+          matched_crm_id?: string | null
+          messages?: Json | null
+          proposed?: Json | null
+          row_number?: number | null
+          scope: Database["public"]["Enums"]["import_scope"]
+          source?: Json | null
+          status?: string | null
+        }
+        Update: {
+          action?: Database["public"]["Enums"]["import_action"]
+          correlation_id?: string | null
+          created_at?: string
+          existing?: Json | null
+          external_import_id?: string | null
+          id?: string
+          import_row_id?: string | null
+          job_id?: string
+          matched_crm_id?: string | null
+          messages?: Json | null
+          proposed?: Json | null
+          row_number?: number | null
+          scope?: Database["public"]["Enums"]["import_scope"]
+          source?: Json | null
+          status?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "import_items_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "import_jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      import_jobs: {
+        Row: {
+          buildings_created: number
+          buildings_updated: number
+          completed_at: string | null
+          created_at: string
+          error_message: string | null
+          errors_count: number
+          file_hash: string | null
+          filename: string | null
+          id: string
+          mode: string | null
+          projects_created: number
+          projects_updated: number
+          report: Json | null
+          row_count: number
+          skipped: number
+          started_at: string | null
+          status: Database["public"]["Enums"]["import_status"]
+          units_created: number
+          units_updated: number
+          updated_at: string
+          user_id: string | null
+          validation_snapshot: Json | null
+          warnings_count: number
+        }
+        Insert: {
+          buildings_created?: number
+          buildings_updated?: number
+          completed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          errors_count?: number
+          file_hash?: string | null
+          filename?: string | null
+          id?: string
+          mode?: string | null
+          projects_created?: number
+          projects_updated?: number
+          report?: Json | null
+          row_count?: number
+          skipped?: number
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["import_status"]
+          units_created?: number
+          units_updated?: number
+          updated_at?: string
+          user_id?: string | null
+          validation_snapshot?: Json | null
+          warnings_count?: number
+        }
+        Update: {
+          buildings_created?: number
+          buildings_updated?: number
+          completed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          errors_count?: number
+          file_hash?: string | null
+          filename?: string | null
+          id?: string
+          mode?: string | null
+          projects_created?: number
+          projects_updated?: number
+          report?: Json | null
+          row_count?: number
+          skipped?: number
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["import_status"]
+          units_created?: number
+          units_updated?: number
+          updated_at?: string
+          user_id?: string | null
+          validation_snapshot?: Json | null
+          warnings_count?: number
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          created_at: string
+          email: string | null
+          full_name: string | null
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
+      webhook_events: {
+        Row: {
+          id: string
+          opportunity_id: string | null
+          outcome: string | null
+          pipeline_id: string | null
+          processed_at: string | null
+          provider_event_id: string | null
+          raw: Json | null
+          received_at: string
+          stage_id: string | null
+          unit_crm_id: string | null
+        }
+        Insert: {
+          id?: string
+          opportunity_id?: string | null
+          outcome?: string | null
+          pipeline_id?: string | null
+          processed_at?: string | null
+          provider_event_id?: string | null
+          raw?: Json | null
+          received_at?: string
+          stage_id?: string | null
+          unit_crm_id?: string | null
+        }
+        Update: {
+          id?: string
+          opportunity_id?: string | null
+          outcome?: string | null
+          pipeline_id?: string | null
+          processed_at?: string | null
+          provider_event_id?: string | null
+          raw?: Json | null
+          received_at?: string
+          stage_id?: string | null
+          unit_crm_id?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "admin" | "importer" | "viewer"
+      import_action: "create" | "update" | "skip" | "error"
+      import_scope: "project" | "building" | "unit"
+      import_status:
+        | "validating"
+        | "awaiting_confirm"
+        | "running"
+        | "success"
+        | "success_with_warnings"
+        | "partial_failure"
+        | "failed"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +515,19 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["admin", "importer", "viewer"],
+      import_action: ["create", "update", "skip", "error"],
+      import_scope: ["project", "building", "unit"],
+      import_status: [
+        "validating",
+        "awaiting_confirm",
+        "running",
+        "success",
+        "success_with_warnings",
+        "partial_failure",
+        "failed",
+      ],
+    },
   },
 } as const
