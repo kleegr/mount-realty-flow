@@ -59,6 +59,28 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
 
   if (!unitCrmId && !buildingCrmId) return { outcome: "no_unit_reference" };
 
+  // Resolve stage mapping (shared between Unit and Building paths)
+  const stageMapping = await resolveStageMapping(supabaseAdmin, params.pipelineId, cfg.data);
+  const target = classifyStage(params.stageId, stageMapping);
+  if (!target) {
+    return {
+      outcome: "stage_not_mapped",
+      unitCrmId: unitCrmId ?? undefined,
+      buildingCrmId: buildingCrmId ?? undefined,
+      message: `Stage ${params.stageId ?? "unknown"} in pipeline ${params.pipelineId ?? "unknown"} is not mapped in Settings.`,
+    };
+  }
+
+  // Building-level sale: apply directly to Building record, no rollup.
+  if (!unitCrmId && buildingCrmId) {
+    return applyBuildingStage(buildingCrmId, target, params);
+  }
+
+  // Unit path (default) — unitCrmId is guaranteed non-null here.
+  const unitId = unitCrmId!;
+
+
+
 
   // Determine target state — per-pipeline mapping first, then legacy fallback.
   const s = params.stageId;
