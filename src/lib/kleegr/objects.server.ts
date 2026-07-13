@@ -21,11 +21,22 @@ export interface UpsertResult {
 }
 
 function objectKey(client: CrmClient, scope: Scope): string {
-  return scope === "project"
-    ? client.config.project_object_key
-    : scope === "building"
-      ? client.config.building_object_key
-      : client.config.unit_object_key;
+  // GHL accepts {objectKeyOrId} in the path. Prefer the numeric object ID
+  // when configured, because the `custom_objects.<name>` key varies per
+  // location and often does not match what the workspace actually uses.
+  const c = client.config as unknown as Record<string, string | null>;
+  if (scope === "project") return c.project_object_id || c.project_object_key;
+  if (scope === "building") return c.building_object_id || c.building_object_key;
+  return c.unit_object_id || c.unit_object_key;
+}
+
+function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) {
+    if (v === "" || v === null || v === undefined) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 // Look up a saved external → CRM record mapping
