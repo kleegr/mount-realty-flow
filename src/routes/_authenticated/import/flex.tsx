@@ -126,6 +126,17 @@ function FlexImport() {
               {busy ? "Uploading…" : "Upload & Detect"}
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
+            <div className="rounded-md border bg-muted/30 p-3 text-sm">
+              <div className="font-medium mb-1">Need a sample file?</div>
+              <p className="text-muted-foreground text-xs mb-2">
+                Download one of these to see the expected shape. Column names are flexible — you'll map them on the next step.
+              </p>
+              <div className="flex flex-wrap gap-3 text-xs">
+                <a className="underline text-primary" href="/samples/flex-import-sample.csv" download>Projects + Buildings + Units (combined)</a>
+                <a className="underline text-primary" href="/samples/flex-import-projects-only.csv" download>Projects only</a>
+                <a className="underline text-primary" href="/samples/flex-import-units-only.csv" download>Units only (with parent refs)</a>
+              </div>
+            </div>
           </CardContent>
         </Card>
       )}

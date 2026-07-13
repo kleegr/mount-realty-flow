@@ -1,0 +1,5 @@
+Unit Import ID,Unit Name,Unit Number,Building Code,Project Code,Availability,Stage,Bedrooms,Floor,Style,Total SF,Asking / Sale Price,Price Per SF,Move-in Ready,Inventory Deducted?,Locked Date
+UNT-001-A-301,Unit 301,301,MGR-A,MGR,Available,,3,3,L Flat,1310,759000,579.39,No,No,
+UNT-001-A-302,Unit 302,302,MGR-A,MGR,Not Available,Reserved/Locked,3,3,L Flat,1310,759000,579.39,No,Yes,2026-08-01
+UNT-001-B-201,Unit 201,201,MGR-B,MGR,Available,,4,2,Flat,1120,679000,606.25,Yes,No,
+UNT-002-A-401,Loft 401,401,RSL-A,RSL,Not Available,Closed/Sold,1,4,Walk In,900,499000,554.44,Yes,Yes,2026-05-20
