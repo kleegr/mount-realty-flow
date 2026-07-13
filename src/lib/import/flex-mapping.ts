@@ -124,7 +124,7 @@ export const FIELD_CATALOG: Record<FlexScope, FlexField[]> = {
   ],
 };
 
-/** Header → { scope: key } auto-map. Ambiguous headers pick the first scope where they fit. */
+/** Header → { scope: key } auto-map. Parent reference columns may map into multiple scopes. */
 export function autoMapHeaders(
   headers: string[],
   scopes: FlexScope[],
@@ -136,7 +136,6 @@ export function autoMapHeaders(
       const match = FIELD_CATALOG[scope].find((f) => f.aliases.some((a) => N(a) === norm));
       if (match && !Object.values(map[scope]).includes(match.key)) {
         map[scope][header] = match.key;
-        break;
       }
     }
   }

@@ -269,10 +269,16 @@ function extractRow(scope: FlexScope, row: Row, scopeMap: ScopeMap): ExtractOut 
     if (field.role === "parent_ref" && field.parentScope) {
       const existing = parentRefs[field.parentScope] ?? {};
       const val = String(raw).trim();
-      // Heuristic: 24-char id looks like CRM ID; digits/prefixed looks like external
-      if (/^[a-zA-Z0-9]{20,}$/.test(val)) existing.record_id = val;
-      else if (/^[A-Z]{2,}-/.test(val)) existing.external_id = val;
-      else existing.name = val;
+      const normalizedHeader = header.toLowerCase().replace(/[_\-?]+/g, " ");
+      if (/^[a-zA-Z0-9]{20,}$/.test(val) && /\b(record|crm|id)\b/.test(normalizedHeader)) existing.record_id = val;
+      else if (normalizedHeader.includes("import id") || normalizedHeader.includes("external id")) existing.external_id = val;
+      else if (normalizedHeader.includes("code")) existing.code = val;
+      else if (normalizedHeader.includes("name")) existing.name = val;
+      else {
+        existing.external_id ??= val;
+        existing.code ??= val;
+        existing.name ??= val;
+      }
       parentRefs[field.parentScope] = existing;
       continue;
     }
@@ -318,18 +324,30 @@ async function resolveIdentity(
   if (key === "record_id" && ids.record_id) return ids.record_id;
   if (key === "external_id" && ids.external_id) {
     const { data } = await supabaseAdmin.from("external_id_map").select("crm_record_id").eq("scope", scope).eq("external_import_id", ids.external_id).maybeSingle();
-    return data?.crm_record_id ?? null;
+    if (data?.crm_record_id) return data.crm_record_id;
   }
   if (key === "code" && ids.code) {
     const { data } = await supabaseAdmin.from("external_id_map").select("crm_record_id").eq("scope", scope).eq("code", ids.code).limit(1).maybeSingle();
-    return data?.crm_record_id ?? null;
+    if (data?.crm_record_id) return data.crm_record_id;
   }
   if (key === "name" && ids.name) {
     const { data } = await supabaseAdmin.from("external_id_map").select("crm_record_id").eq("scope", scope).ilike("display_name", ids.name).limit(1).maybeSingle();
-    return data?.crm_record_id ?? null;
+    if (data?.crm_record_id) return data.crm_record_id;
   }
-  // Also try record_id even when not primary key
+  // Also try sibling identity fields so reruns after a partial import update existing records.
   if (ids.record_id) return ids.record_id;
+  if (key !== "external_id" && ids.external_id) {
+    const { data } = await supabaseAdmin.from("external_id_map").select("crm_record_id").eq("scope", scope).eq("external_import_id", ids.external_id).maybeSingle();
+    if (data?.crm_record_id) return data.crm_record_id;
+  }
+  if (key !== "code" && ids.code) {
+    const { data } = await supabaseAdmin.from("external_id_map").select("crm_record_id").eq("scope", scope).eq("code", ids.code).limit(1).maybeSingle();
+    if (data?.crm_record_id) return data.crm_record_id;
+  }
+  if (key !== "name" && ids.name) {
+    const { data } = await supabaseAdmin.from("external_id_map").select("crm_record_id").eq("scope", scope).ilike("display_name", ids.name).limit(1).maybeSingle();
+    if (data?.crm_record_id) return data.crm_record_id;
+  }
   return null;
 }
 
