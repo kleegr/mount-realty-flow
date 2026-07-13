@@ -67,6 +67,18 @@ function ImportCenter() {
         </p>
       </div>
 
+      <Card className="border-primary/30 bg-primary/5">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4" />Flexible Import (new)</CardTitle>
+          <CardDescription>
+            Import Projects, Buildings, or Units — independently or together. Map any CSV columns, choose how to handle duplicates and missing parents, and download failed rows after the run.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild size="lg"><Link to="/import/flex">Start a flexible import</Link></Button>
+        </CardContent>
+      </Card>
+
       {!cfg?.tokenConfigured && (
         <Alert variant="destructive">
           <AlertTitle>CRM token is not configured</AlertTitle>
