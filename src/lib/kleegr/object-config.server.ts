@@ -35,10 +35,10 @@ export function objectKeyCandidates(client: CrmClient, scope: CrmObjectScope): s
       ? [c.building_object_key, c.building_object_id]
       : [c.unit_object_key, c.unit_object_id];
   const aliases = scope === "project"
-    ? ["custom_objects.project", "custom_objects.projects"]
+    ? ["custom_objects.projects", "custom_objects.project"]
     : scope === "building"
-      ? ["custom_objects.building", "custom_objects.buildings"]
-      : ["custom_objects.unit", "custom_objects.units"];
+      ? ["custom_objects.buildings", "custom_objects.building"]
+      : ["custom_objects.units", "custom_objects.unit"];
   const candidates = [...configured, ...aliases]
     .map((v) => (v ?? "").trim())
     .filter(Boolean);
