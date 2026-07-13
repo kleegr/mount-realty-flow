@@ -2,12 +2,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
-async function requireAdmin(userId: string) {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", userId).eq("role", "admin").maybeSingle();
-  if (!data) throw new Error("Admin role required");
-}
-
 export const getCrmConfig = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
@@ -41,8 +35,9 @@ export const updateCrmConfig = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => cfgSchema.parse(d))
   .handler(async ({ data, context }) => {
-    await requireAdmin(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: adminRole } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId).eq("role", "admin").maybeSingle();
+    if (!adminRole) throw new Error("Admin role required");
     const cleanString = (value: string | null | undefined): string | null => {
       const trimmed = value?.trim() ?? "";
       return trimmed || null;
@@ -96,8 +91,9 @@ export const upsertPipeline = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => pipelineSchema.parse(d))
   .handler(async ({ data, context }) => {
-    await requireAdmin(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: adminRole } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId).eq("role", "admin").maybeSingle();
+    if (!adminRole) throw new Error("Admin role required");
     const payload = {
       pipeline_id: data.pipeline_id,
       label: data.label ?? null,
@@ -120,8 +116,9 @@ export const deletePipeline = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
-    await requireAdmin(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: adminRole } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId).eq("role", "admin").maybeSingle();
+    if (!adminRole) throw new Error("Admin role required");
     const { error } = await supabaseAdmin.from("crm_pipelines").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
