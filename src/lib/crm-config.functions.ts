@@ -2,12 +2,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
-async function requireAdmin(userId: string) {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", userId).eq("role", "admin").maybeSingle();
-  if (!data) throw new Error("Admin role required");
-}
-
 export const getCrmConfig = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
@@ -41,9 +35,27 @@ export const updateCrmConfig = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => cfgSchema.parse(d))
   .handler(async ({ data, context }) => {
-    await requireAdmin(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const payload = { ...data };
+    const { data: adminRole } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId).eq("role", "admin").maybeSingle();
+    if (!adminRole) throw new Error("Admin role required");
+    const cleanString = (value: string | null | undefined): string | null => {
+      const trimmed = value?.trim() ?? "";
+      return trimmed || null;
+    };
+    const { data: existingConfig } = await supabaseAdmin
+      .from("crm_config")
+      .select("project_object_id, building_object_id, unit_object_id")
+      .eq("id", 1)
+      .maybeSingle();
+    const payload = {
+      ...data,
+      project_object_key: cleanString(data.project_object_key) || "custom_objects.project",
+      building_object_key: cleanString(data.building_object_key) || "custom_objects.building",
+      unit_object_key: cleanString(data.unit_object_key) || "custom_objects.unit",
+      project_object_id: cleanString(data.project_object_id) || existingConfig?.project_object_id || null,
+      building_object_id: cleanString(data.building_object_id) || existingConfig?.building_object_id || null,
+      unit_object_id: cleanString(data.unit_object_id) || existingConfig?.unit_object_id || null,
+    };
     if (payload.template_xlsx_url === "") payload.template_xlsx_url = null;
     const { error } = await supabaseAdmin.from("crm_config").update(payload as never).eq("id", 1);
     if (error) throw new Error(error.message);
@@ -84,8 +96,9 @@ export const upsertPipeline = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => pipelineSchema.parse(d))
   .handler(async ({ data, context }) => {
-    await requireAdmin(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: adminRole } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId).eq("role", "admin").maybeSingle();
+    if (!adminRole) throw new Error("Admin role required");
     const payload = {
       pipeline_id: data.pipeline_id,
       label: data.label ?? null,
@@ -108,8 +121,9 @@ export const deletePipeline = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
-    await requireAdmin(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: adminRole } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId).eq("role", "admin").maybeSingle();
+    if (!adminRole) throw new Error("Admin role required");
     const { error } = await supabaseAdmin.from("crm_pipelines").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
