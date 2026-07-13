@@ -1,4 +1,4 @@
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute, useRouter, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { uploadAndValidate, getCsvTemplate } from "@/lib/import.functions";
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Download, Upload, FileText, Info } from "lucide-react";
+import { Download, Upload, FileText, Info, Sparkles } from "lucide-react";
 import { IMPORT_COLUMNS, ALLOWED } from "@/lib/kleegr/field-map";
 import { toast } from "sonner";
 
