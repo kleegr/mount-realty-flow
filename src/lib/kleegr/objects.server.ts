@@ -81,7 +81,7 @@ export async function upsertRecord(params: {
 
   // Stamp external_import_id only for objects that expose that CRM field.
   const externalField = extIdField(scope);
-  const props = externalField ? { ...properties, [externalField]: externalImportId } : { ...properties };
+  const props = stripEmpty(externalField ? { ...properties, [externalField]: externalImportId } : { ...properties });
 
   // 1) mapping
   let crmId = await lookupMapping(scope, externalImportId);
