@@ -45,13 +45,18 @@ export const flexUpload = createServerFn({ method: "POST" })
     }).select("id").single();
     if (error) throw new Error(error.message);
 
+    const preview: Array<Record<string, string>> = parsed.rows.slice(0, 20).map((r) => {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(r)) out[k] = v == null ? "" : String(v);
+      return out;
+    });
     return {
       jobId: job.id as string,
       headers: parsed.headers,
       rowCount: parsed.rows.length,
-      preview: parsed.rows.slice(0, 20),
-      detectedScopes: detected,
-      suggestedMap,
+      preview,
+      detectedScopes: detected as string[],
+      suggestedMap: suggestedMap as Record<string, Record<string, string>>,
     };
   });
 
