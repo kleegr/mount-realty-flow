@@ -20,6 +20,7 @@ import { Route as AuthenticatedToolsIdLookupRouteImport } from './routes/_authen
 import { Route as AuthenticatedSettingsWebhookGuideRouteImport } from './routes/_authenticated/settings/webhook-guide'
 import { Route as AuthenticatedSettingsSyncRouteImport } from './routes/_authenticated/settings/sync'
 import { Route as AuthenticatedSettingsCrmRouteImport } from './routes/_authenticated/settings/crm'
+import { Route as AuthenticatedSettingsAdminRouteImport } from './routes/_authenticated/settings/admin'
 import { Route as AuthenticatedImportHistoryRouteImport } from './routes/_authenticated/import/history'
 import { Route as AuthenticatedImportJobIdRouteImport } from './routes/_authenticated/import/$jobId'
 import { Route as ApiPublicWebhooksGhlUnitAssociatedRouteImport } from './routes/api/public/webhooks/ghl/unit-associated'
@@ -86,6 +87,12 @@ const AuthenticatedSettingsCrmRoute =
     path: '/settings/crm',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
+const AuthenticatedSettingsAdminRoute =
+  AuthenticatedSettingsAdminRouteImport.update({
+    id: '/settings/admin',
+    path: '/settings/admin',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
 const AuthenticatedImportHistoryRoute =
   AuthenticatedImportHistoryRouteImport.update({
     id: '/import/history',
@@ -117,6 +124,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/import/$jobId': typeof AuthenticatedImportJobIdRoute
   '/import/history': typeof AuthenticatedImportHistoryRoute
+  '/settings/admin': typeof AuthenticatedSettingsAdminRoute
   '/settings/crm': typeof AuthenticatedSettingsCrmRoute
   '/settings/sync': typeof AuthenticatedSettingsSyncRoute
   '/settings/webhook-guide': typeof AuthenticatedSettingsWebhookGuideRoute
@@ -133,6 +141,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/import/$jobId': typeof AuthenticatedImportJobIdRoute
   '/import/history': typeof AuthenticatedImportHistoryRoute
+  '/settings/admin': typeof AuthenticatedSettingsAdminRoute
   '/settings/crm': typeof AuthenticatedSettingsCrmRoute
   '/settings/sync': typeof AuthenticatedSettingsSyncRoute
   '/settings/webhook-guide': typeof AuthenticatedSettingsWebhookGuideRoute
@@ -151,6 +160,7 @@ export interface FileRoutesById {
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/import/$jobId': typeof AuthenticatedImportJobIdRoute
   '/_authenticated/import/history': typeof AuthenticatedImportHistoryRoute
+  '/_authenticated/settings/admin': typeof AuthenticatedSettingsAdminRoute
   '/_authenticated/settings/crm': typeof AuthenticatedSettingsCrmRoute
   '/_authenticated/settings/sync': typeof AuthenticatedSettingsSyncRoute
   '/_authenticated/settings/webhook-guide': typeof AuthenticatedSettingsWebhookGuideRoute
@@ -169,6 +179,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/import/$jobId'
     | '/import/history'
+    | '/settings/admin'
     | '/settings/crm'
     | '/settings/sync'
     | '/settings/webhook-guide'
@@ -185,6 +196,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/import/$jobId'
     | '/import/history'
+    | '/settings/admin'
     | '/settings/crm'
     | '/settings/sync'
     | '/settings/webhook-guide'
@@ -202,6 +214,7 @@ export interface FileRouteTypes {
     | '/_authenticated/dashboard'
     | '/_authenticated/import/$jobId'
     | '/_authenticated/import/history'
+    | '/_authenticated/settings/admin'
     | '/_authenticated/settings/crm'
     | '/_authenticated/settings/sync'
     | '/_authenticated/settings/webhook-guide'
@@ -300,6 +313,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsCrmRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/settings/admin': {
+      id: '/_authenticated/settings/admin'
+      path: '/settings/admin'
+      fullPath: '/settings/admin'
+      preLoaderRoute: typeof AuthenticatedSettingsAdminRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/import/history': {
       id: '/_authenticated/import/history'
       path: '/import/history'
@@ -335,6 +355,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedImportJobIdRoute: typeof AuthenticatedImportJobIdRoute
   AuthenticatedImportHistoryRoute: typeof AuthenticatedImportHistoryRoute
+  AuthenticatedSettingsAdminRoute: typeof AuthenticatedSettingsAdminRoute
   AuthenticatedSettingsCrmRoute: typeof AuthenticatedSettingsCrmRoute
   AuthenticatedSettingsSyncRoute: typeof AuthenticatedSettingsSyncRoute
   AuthenticatedSettingsWebhookGuideRoute: typeof AuthenticatedSettingsWebhookGuideRoute
@@ -348,6 +369,7 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedImportJobIdRoute: AuthenticatedImportJobIdRoute,
   AuthenticatedImportHistoryRoute: AuthenticatedImportHistoryRoute,
+  AuthenticatedSettingsAdminRoute: AuthenticatedSettingsAdminRoute,
   AuthenticatedSettingsCrmRoute: AuthenticatedSettingsCrmRoute,
   AuthenticatedSettingsSyncRoute: AuthenticatedSettingsSyncRoute,
   AuthenticatedSettingsWebhookGuideRoute:

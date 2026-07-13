@@ -10,8 +10,11 @@ import {
   RefreshCw,
   Search,
   BarChart3,
-
+  ShieldCheck,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { getMyRoles } from "@/lib/crm-config.functions";
 import { KleegrLogo } from "./KleegrLogo";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -28,9 +31,17 @@ const NAV = [
   { to: "/settings/crm", label: "Settings", icon: Settings },
 ] as const;
 
+const ADMIN_NAV = [
+  { to: "/settings/admin", label: "Admin Panel", icon: ShieldCheck },
+] as const;
+
 export function AppShell({ children, userEmail }: { children: ReactNode; userEmail?: string | null }) {
   const router = useRouter();
   const currentPath = useRouterState({ select: (s) => s.location.pathname });
+  const rolesFn = useServerFn(getMyRoles);
+  const { data: rolesData } = useQuery({ queryKey: ["my-roles"], queryFn: () => rolesFn(), staleTime: 60_000 });
+  const isAdmin = (rolesData?.roles ?? []).includes("admin");
+  const navItems = isAdmin ? [...NAV, ...ADMIN_NAV] : NAV;
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -46,7 +57,7 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
           </div>
         </div>
         <nav className="flex-1 space-y-1 px-3">
-          {NAV.map((item) => {
+          {navItems.map((item) => {
             const active = currentPath === item.to || (item.to !== "/dashboard" && currentPath.startsWith(item.to));
             const Icon = item.icon;
             return (
