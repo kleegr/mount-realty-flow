@@ -241,11 +241,11 @@ export async function executeFlexImport(params: {
     error_message: report.errors[0]?.message ?? null,
   }).eq("id", jobId);
 
-  // Save failed rows CSV under raw_rows key so we can download later
+  // Save failed rows CSV without overwriting the original source rows.
   if (failedRows.length > 0) {
     const headers = [...new Set(failedRows.flatMap((r) => Object.keys(r)))];
     const csv = toCsv(headers, failedRows);
-    await supabaseAdmin.from("import_jobs").update({ raw_rows: { failedCsv: csv } as never }).eq("id", jobId);
+    await supabaseAdmin.from("import_jobs").update({ report: { ...report, failedCsv: csv } as never }).eq("id", jobId);
   }
 
   return report;
