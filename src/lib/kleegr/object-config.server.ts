@@ -2,9 +2,13 @@ import { CrmError, type CrmClient } from "./client.server";
 
 export type CrmObjectScope = "project" | "building" | "unit";
 
-const OPTION_FIELDS = new Set(["unit_status", "stages", "style", "property_type", "project_status", "building_status", "movein_ready", "inventory_deducted", "recalc_requested"]);
+const OPTION_FIELDS = new Set(["availablenot_available", "unit_status", "stages", "style", "property_type", "project_status", "building_status", "movein_ready", "inventory_deducted", "recalc_requested"]);
 
 const FALLBACK_OPTION_KEYS: Record<string, Record<string, string>> = {
+  availablenot_available: {
+    available: "available",
+    notavailable: "not_available",
+  },
   unit_status: {
     available: "available",
     notavailable: "not_available",
