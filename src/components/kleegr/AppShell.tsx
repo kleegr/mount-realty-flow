@@ -1,4 +1,4 @@
-import { Link, useRouter } from "@tanstack/react-router";
+import { Link, useRouter, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import {
   LayoutDashboard,
@@ -30,7 +30,7 @@ const NAV = [
 
 export function AppShell({ children, userEmail }: { children: ReactNode; userEmail?: string | null }) {
   const router = useRouter();
-  const currentPath = router.state.location.pathname;
+  const currentPath = useRouterState({ select: (s) => s.location.pathname });
 
   async function signOut() {
     await supabase.auth.signOut();
