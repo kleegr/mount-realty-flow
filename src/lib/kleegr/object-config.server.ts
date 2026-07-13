@@ -182,7 +182,7 @@ function isTextType(schemaType: string): boolean {
 }
 
 function isNumberType(schemaType: string): boolean {
-  return /number|numeric|currency|decimal|float|integer/.test(schemaType);
+  return /number|numeric|currency|monetary|monetory|decimal|float|integer/.test(schemaType);
 }
 
 function fallbackOption(prop: string, value: unknown): string | null {
