@@ -21,11 +21,23 @@ export interface UpsertResult {
 }
 
 function objectKey(client: CrmClient, scope: Scope): string {
-  return scope === "project"
-    ? client.config.project_object_key
-    : scope === "building"
-      ? client.config.building_object_key
-      : client.config.unit_object_key;
+  // GHL accepts {objectKeyOrId} in the path. Prefer the numeric object ID
+  // when configured, because the `custom_objects.<name>` key varies per
+  // location and often does not match what the workspace actually uses.
+  const c = client.config as unknown as Record<string, string | null>;
+  const pick = (id?: string | null, key?: string | null) => (id || key || "") as string;
+  if (scope === "project") return pick(c.project_object_id, c.project_object_key);
+  if (scope === "building") return pick(c.building_object_id, c.building_object_key);
+  return pick(c.unit_object_id, c.unit_object_key);
+}
+
+function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) {
+    if (v === "" || v === null || v === undefined) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 // Look up a saved external → CRM record mapping
@@ -69,7 +81,7 @@ export async function upsertRecord(params: {
 
   // Stamp external_import_id only for objects that expose that CRM field.
   const externalField = extIdField(scope);
-  const props = externalField ? { ...properties, [externalField]: externalImportId } : { ...properties };
+  const props = stripEmpty(externalField ? { ...properties, [externalField]: externalImportId } : { ...properties });
 
   // 1) mapping
   let crmId = await lookupMapping(scope, externalImportId);
