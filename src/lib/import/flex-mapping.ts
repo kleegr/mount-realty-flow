@@ -87,7 +87,7 @@ export const FIELD_CATALOG: Record<FlexScope, FlexField[]> = {
   unit: [
     { key: "record_id", label: "CRM Record ID", role: "record_id",
       aliases: ["record id", "crm record id", "crm id", "id"] },
-    { key: "external_id", label: "External / Import ID", role: "external_id", crmField: FIELDS.unit.external_import_id,
+    { key: "external_id", label: "External / Import ID", role: "external_id",
       aliases: ["external id", "external import id", "import id", "unit import id"] },
     { key: "name", label: "Unit Name", role: "name", crmField: FIELDS.unit.name,
       aliases: ["unit name", "name"] },
@@ -124,7 +124,7 @@ export const FIELD_CATALOG: Record<FlexScope, FlexField[]> = {
   ],
 };
 
-/** Header → { scope: key } auto-map. Ambiguous headers pick the first scope where they fit. */
+/** Header → { scope: key } auto-map. Parent reference columns may map into multiple scopes. */
 export function autoMapHeaders(
   headers: string[],
   scopes: FlexScope[],
@@ -134,9 +134,8 @@ export function autoMapHeaders(
     const norm = N(header);
     for (const scope of scopes) {
       const match = FIELD_CATALOG[scope].find((f) => f.aliases.some((a) => N(a) === norm));
-      if (match && !Object.values(map[scope]).includes(match.key)) {
+      if (match && (match.role === "parent_ref" || !Object.values(map[scope]).includes(match.key))) {
         map[scope][header] = match.key;
-        break;
       }
     }
   }

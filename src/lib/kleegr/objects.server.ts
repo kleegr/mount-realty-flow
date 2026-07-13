@@ -67,15 +67,16 @@ export async function upsertRecord(params: {
   const locationId = client.config.location_id;
   if (!locationId) throw new Error("crm_config.location_id is not set");
 
-  // Always stamp the external_import_id property so re-imports find it
-  const props = { ...properties, [extIdField(scope)]: externalImportId };
+  // Stamp external_import_id only for objects that expose that CRM field.
+  const externalField = extIdField(scope);
+  const props = externalField ? { ...properties, [externalField]: externalImportId } : { ...properties };
 
   // 1) mapping
   let crmId = await lookupMapping(scope, externalImportId);
 
   // 2) CRM search by external id
-  if (!crmId) {
-    crmId = await searchRecordId(client, key, locationId, { [extIdField(scope)]: externalImportId });
+  if (!crmId && externalField) {
+    crmId = await searchRecordId(client, key, locationId, { [externalField]: externalImportId });
   }
 
   // 3) fallback search
@@ -144,12 +145,12 @@ export async function readRecord(client: CrmClient, scope: Scope, crmId: string)
   return res.data;
 }
 
-function extIdField(scope: Scope) {
+function extIdField(scope: Scope): string | null {
   return scope === "project"
     ? FIELDS.project.external_import_id
     : scope === "building"
       ? FIELDS.building.external_import_id
-      : FIELDS.unit.external_import_id;
+      : null;
 }
 
 function extractRecordId(data: unknown): string | null {
