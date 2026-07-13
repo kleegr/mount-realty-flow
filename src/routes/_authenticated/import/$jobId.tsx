@@ -73,14 +73,19 @@ function JobPage() {
   const warnings = validation.warnings ?? [];
   const canConfirm = job.status === "awaiting_confirm" && errors.length === 0;
   const isTerminal = ["success", "success_with_warnings", "partial_failure", "failed"].includes(job.status);
-  const report = job.report as null | {
-    projects_created: number; projects_updated: number;
-    buildings_created: number; buildings_updated: number;
-    units_created: number; units_updated: number;
-    associations_ok: number; associations_failed: number;
-    rollup_ok: number; rollup_failed: number;
-    errors: { scope: string; ref: string; message: string }[];
-    warnings: string[];
+  const report = (job.report ?? null) as null | {
+    projects_created?: number; projects_updated?: number;
+    buildings_created?: number; buildings_updated?: number;
+    units_created?: number; units_updated?: number;
+    associations_ok?: number; associations_failed?: number;
+    rollup_ok?: number; rollup_failed?: number;
+    errors?: { scope: string; ref: string; message: string }[];
+    warnings?: string[];
+    per_scope?: {
+      project?: { created?: number; updated?: number; skipped?: number; failed?: number };
+      building?: { created?: number; updated?: number; skipped?: number; failed?: number };
+      unit?: { created?: number; updated?: number; skipped?: number; failed?: number };
+    };
   };
 
   function copyReport() {
@@ -178,24 +183,33 @@ function JobPage() {
         </Alert>
       )}
 
-      {report && (
+      {report && (() => {
+        const reportWarnings = report.warnings ?? [];
+        const reportErrors = report.errors ?? [];
+        const projectsCreated = report.projects_created ?? report.per_scope?.project?.created ?? 0;
+        const projectsUpdated = report.projects_updated ?? report.per_scope?.project?.updated ?? 0;
+        const buildingsCreated = report.buildings_created ?? report.per_scope?.building?.created ?? 0;
+        const buildingsUpdated = report.buildings_updated ?? report.per_scope?.building?.updated ?? 0;
+        const unitsCreated = report.units_created ?? report.per_scope?.unit?.created ?? 0;
+        const unitsUpdated = report.units_updated ?? report.per_scope?.unit?.updated ?? 0;
+        return (
         <Card>
           <CardHeader>
             <CardTitle>Final Import Report</CardTitle>
             <CardDescription>Read-back verified results from the CRM.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
-            <ReportRow label="Projects created / updated" value={`${report.projects_created} / ${report.projects_updated}`} />
-            <ReportRow label="Buildings created / updated" value={`${report.buildings_created} / ${report.buildings_updated}`} />
-            <ReportRow label="Units created / updated" value={`${report.units_created} / ${report.units_updated}`} />
-            <ReportRow label="Associations OK / failed" value={`${report.associations_ok} / ${report.associations_failed}`} />
-            <ReportRow label="Rollups OK / failed" value={`${report.rollup_ok} / ${report.rollup_failed}`} />
-            <ReportRow label="Warnings" value={String(report.warnings.length)} />
-            {report.errors.length > 0 && (
+            <ReportRow label="Projects created / updated" value={`${projectsCreated} / ${projectsUpdated}`} />
+            <ReportRow label="Buildings created / updated" value={`${buildingsCreated} / ${buildingsUpdated}`} />
+            <ReportRow label="Units created / updated" value={`${unitsCreated} / ${unitsUpdated}`} />
+            <ReportRow label="Associations OK / failed" value={`${report.associations_ok ?? 0} / ${report.associations_failed ?? 0}`} />
+            <ReportRow label="Rollups OK / failed" value={`${report.rollup_ok ?? 0} / ${report.rollup_failed ?? 0}`} />
+            <ReportRow label="Warnings" value={String(reportWarnings.length)} />
+            {reportErrors.length > 0 && (
               <div className="col-span-full">
-                <div className="mb-1 text-sm font-semibold text-destructive">Errors ({report.errors.length})</div>
+                <div className="mb-1 text-sm font-semibold text-destructive">Errors ({reportErrors.length})</div>
                 <ul className="space-y-1 text-sm">
-                  {report.errors.map((e, i) => (
+                  {reportErrors.map((e, i) => (
                     <li key={i} className="rounded border border-destructive/30 bg-destructive/5 px-2 py-1">
                       <b>{e.scope}</b> {e.ref}: {e.message}
                     </li>
@@ -205,7 +219,8 @@ function JobPage() {
             )}
           </CardContent>
         </Card>
-      )}
+        );
+      })()}
 
       <Tabs defaultValue="projects">
         <TabsList>

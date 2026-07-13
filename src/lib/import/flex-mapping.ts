@@ -87,7 +87,7 @@ export const FIELD_CATALOG: Record<FlexScope, FlexField[]> = {
   unit: [
     { key: "record_id", label: "CRM Record ID", role: "record_id",
       aliases: ["record id", "crm record id", "crm id", "id"] },
-    { key: "external_id", label: "External / Import ID", role: "external_id", crmField: FIELDS.unit.external_import_id,
+    { key: "external_id", label: "External / Import ID", role: "external_id",
       aliases: ["external id", "external import id", "import id", "unit import id"] },
     { key: "name", label: "Unit Name", role: "name", crmField: FIELDS.unit.name,
       aliases: ["unit name", "name"] },
