@@ -24,6 +24,7 @@ type SchemaField = {
   name?: string;
   fieldKey?: string;
   dataType?: string;
+  type?: string;
   options?: Array<{ key?: string; label?: string }>;
 };
 
@@ -88,8 +89,12 @@ export async function normalizeRecordProperties(
   if (schemaFields.length === 0) return normalizeWithFallbacks(clean);
 
   const optionMap = new Map<string, Map<string, string>>();
+  const schemaTypeMap = new Map<string, string>();
   for (const field of schemaFields) {
     const keys = propertyKeysFor(field);
+    const schemaType = String(field.dataType ?? field.type ?? "").toLowerCase();
+    for (const k of keys) schemaTypeMap.set(k, schemaType);
+
     const options = field.options ?? [];
     if (keys.length === 0 || options.length === 0) continue;
     const valueMap = new Map<string, string>();
@@ -103,9 +108,11 @@ export async function normalizeRecordProperties(
 
   const out: Record<string, unknown> = {};
   for (const [prop, value] of Object.entries(clean)) {
+    if (!schemaTypeMap.has(prop)) continue;
+
     const map = optionMap.get(prop);
     if (!map) {
-      out[prop] = normalizeWithFallback(prop, value);
+      out[prop] = normalizeBySchemaType(prop, value, schemaTypeMap.get(prop) ?? "");
       continue;
     }
 
@@ -158,6 +165,24 @@ function normalizeWithFallback(prop: string, value: unknown): unknown {
   if (!OPTION_FIELDS.has(prop)) return value;
   if (Array.isArray(value)) return value.map((v) => fallbackOption(prop, v) ?? v).filter(Boolean);
   return fallbackOption(prop, value) ?? value;
+}
+
+function normalizeBySchemaType(prop: string, value: unknown, schemaType: string): unknown {
+  if (OPTION_FIELDS.has(prop)) return normalizeWithFallback(prop, value);
+  if (isTextType(schemaType)) return String(value).trim();
+  if (isNumberType(schemaType)) {
+    const n = Number(String(value).replace(/[$,\s]/g, ""));
+    return Number.isFinite(n) ? n : value;
+  }
+  return value;
+}
+
+function isTextType(schemaType: string): boolean {
+  return /text|string|phone|email|url|textarea|single[_\s-]?line|multi[_\s-]?line/.test(schemaType);
+}
+
+function isNumberType(schemaType: string): boolean {
+  return /number|numeric|currency|monetary|monetory|decimal|float|integer/.test(schemaType);
 }
 
 function fallbackOption(prop: string, value: unknown): string | null {
