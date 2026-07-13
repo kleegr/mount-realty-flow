@@ -132,7 +132,6 @@ function FlexImport() {
                 Download one of these to see the expected shape. Column names are flexible — you'll map them on the next step.
               </p>
               <div className="flex flex-wrap gap-3 text-xs">
-                <a className="underline text-primary" href="/samples/flex-import-sample.xlsx" download>Excel sample (.xlsx)</a>
                 <a className="underline text-primary" href="/samples/flex-import-sample.csv" download>Projects + Buildings + Units (combined)</a>
                 <a className="underline text-primary" href="/samples/flex-import-projects-only.csv" download>Projects only</a>
                 <a className="underline text-primary" href="/samples/flex-import-units-only.csv" download>Units only (with parent refs)</a>
