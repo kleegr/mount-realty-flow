@@ -20,6 +20,8 @@ function JobPage() {
   const qc = useQueryClient();
   const getJobFn = useServerFn(getJob);
   const confirmFn = useServerFn(confirmImport);
+  const undoFn = useServerFn(flexUndo);
+  const failedCsvFn = useServerFn(flexFailedCsv);
 
   const { data, isLoading } = useQuery({
     queryKey: ["import-job", jobId],
@@ -36,6 +38,24 @@ function JobPage() {
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Import failed"),
   });
+
+  const undo = useMutation({
+    mutationFn: () => undoFn({ data: { jobId } }),
+    onSuccess: (res) => {
+      toast.success(`Undo complete — reversed ${res.reversed}, failed ${res.failed}`);
+      qc.invalidateQueries({ queryKey: ["import-job", jobId] });
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Undo failed"),
+  });
+
+  async function downloadFailedRows() {
+    const { csv } = await failedCsvFn({ data: { jobId } });
+    if (!csv) return toast.info("No failed rows for this job");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `failed-rows-${jobId}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
 
   if (isLoading || !data) return <div className="text-muted-foreground">Loading job…</div>;
 
