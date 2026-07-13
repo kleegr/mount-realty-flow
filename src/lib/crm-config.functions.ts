@@ -42,14 +42,19 @@ export const updateCrmConfig = createServerFn({ method: "POST" })
       const trimmed = value?.trim() ?? "";
       return trimmed || null;
     };
+    const { data: existingConfig } = await supabaseAdmin
+      .from("crm_config")
+      .select("project_object_id, building_object_id, unit_object_id")
+      .eq("id", 1)
+      .maybeSingle();
     const payload = {
       ...data,
       project_object_key: cleanString(data.project_object_key) || "custom_objects.project",
       building_object_key: cleanString(data.building_object_key) || "custom_objects.building",
       unit_object_key: cleanString(data.unit_object_key) || "custom_objects.unit",
-      project_object_id: cleanString(data.project_object_id),
-      building_object_id: cleanString(data.building_object_id),
-      unit_object_id: cleanString(data.unit_object_id),
+      project_object_id: cleanString(data.project_object_id) || existingConfig?.project_object_id || null,
+      building_object_id: cleanString(data.building_object_id) || existingConfig?.building_object_id || null,
+      unit_object_id: cleanString(data.unit_object_id) || existingConfig?.unit_object_id || null,
     };
     if (payload.template_xlsx_url === "") payload.template_xlsx_url = null;
     const { error } = await supabaseAdmin.from("crm_config").update(payload as never).eq("id", 1);
