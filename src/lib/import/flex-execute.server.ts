@@ -426,11 +426,4 @@ function makeItem(
   };
 }
 
-// Type placeholder to avoid pulling supabase-js types transitively.
-type SupabaseAdmin = Awaited<ReturnType<typeof import("@/integrations/supabase/client.server").getSupabaseAdmin>> extends never
-  ? never
-  : Awaited<ReturnType<typeof getAdmin>>;
-async function getAdmin() {
-  const m = await import("@/integrations/supabase/client.server");
-  return m.supabaseAdmin;
-}
+type SupabaseAdmin = typeof import("@/integrations/supabase/client.server").supabaseAdmin;
