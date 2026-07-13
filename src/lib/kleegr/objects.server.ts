@@ -11,7 +11,7 @@
  */
 import { createCrmClient, type CrmClient } from "./client.server";
 import { FIELDS } from "./field-map";
-import { normalizeRecordProperties, objectKey, requestObject } from "./object-config.server";
+import { normalizeRecordProperties, requestObject } from "./object-config.server";
 
 export type Scope = "project" | "building" | "unit";
 
