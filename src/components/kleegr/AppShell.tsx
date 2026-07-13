@@ -38,6 +38,10 @@ const ADMIN_NAV = [
 export function AppShell({ children, userEmail }: { children: ReactNode; userEmail?: string | null }) {
   const router = useRouter();
   const currentPath = useRouterState({ select: (s) => s.location.pathname });
+  const rolesFn = useServerFn(getMyRoles);
+  const { data: rolesData } = useQuery({ queryKey: ["my-roles"], queryFn: () => rolesFn(), staleTime: 60_000 });
+  const isAdmin = (rolesData?.roles ?? []).includes("admin");
+  const navItems = isAdmin ? [...NAV, ...ADMIN_NAV] : NAV;
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -53,7 +57,7 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
           </div>
         </div>
         <nav className="flex-1 space-y-1 px-3">
-          {NAV.map((item) => {
+          {navItems.map((item) => {
             const active = currentPath === item.to || (item.to !== "/dashboard" && currentPath.startsWith(item.to));
             const Icon = item.icon;
             return (
