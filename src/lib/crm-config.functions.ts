@@ -43,6 +43,10 @@ export const updateCrmConfig = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     await requireAdmin(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const cleanString = (value: string | null | undefined): string | null => {
+      const trimmed = value?.trim() ?? "";
+      return trimmed || null;
+    };
     const payload = {
       ...data,
       project_object_key: cleanString(data.project_object_key) || "custom_objects.project",
@@ -57,11 +61,6 @@ export const updateCrmConfig = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     return { ok: true };
   });
-
-function cleanString(value: string | null | undefined): string | null {
-  const trimmed = value?.trim() ?? "";
-  return trimmed || null;
-}
 
 export const getMyRoles = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
