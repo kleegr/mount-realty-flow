@@ -6,6 +6,7 @@
  */
 import { createCrmClient, type CrmClient } from "@/lib/kleegr/client.server";
 import { FIELDS } from "@/lib/kleegr/field-map";
+import { objectKey } from "@/lib/kleegr/object-config.server";
 
 export type SyncScope = "project" | "building" | "unit";
 
@@ -16,14 +17,6 @@ interface SyncCounters {
   updated: number;
   errors: number;
   errorSummary: string[];
-}
-
-function objectKey(client: CrmClient, scope: SyncScope): string {
-  return scope === "project"
-    ? client.config.project_object_key
-    : scope === "building"
-      ? client.config.building_object_key
-      : client.config.unit_object_key;
 }
 
 function extractRecords(data: unknown): Array<Record<string, unknown>> {

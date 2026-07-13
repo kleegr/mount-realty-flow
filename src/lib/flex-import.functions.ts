@@ -123,17 +123,17 @@ export const flexUndo = createServerFn({ method: "POST" })
       .order("id", { ascending: false });
 
     const client = await createCrmClient();
+    const { objectKey, normalizeRecordProperties } = await import("./kleegr/object-config.server");
     let reversed = 0; let failed = 0; const errors: string[] = [];
     for (const it of items ?? []) {
       const op = it.undo_op as { kind: string; scope: string; crmId: string; properties?: Record<string, unknown> } | null;
       if (!op) continue;
       try {
-        const objectKey = op.scope === "project" ? client.config.project_object_key
-          : op.scope === "building" ? client.config.building_object_key : client.config.unit_object_key;
+        const key = objectKey(client, op.scope === "project" ? "project" : op.scope === "building" ? "building" : "unit");
         if (op.kind === "delete") {
-          await client.request("DELETE", `/objects/${objectKey}/records/${op.crmId}`);
+          await client.request("DELETE", `/objects/${key}/records/${op.crmId}`);
         } else if (op.kind === "patch" && op.properties) {
-          await client.request("PUT", `/objects/${objectKey}/records/${op.crmId}`, { body: { properties: op.properties } });
+          await client.request("PUT", `/objects/${key}/records/${op.crmId}`, { body: { properties: await normalizeRecordProperties(client, op.scope === "project" ? "project" : op.scope === "building" ? "building" : "unit", op.properties) } });
         }
         reversed++;
       } catch (err) {
