@@ -1,112 +1,75 @@
-## Goal
+# Flexible CSV Import System
 
-Three additions, none of which should break the existing Unit-based flow:
+Replace the rigid 30-column "Unit-row" template with a flexible importer that accepts Projects, Buildings, Units — separately or together — with optional relationships and user-chosen behavior for missing parents and duplicates. The existing template flow becomes one preset inside the new system.
 
-1. **Building-level opportunities** — support cases where the "thing being sold" is a whole Building (villa/house), not a Unit inside it.
-2. **Sync from CRM** — one-click import of all existing Projects, Buildings, and Units already in GHL, so the dashboard reflects reality even for records not created through the Import Center.
-3. **CRM ID lookup helpers** — searchable pickers so users don't have to hunt IDs manually in GHL URLs.
-
----
-
-## Part 1: Building-level opportunities (safe, opt-in)
-
-**How it stays safe:** the webhook keeps working exactly as today for Units. We add an optional second path — if the payload contains `building_crm_id` (and no `unit_crm_id`), the backend applies the stage change to the Building's rollup fields instead.
-
-**Backend changes:**
-- Extend `stage-apply.server.ts`:
-  - Accept new field `buildingCrmIdHint` on `StageChangeInput`.
-  - If a Unit reference exists → current logic (unchanged).
-  - Else if a Building reference exists → apply availability/stage to Building record directly and skip the "sum of Units" rollup for that building (since it IS the sellable item).
-  - Else → same grace window (`pending_no_unit` — renamed to `pending_no_target` internally, still displayed as "pending").
-- Extend `opportunity-stage.ts` webhook payload schema to accept `building_crm_id` and `building_external_import_id`.
-- Extend Pending Events UI: the Apply input becomes a small dropdown (Unit / Building) + the ID field.
-
-**GHL setup for building-only sales:** salesperson associates the **Building** record to the Opportunity instead of a Unit. Same manual flow, no new triggers needed.
-
----
-
-## Part 2: Sync from CRM
-
-**New page:** `/settings/sync` (admin only)
-
-**What it does:** paginated fetch of every record from all three CRM custom objects using the existing `client.server.ts`, then upserts into `external_id_map` and `unit_state`. Safe to re-run: it matches on CRM record ID, updates existing mappings, never creates duplicates in CRM.
-
-**UI:**
-- One button per scope ("Sync Projects", "Sync Buildings", "Sync Units") + "Sync All"
-- Live progress: "Syncing Units… 340 / 1,200"
-- Result summary: created / updated / skipped / errors
-- Runs as a server function; UI polls a `sync_jobs` table for progress
-
-**New table:** `sync_jobs` (id, scope, status, total, processed, errors, started_at, finished_at)
-
-**After sync:** dashboard counts, `/inventory` list, and CRM ID pickers (Part 3) all populate automatically.
-
----
-
-## Part 3: CRM ID lookup helpers
-
-Once Part 2 has run, we have every record's CRM ID in the local database. This unlocks:
-
-**In the Pending Events card:** replace the raw text input with a **searchable combobox** — type "Villa 12" or "Tower A / Unit 305" → it lists matches → click one → auto-fills the CRM ID. No more copying from GHL URLs.
-
-**Standalone tool: `/tools/id-lookup`** (admin only)
-- Search bar across Projects / Buildings / Units
-- Filter by scope
-- Each result row shows: name, code, CRM ID (copy-to-clipboard button), parent hierarchy
-- Useful for GHL admins configuring workflows
-
-**Backend:** new server fn `searchCrmRecords({ scope?, query, limit })` returning `{ crmId, name, code, scope, parentName }[]`.
-
----
-
-## Database changes
+## User flow
 
 ```text
-sync_jobs (new)
-  id uuid PK
-  scope text          -- 'project' | 'building' | 'unit' | 'all'
-  status text         -- 'running' | 'success' | 'partial' | 'failed'
-  total int, processed int, created int, updated int, errors int
-  started_at, finished_at, error_summary text
-  started_by uuid → auth.users
-
-external_id_map (existing) — add:
-  display_name text   -- cached from CRM for the ID picker
-  code text           -- project/building code, or unit number
-  parent_crm_id text  -- for hierarchy display
+1. Upload CSV / XLSX (drag-and-drop)
+2. Detect entity type(s) from headers → user confirms
+3. Map CSV columns → system fields (auto-mapped where obvious)
+4. Choose behavior:
+     • On duplicate:            Skip | Update | Create duplicate
+     • Duplicate key:            Name | Code | External ID | Record ID
+     • Missing parent Project:   Auto-create | Leave unassigned | Fail row
+     • Missing parent Building:  Auto-create | Leave unassigned | Fail row
+5. Preview: total / valid / invalid / duplicates / auto-creates + first 20 rows
+6. Confirm → row-by-row import (failures don't stop the run)
+7. Report: imported / updated / skipped / failed / auto-created,
+   with a "Download failed rows" CSV
 ```
 
----
+## Entity detection & mapping
 
-## Files touched / added
+- Header sniffer scores each row's headers against three field dictionaries (Project / Building / Unit) and picks any that pass a threshold. A single file may contain one, two, or all three entity types (columns that only make sense for one entity gate it in or out).
+- Auto-map step matches header text to system fields (case/whitespace tolerant, common aliases: "Unit #" → Unit Number, "Sale Price" → Asking / Sale Price). User can override every mapping in a table.
+- Field dictionaries mirror what already exists in `src/lib/kleegr/field-map.ts` — Project / Building / Unit — plus new "external key" fields: CRM Record ID, External ID, Name, Code.
 
-- `src/lib/kleegr/stage-apply.server.ts` — add Building branch
-- `src/routes/api/public/webhooks/ghl/opportunity-stage.ts` — accept building fields
-- `src/lib/sync.functions.ts` (new) — start/list/status server fns
-- `src/lib/sync/run.server.ts` (new) — the actual sync worker
-- `src/lib/crm-search.functions.ts` (new) — searchable ID lookup
-- `src/routes/_authenticated/settings/sync.tsx` (new)
-- `src/routes/_authenticated/tools/id-lookup.tsx` (new)
-- `src/components/kleegr/PendingEventsCard.tsx` — combobox + scope switch
-- `src/components/kleegr/AppShell.tsx` — nav entries for new pages
-- Migration: `sync_jobs` table + extend `external_id_map`
+## Relationship resolution (per row, per scope)
 
----
+For each Unit row, in order:
+1. If Building Record ID or Building External ID or Building Code present → resolve via `external_id_map` and CRM lookup.
+2. Else if Building Name present → resolve within the row's Project (if any), then globally.
+3. Else → follow user's "missing parent Building" choice.
 
-## Rollout order
+Same three-step ladder for Project on Building rows. "Auto-create" writes a stub CRM record with just the name/code and records it in `external_id_map` so later rows in the same file reuse it.
 
-1. **Migration** (sync_jobs + external_id_map columns)
-2. **Part 2 backend + UI** (sync runs, populates local mirror)
-3. **Part 3 backend + pickers** (uses data from step 2)
-4. **Part 1 backend + PendingEventsCard update** (uses pickers from step 3)
+## Duplicate detection
 
-This ordering means each part is testable on its own. Building support ships last so it's built on top of the polished picker UX rather than being another raw-text-input field.
+- Chosen key (Name / Code / External ID / Record ID) resolves against `external_id_map` first, then a live CRM search when no map hit exists.
+- Behavior per user choice: `skip` (no write, counts as skipped), `update` (PATCH with only mapped fields), `create_duplicate` (POST new record; warned in preview).
 
----
+## Preview & confirm
 
-## Explicit non-goals (to keep scope sane)
+Preview screen extends the existing `import_items` table with:
+- `resolution`: `create` | `update` | `skip` | `create_duplicate` | `auto_create_parent` | `error`
+- `parent_resolution`: how the row's parents were matched (`existing` | `same_file` | `auto_created` | `unassigned`)
+- Row-level errors and warnings inline; header-level counts at the top.
 
-- No changes to how imports work (Excel Import Center stays as-is).
-- No auto-scheduled sync (runs on-demand only; can add cron later if needed).
-- No changes to GHL — everything is one-way (GHL → app).
-- No new webhook types.
+Confirm runs rows sequentially with per-row try/catch. Failures write to `import_items.messages` and are counted; the run continues. A "Download failed rows" button on the report screen exports the original row + error column.
+
+## Import history & undo
+
+- History list already exists (`import_jobs`); extend with the new fields: `duplicate_strategy`, `missing_parent_project`, `missing_parent_building`, `auto_created_projects`, `auto_created_buildings`.
+- Undo: each write appended to `import_items` gets an `undo_op` (`delete <crm_id>` for creates, `patch <crm_id> <prev_snapshot>` for updates). Job detail gets an "Undo this import" button that walks items in reverse. Only the most recent successful job per scope is undoable to keep semantics safe.
+
+## Backwards compatibility
+
+- The current 30-column template remains as a one-click preset ("Kleegr full-hierarchy template") that pre-fills the mapping and choices exactly as today.
+- The existing rollup recompute stays unit-driven and is unchanged.
+
+## Technical details
+
+- `src/lib/import/detect.server.ts` (new) — header sniffer returning `{ scopes: Array<"project"|"building"|"unit">, suggestedMap }`.
+- `src/lib/import/mapping.ts` (new, client-safe) — canonical field dictionaries + alias table + `applyMapping(rows, map)`.
+- `src/lib/import/validate.server.ts` — rewritten around the new mapping instead of the fixed 30 columns; produces the same `ValidationResult` shape so `import_items` reuse works.
+- `src/lib/import/resolve.server.ts` (new) — parent resolution ladder + duplicate lookup + auto-create.
+- `src/lib/import/execute.server.ts` — dispatches per-row `create` / `update` / `skip` / `create_duplicate` / `auto_create_parent`, writes `undo_op`, and returns the counts the report screen shows.
+- `src/lib/import.functions.ts` — `uploadAndDetect`, `saveMapping`, `previewImport`, `confirmImport`, `undoImport`, `downloadFailedRows`.
+- Migration adds columns to `import_jobs` (`duplicate_strategy`, `missing_parent_project`, `missing_parent_building`, `auto_created_projects`, `auto_created_buildings`) and to `import_items` (`resolution`, `parent_resolution`, `undo_op jsonb`).
+- `src/routes/_authenticated/import/index.tsx` — replaced by a stepper (Upload → Detect → Map → Options → Preview → Confirm). `import/$jobId.tsx` gains Undo + Download failed rows.
+
+## Out of scope for this pass
+
+- Background job runner for huge files (spec calls it out; today runs are inline). Progress bar is shown per row but the request still resolves synchronously; if files exceed ~5k rows we'll follow up with a queue.
+- Editing already-existing records in bulk from CRM exports without a chosen duplicate key — user must pick a key.
