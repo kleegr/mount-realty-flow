@@ -5,13 +5,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
-async function requireImporter(userId: string) {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", userId);
-  const roles = (data ?? []).map((r) => r.role);
-  if (!roles.includes("admin") && !roles.includes("importer")) throw new Error("Forbidden: importer role required.");
-}
-
 // ---------- Upload + detect ----------
 
 export const flexUpload = createServerFn({ method: "POST" })
@@ -21,10 +14,12 @@ export const flexUpload = createServerFn({ method: "POST" })
     fileBase64: z.string().min(1),
   }).parse(d))
   .handler(async ({ data, context }) => {
-    await requireImporter(context.userId);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: roleRows } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId);
+    const roles = (roleRows ?? []).map((r) => r.role);
+    if (!roles.includes("admin") && !roles.includes("importer")) throw new Error("Forbidden: importer role required.");
     const { parseRawFile } = await import("./import/flex-parse.server");
     const { detectScopes, autoMapHeaders } = await import("./import/flex-mapping");
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
     const bytes = Uint8Array.from(atob(data.fileBase64), (c) => c.charCodeAt(0)).buffer;
     const parsed = await parseRawFile({ name: data.filename, bytes });
@@ -78,8 +73,10 @@ export const flexConfirm = createServerFn({ method: "POST" })
     options: optionsSchema,
   }).parse(d))
   .handler(async ({ data, context }) => {
-    await requireImporter(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: roleRows } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId);
+    const roles = (roleRows ?? []).map((r) => r.role);
+    if (!roles.includes("admin") && !roles.includes("importer")) throw new Error("Forbidden: importer role required.");
     const { data: job } = await supabaseAdmin.from("import_jobs").select("id, raw_rows, status").eq("id", data.jobId).maybeSingle();
     if (!job) throw new Error("Job not found");
     if (job.status !== "awaiting_confirm") throw new Error(`Job is ${job.status}, cannot run.`);
@@ -109,8 +106,10 @@ export const flexUndo = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ jobId: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
-    await requireImporter(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: roleRows } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId);
+    const roles = (roleRows ?? []).map((r) => r.role);
+    if (!roles.includes("admin") && !roles.includes("importer")) throw new Error("Forbidden: importer role required.");
     const { createCrmClient } = await import("./kleegr/client.server");
 
     const { data: job } = await supabaseAdmin.from("import_jobs").select("id, undone_at, mode").eq("id", data.jobId).maybeSingle();
@@ -152,8 +151,10 @@ export const flexFailedCsv = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ jobId: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
-    await requireImporter(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: roleRows } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", context.userId);
+    const roles = (roleRows ?? []).map((r) => r.role);
+    if (!roles.includes("admin") && !roles.includes("importer")) throw new Error("Forbidden: importer role required.");
     const { data: job } = await supabaseAdmin.from("import_jobs").select("raw_rows, report").eq("id", data.jobId).maybeSingle();
     const raw = job?.raw_rows as { failedCsv?: string } | null;
     const report = job?.report as { failedCsv?: string } | null;
