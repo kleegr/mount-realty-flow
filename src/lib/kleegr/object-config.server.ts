@@ -170,6 +170,12 @@ function normalizeWithFallback(prop: string, value: unknown): unknown {
 function normalizeBySchemaType(prop: string, value: unknown, schemaType: string): unknown {
   if (OPTION_FIELDS.has(prop)) return normalizeWithFallback(prop, value);
   if (isTextType(schemaType)) return String(value).trim();
+  if (isCurrencyType(schemaType)) {
+    if (value && typeof value === "object" && "value" in (value as Record<string, unknown>)) return value;
+    const n = Number(String(value).replace(/[$,\s]/g, ""));
+    if (!Number.isFinite(n)) return value;
+    return { currency: "USD", value: n };
+  }
   if (isNumberType(schemaType)) {
     const n = Number(String(value).replace(/[$,\s]/g, ""));
     return Number.isFinite(n) ? n : value;
@@ -181,8 +187,12 @@ function isTextType(schemaType: string): boolean {
   return /text|string|phone|email|url|textarea|single[_\s-]?line|multi[_\s-]?line/.test(schemaType);
 }
 
+function isCurrencyType(schemaType: string): boolean {
+  return /currency|monetary|monetory|money/.test(schemaType);
+}
+
 function isNumberType(schemaType: string): boolean {
-  return /number|numeric|currency|monetary|monetory|decimal|float|integer/.test(schemaType);
+  return /number|numeric|decimal|float|integer/.test(schemaType);
 }
 
 function fallbackOption(prop: string, value: unknown): string | null {
