@@ -395,11 +395,20 @@ async function autoCreateParent(client: CrmClient, scope: FlexScope, ref: Ids): 
   return id;
 }
 
+function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) {
+    if (v === "" || v === null || v === undefined) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 async function createRecord(client: CrmClient, scope: FlexScope, properties: Record<string, unknown>, _ids: Ids): Promise<string> {
   const key = objectKey(client, scope);
   const res = await client.request<{ record?: { id?: string }; id?: string }>(
     "POST", `/objects/${key}/records`,
-    { body: { locationId: client.config.location_id, properties } },
+    { body: { locationId: client.config.location_id, properties: stripEmpty(properties) } },
   );
   const id = extractId(res.data);
   if (!id) throw new Error(`Create ${scope}: CRM did not return an id`);
@@ -408,7 +417,7 @@ async function createRecord(client: CrmClient, scope: FlexScope, properties: Rec
 
 async function updateRecord(client: CrmClient, scope: FlexScope, crmId: string, properties: Record<string, unknown>) {
   const key = objectKey(client, scope);
-  await client.request("PUT", `/objects/${key}/records/${crmId}`, { body: { properties } });
+  await client.request("PUT", `/objects/${key}/records/${crmId}`, { body: { properties: stripEmpty(properties) } });
 }
 
 async function tryReadPrevious(client: CrmClient, scope: FlexScope, crmId: string): Promise<Record<string, unknown> | null> {
