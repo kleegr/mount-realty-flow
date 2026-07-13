@@ -1,4 +1,4 @@
-import type { CrmClient } from "./client.server";
+import { CrmError, type CrmClient } from "./client.server";
 
 export type CrmObjectScope = "project" | "building" | "unit";
 
@@ -24,16 +24,54 @@ type SchemaField = {
 };
 
 export function objectKey(client: CrmClient, scope: CrmObjectScope): string {
-  const c = client.config as unknown as Record<string, string | null>;
-  const pick = (key?: string | null, id?: string | null) => (key || id || "").trim();
-  const key = scope === "project"
-    ? pick(c.project_object_key, c.project_object_id)
-    : scope === "building"
-      ? pick(c.building_object_key, c.building_object_id)
-      : pick(c.unit_object_key, c.unit_object_id);
+  return objectKeyCandidates(client, scope)[0];
+}
 
-  if (!key) throw new Error(`CRM ${scope} object key is not configured.`);
-  return key;
+export function objectKeyCandidates(client: CrmClient, scope: CrmObjectScope): string[] {
+  const c = client.config as unknown as Record<string, string | null>;
+  const configured = scope === "project"
+    ? [c.project_object_key, c.project_object_id]
+    : scope === "building"
+      ? [c.building_object_key, c.building_object_id]
+      : [c.unit_object_key, c.unit_object_id];
+  const aliases = scope === "project"
+    ? ["custom_objects.project", "custom_objects.projects"]
+    : scope === "building"
+      ? ["custom_objects.building", "custom_objects.buildings"]
+      : ["custom_objects.unit", "custom_objects.units"];
+  const candidates = [...configured, ...aliases]
+    .map((v) => (v ?? "").trim())
+    .filter(Boolean);
+  const unique = Array.from(new Set(candidates));
+
+  if (unique.length === 0) throw new Error(`CRM ${scope} object key is not configured.`);
+  return unique;
+}
+
+export async function requestObject<T = unknown>(
+  client: CrmClient,
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+  scope: CrmObjectScope,
+  suffix: string,
+  opts?: Parameters<CrmClient["request"]>[2],
+): Promise<{ status: number; data: T; correlationId: string }> {
+  const candidates = objectKeyCandidates(client, scope);
+  const tried: string[] = [];
+  for (const key of candidates) {
+    tried.push(key);
+    try {
+      return await client.request<T>(method, `/objects/${key}${suffix}`, opts);
+    } catch (err) {
+      if (isMissingObject(err) && key !== candidates[candidates.length - 1]) continue;
+      if (isMissingObject(err)) {
+        throw new Error(
+          `CRM ${scope} object not found. Update CRM Settings with the Object Schema Key from CRM Custom Objects (tried: ${tried.join(", ")}).`,
+        );
+      }
+      throw err;
+    }
+  }
+  throw new Error(`CRM ${scope} object not found.`);
 }
 
 export async function normalizeRecordProperties(
@@ -88,6 +126,10 @@ async function fetchSchemaFields(client: CrmClient, scope: CrmObjectScope): Prom
     query: { locationId, fetchProperties: "true" },
   });
   return Array.isArray(res.data?.fields) ? res.data.fields : [];
+}
+
+function isMissingObject(err: unknown): boolean {
+  return err instanceof CrmError && err.status === 404 && /Custom Object .* not found|object .* not found/i.test(err.message);
 }
 
 function propertyKeysFor(field: SchemaField): string[] {

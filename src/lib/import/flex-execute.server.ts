@@ -8,7 +8,7 @@ import type { FlexScope } from "./flex-mapping";
 import { FIELD_CATALOG, coerce } from "./flex-mapping";
 import { createCrmClient } from "../kleegr/client.server";
 import { readRecord } from "../kleegr/objects.server";
-import { normalizeRecordProperties, objectKey } from "../kleegr/object-config.server";
+import { normalizeRecordProperties, objectKey, requestObject } from "../kleegr/object-config.server";
 import { toCsv } from "./flex-parse.server";
 import type { Database } from "@/integrations/supabase/types";
 
@@ -388,8 +388,8 @@ async function autoCreateParent(client: CrmClient, scope: FlexScope, ref: Ids): 
   if (codeField && ref.code) properties[codeField] = ref.code;
   if (extField && ref.external_id) properties[extField] = ref.external_id;
   const normalized = await normalizeRecordProperties(client, scope, properties);
-  const res = await client.request<{ record?: { id?: string }; id?: string }>(
-    "POST", `/objects/${key}/records`,
+  const res = await requestObject<{ record?: { id?: string }; id?: string }>(
+    client, "POST", scope, `/records`,
     { body: { locationId: client.config.location_id, properties: normalized } },
   );
   const id = extractId(res.data);
@@ -409,8 +409,8 @@ function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
 async function createRecord(client: CrmClient, scope: FlexScope, properties: Record<string, unknown>, _ids: Ids): Promise<string> {
   const key = objectKey(client, scope);
   const normalized = await normalizeRecordProperties(client, scope, stripEmpty(properties));
-  const res = await client.request<{ record?: { id?: string }; id?: string }>(
-    "POST", `/objects/${key}/records`,
+  const res = await requestObject<{ record?: { id?: string }; id?: string }>(
+    client, "POST", scope, `/records`,
     { body: { locationId: client.config.location_id, properties: normalized } },
   );
   const id = extractId(res.data);
@@ -422,7 +422,7 @@ async function updateRecord(client: CrmClient, scope: FlexScope, crmId: string, 
   const key = objectKey(client, scope);
   const normalized = await normalizeRecordProperties(client, scope, stripEmpty(properties));
   if (Object.keys(normalized).length === 0) return;
-  await client.request("PUT", `/objects/${key}/records/${crmId}`, { body: { properties: normalized } });
+  await requestObject(client, "PUT", scope, `/records/${crmId}`, { body: { properties: normalized } });
 }
 
 async function tryReadPrevious(client: CrmClient, scope: FlexScope, crmId: string): Promise<Record<string, unknown> | null> {

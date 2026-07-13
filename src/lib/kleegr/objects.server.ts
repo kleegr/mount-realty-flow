@@ -11,7 +11,7 @@
  */
 import { createCrmClient, type CrmClient } from "./client.server";
 import { FIELDS } from "./field-map";
-import { normalizeRecordProperties, objectKey } from "./object-config.server";
+import { normalizeRecordProperties, objectKey, requestObject } from "./object-config.server";
 
 export type Scope = "project" | "building" | "unit";
 
@@ -65,7 +65,6 @@ export async function upsertRecord(params: {
   jobId?: string;
 }): Promise<UpsertResult> {
   const { client, scope, externalImportId, fallbackSearch, properties, jobId } = params;
-  const key = objectKey(client, scope);
   const locationId = client.config.location_id;
   if (!locationId) throw new Error("crm_config.location_id is not set");
 
@@ -78,25 +77,27 @@ export async function upsertRecord(params: {
 
   // 2) CRM search by external id
   if (!crmId && externalField) {
-    crmId = await searchRecordId(client, key, locationId, { [externalField]: externalImportId });
+    crmId = await searchRecordId(client, scope, locationId, { [externalField]: externalImportId });
   }
 
   // 3) fallback search
   if (!crmId && fallbackSearch) {
-    crmId = await searchRecordId(client, key, locationId, fallbackSearch);
+    crmId = await searchRecordId(client, scope, locationId, fallbackSearch);
   }
 
   if (crmId) {
-    const res = await client.request("PUT", `/objects/${key}/records/${crmId}`, {
+    const res = await requestObject(client, "PUT", scope, `/records/${crmId}`, {
       body: { properties: props },
     });
     await saveMapping(scope, externalImportId, crmId, jobId);
     return { crmId, action: "updated", correlationId: res.correlationId };
   }
 
-  const res = await client.request<{ record?: { id?: string }; id?: string }>(
+  const res = await requestObject<{ record?: { id?: string }; id?: string }>(
+    client,
     "POST",
-    `/objects/${key}/records`,
+    scope,
+    `/records`,
     { body: { locationId, properties: props } },
   );
   const created = extractRecordId(res.data);
@@ -107,14 +108,16 @@ export async function upsertRecord(params: {
 
 async function searchRecordId(
   client: CrmClient,
-  key: string,
+  scope: Scope,
   locationId: string,
   match: Record<string, unknown>,
 ): Promise<string | null> {
   try {
-    const res = await client.request<{ records?: Array<{ id?: string }> }>(
+    const res = await requestObject<{ records?: Array<{ id?: string }> }>(
+      client,
       "POST",
-      `/objects/${key}/records/search`,
+      scope,
+      `/records/search`,
       {
         body: {
           locationId,
@@ -142,8 +145,7 @@ async function searchRecordId(
 }
 
 export async function readRecord(client: CrmClient, scope: Scope, crmId: string) {
-  const key = objectKey(client, scope);
-  const res = await client.request(`GET`, `/objects/${key}/records/${crmId}`);
+  const res = await requestObject(client, `GET`, scope, `/records/${crmId}`);
   return res.data;
 }
 

@@ -4,7 +4,7 @@
  */
 import type { CrmClient } from "./client.server";
 import { FIELDS } from "./field-map";
-import { normalizeRecordProperties, objectKey } from "./object-config.server";
+import { normalizeRecordProperties, requestObject } from "./object-config.server";
 
 export interface UnitStateSummary {
   total: number;
@@ -44,7 +44,7 @@ export async function writeBuildingRollup(
     [FIELDS.building.sold_units]: summary.sold,
     [FIELDS.building.recalc_requested]: "No",
   });
-  await client.request("PUT", `/objects/${objectKey(client, "building")}/records/${buildingCrmId}`, {
+  await requestObject(client, "PUT", "building", `/records/${buildingCrmId}`, {
     body: {
       properties,
     },
@@ -64,7 +64,7 @@ export async function writeProjectRollup(
     [FIELDS.project.sold_units]: summary.sold,
     [FIELDS.project.recalc_requested]: "No",
   });
-  await client.request("PUT", `/objects/${objectKey(client, "project")}/records/${projectCrmId}`, {
+  await requestObject(client, "PUT", "project", `/records/${projectCrmId}`, {
     body: {
       properties,
     },
