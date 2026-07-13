@@ -10,8 +10,11 @@ import {
   RefreshCw,
   Search,
   BarChart3,
-
+  ShieldCheck,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { getMyRoles } from "@/lib/crm-config.functions";
 import { KleegrLogo } from "./KleegrLogo";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -26,6 +29,10 @@ const NAV = [
   { to: "/tools/id-lookup", label: "CRM ID Lookup", icon: Search },
   { to: "/settings/sync", label: "Sync from CRM", icon: RefreshCw },
   { to: "/settings/crm", label: "Settings", icon: Settings },
+] as const;
+
+const ADMIN_NAV = [
+  { to: "/settings/admin", label: "Admin Panel", icon: ShieldCheck },
 ] as const;
 
 export function AppShell({ children, userEmail }: { children: ReactNode; userEmail?: string | null }) {
