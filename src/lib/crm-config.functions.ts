@@ -43,12 +43,25 @@ export const updateCrmConfig = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     await requireAdmin(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const payload = { ...data };
+    const payload = {
+      ...data,
+      project_object_key: cleanString(data.project_object_key) || "custom_objects.project",
+      building_object_key: cleanString(data.building_object_key) || "custom_objects.building",
+      unit_object_key: cleanString(data.unit_object_key) || "custom_objects.unit",
+      project_object_id: cleanString(data.project_object_id),
+      building_object_id: cleanString(data.building_object_id),
+      unit_object_id: cleanString(data.unit_object_id),
+    };
     if (payload.template_xlsx_url === "") payload.template_xlsx_url = null;
     const { error } = await supabaseAdmin.from("crm_config").update(payload as never).eq("id", 1);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
+
+function cleanString(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed || null;
+}
 
 export const getMyRoles = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
