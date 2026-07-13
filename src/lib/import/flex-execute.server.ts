@@ -91,6 +91,19 @@ export async function executeFlexImport(params: {
         // Skip rows that have no meaningful data for this scope
         if (!ids.record_id && !ids.external_id && !ids.name && !ids.code && Object.keys(properties).length === 0) continue;
 
+        // Require at least one identity field (name / code / external id / record id) to create or update.
+        // Otherwise CRM will reject with "required property missing" (e.g. building_name).
+        const hasIdentity = Boolean(ids.record_id || ids.external_id || ids.name || ids.code);
+        if (!hasIdentity) {
+          report.skipped++;
+          report.per_scope[scope].skipped++;
+          items.push(makeItem(jobId, scope, ids, "skip", "skip", null, properties, null,
+            [{ level: "warning", message: `Row skipped: no ${scope} name / code / external id provided.` }],
+            null, null, null));
+          continue;
+        }
+
+
         // Resolve parent CRM IDs
         const parentCrm: Record<FlexScope, string | null> = { project: null, building: null, unit: null };
         let parentResolution: string | null = null;
