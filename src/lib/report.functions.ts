@@ -82,7 +82,7 @@ export const getUnitReport = createServerFn({ method: "GET" })
       stateMap.set(s.unit_crm_id, { availability: s.availability, stage: s.stage, updated_at: s.updated_at });
     }
 
-    // latest contact per unit
+    // latest contact per unit (from webhook events, if any)
     const contactMap = new Map<string, { contactName: string | null; opportunityId: string | null }>();
     for (const w of webhooksRes.data ?? []) {
       if (!w.unit_crm_id || contactMap.has(w.unit_crm_id)) continue;
@@ -90,6 +90,20 @@ export const getUnitReport = createServerFn({ method: "GET" })
         contactName: extractContactName(w.raw),
         opportunityId: w.opportunity_id ?? null,
       });
+    }
+
+    // Enrich with live CRM opportunities → contact/lead name per unit.
+    try {
+      const { fetchUnitLeadsMap } = await import("@/lib/kleegr/opportunity-leads.server");
+      const leads = await fetchUnitLeadsMap();
+      for (const [unitId, lead] of leads) {
+        const existing = contactMap.get(unitId);
+        if (!existing?.contactName && lead.contactName) {
+          contactMap.set(unitId, { contactName: lead.contactName, opportunityId: lead.opportunityId });
+        }
+      }
+    } catch (err) {
+      console.warn("[report] lead enrichment failed:", err instanceof Error ? err.message : err);
     }
 
     const rows: UnitReportRow[] = (unitsRes.data ?? []).map((u) => {
