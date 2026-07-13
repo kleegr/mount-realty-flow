@@ -134,7 +134,7 @@ export function autoMapHeaders(
     const norm = N(header);
     for (const scope of scopes) {
       const match = FIELD_CATALOG[scope].find((f) => f.aliases.some((a) => N(a) === norm));
-      if (match && !Object.values(map[scope]).includes(match.key)) {
+      if (match && (match.role === "parent_ref" || !Object.values(map[scope]).includes(match.key))) {
         map[scope][header] = match.key;
       }
     }
