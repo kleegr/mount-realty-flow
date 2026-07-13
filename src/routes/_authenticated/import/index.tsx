@@ -1,4 +1,4 @@
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute, useRouter, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { uploadAndValidate, getCsvTemplate } from "@/lib/import.functions";
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Download, Upload, FileText, Info } from "lucide-react";
+import { Download, Upload, FileText, Info, Sparkles } from "lucide-react";
 import { IMPORT_COLUMNS, ALLOWED } from "@/lib/kleegr/field-map";
 import { toast } from "sonner";
 
@@ -66,6 +66,18 @@ function ImportCenter() {
           Upload an Excel or CSV file to bulk-create Projects, Buildings and Units. Files are validated and previewed before anything is written to the CRM.
         </p>
       </div>
+
+      <Card className="border-primary/30 bg-primary/5">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4" />Flexible Import (new)</CardTitle>
+          <CardDescription>
+            Import Projects, Buildings, or Units — independently or together. Map any CSV columns, choose how to handle duplicates and missing parents, and download failed rows after the run.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild size="lg"><Link to="/import/flex">Start a flexible import</Link></Button>
+        </CardContent>
+      </Card>
 
       {!cfg?.tokenConfigured && (
         <Alert variant="destructive">

@@ -205,6 +205,7 @@ export type Database = {
           action: Database["public"]["Enums"]["import_action"]
           correlation_id: string | null
           created_at: string
+          error_message: string | null
           existing: Json | null
           external_import_id: string | null
           id: string
@@ -212,16 +213,20 @@ export type Database = {
           job_id: string
           matched_crm_id: string | null
           messages: Json | null
+          parent_resolution: string | null
           proposed: Json | null
+          resolution: string | null
           row_number: number | null
           scope: Database["public"]["Enums"]["import_scope"]
           source: Json | null
           status: string | null
+          undo_op: Json | null
         }
         Insert: {
           action: Database["public"]["Enums"]["import_action"]
           correlation_id?: string | null
           created_at?: string
+          error_message?: string | null
           existing?: Json | null
           external_import_id?: string | null
           id?: string
@@ -229,16 +234,20 @@ export type Database = {
           job_id: string
           matched_crm_id?: string | null
           messages?: Json | null
+          parent_resolution?: string | null
           proposed?: Json | null
+          resolution?: string | null
           row_number?: number | null
           scope: Database["public"]["Enums"]["import_scope"]
           source?: Json | null
           status?: string | null
+          undo_op?: Json | null
         }
         Update: {
           action?: Database["public"]["Enums"]["import_action"]
           correlation_id?: string | null
           created_at?: string
+          error_message?: string | null
           existing?: Json | null
           external_import_id?: string | null
           id?: string
@@ -246,11 +255,14 @@ export type Database = {
           job_id?: string
           matched_crm_id?: string | null
           messages?: Json | null
+          parent_resolution?: string | null
           proposed?: Json | null
+          resolution?: string | null
           row_number?: number | null
           scope?: Database["public"]["Enums"]["import_scope"]
           source?: Json | null
           status?: string | null
+          undo_op?: Json | null
         }
         Relationships: [
           {
@@ -264,23 +276,32 @@ export type Database = {
       }
       import_jobs: {
         Row: {
+          auto_created_buildings: number
+          auto_created_projects: number
           buildings_created: number
           buildings_updated: number
+          column_map: Json | null
           completed_at: string | null
           created_at: string
           error_message: string | null
           errors_count: number
+          failed_count: number
           file_hash: string | null
           filename: string | null
+          headers: string[]
           id: string
           mode: string | null
+          options: Json
           projects_created: number
           projects_updated: number
+          raw_rows: Json | null
           report: Json | null
           row_count: number
+          scopes: string[]
           skipped: number
           started_at: string | null
           status: Database["public"]["Enums"]["import_status"]
+          undone_at: string | null
           units_created: number
           units_updated: number
           updated_at: string
@@ -289,23 +310,32 @@ export type Database = {
           warnings_count: number
         }
         Insert: {
+          auto_created_buildings?: number
+          auto_created_projects?: number
           buildings_created?: number
           buildings_updated?: number
+          column_map?: Json | null
           completed_at?: string | null
           created_at?: string
           error_message?: string | null
           errors_count?: number
+          failed_count?: number
           file_hash?: string | null
           filename?: string | null
+          headers?: string[]
           id?: string
           mode?: string | null
+          options?: Json
           projects_created?: number
           projects_updated?: number
+          raw_rows?: Json | null
           report?: Json | null
           row_count?: number
+          scopes?: string[]
           skipped?: number
           started_at?: string | null
           status?: Database["public"]["Enums"]["import_status"]
+          undone_at?: string | null
           units_created?: number
           units_updated?: number
           updated_at?: string
@@ -314,23 +344,32 @@ export type Database = {
           warnings_count?: number
         }
         Update: {
+          auto_created_buildings?: number
+          auto_created_projects?: number
           buildings_created?: number
           buildings_updated?: number
+          column_map?: Json | null
           completed_at?: string | null
           created_at?: string
           error_message?: string | null
           errors_count?: number
+          failed_count?: number
           file_hash?: string | null
           filename?: string | null
+          headers?: string[]
           id?: string
           mode?: string | null
+          options?: Json
           projects_created?: number
           projects_updated?: number
+          raw_rows?: Json | null
           report?: Json | null
           row_count?: number
+          scopes?: string[]
           skipped?: number
           started_at?: string | null
           status?: Database["public"]["Enums"]["import_status"]
+          undone_at?: string | null
           units_created?: number
           units_updated?: number
           updated_at?: string
@@ -511,7 +550,13 @@ export type Database = {
     }
     Enums: {
       app_role: "admin" | "importer" | "viewer" | "pending"
-      import_action: "create" | "update" | "skip" | "error"
+      import_action:
+        | "create"
+        | "update"
+        | "skip"
+        | "error"
+        | "create_duplicate"
+        | "auto_create_parent"
       import_scope: "project" | "building" | "unit"
       import_status:
         | "validating"
@@ -649,7 +694,14 @@ export const Constants = {
   public: {
     Enums: {
       app_role: ["admin", "importer", "viewer", "pending"],
-      import_action: ["create", "update", "skip", "error"],
+      import_action: [
+        "create",
+        "update",
+        "skip",
+        "error",
+        "create_duplicate",
+        "auto_create_parent",
+      ],
       import_scope: ["project", "building", "unit"],
       import_status: [
         "validating",

@@ -2,12 +2,13 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { confirmImport, getJob } from "@/lib/import.functions";
+import { flexUndo, flexFailedCsv } from "@/lib/flex-import.functions";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { AlertCircle, ArrowLeft, CheckCircle2, Copy, Download, PlayCircle } from "lucide-react";
+import { AlertCircle, ArrowLeft, CheckCircle2, Copy, Download, PlayCircle, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/import/$jobId")({
@@ -19,6 +20,8 @@ function JobPage() {
   const qc = useQueryClient();
   const getJobFn = useServerFn(getJob);
   const confirmFn = useServerFn(confirmImport);
+  const undoFn = useServerFn(flexUndo);
+  const failedCsvFn = useServerFn(flexFailedCsv);
 
   const { data, isLoading } = useQuery({
     queryKey: ["import-job", jobId],
@@ -35,6 +38,24 @@ function JobPage() {
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Import failed"),
   });
+
+  const undo = useMutation({
+    mutationFn: () => undoFn({ data: { jobId } }),
+    onSuccess: (res) => {
+      toast.success(`Undo complete — reversed ${res.reversed}, failed ${res.failed}`);
+      qc.invalidateQueries({ queryKey: ["import-job", jobId] });
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Undo failed"),
+  });
+
+  async function downloadFailedRows() {
+    const { csv } = await failedCsvFn({ data: { jobId } });
+    if (!csv) return toast.info("No failed rows for this job");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `failed-rows-${jobId}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
 
   if (isLoading || !data) return <div className="text-muted-foreground">Loading job…</div>;
 
@@ -119,6 +140,17 @@ function JobPage() {
             <>
               <Button variant="outline" onClick={copyReport}><Copy className="mr-2 h-4 w-4" />Copy Report</Button>
               <Button variant="outline" onClick={downloadReport}><Download className="mr-2 h-4 w-4" />Download CSV</Button>
+              {job.mode === "flexible" && (
+                <>
+                  <Button variant="outline" onClick={downloadFailedRows}><Download className="mr-2 h-4 w-4" />Failed Rows CSV</Button>
+                  {!job.undone_at && (
+                    <Button variant="destructive" onClick={() => { if (confirm.isPending) return; if (window.confirm("Undo this import? This deletes newly-created records and reverts updates.")) undo.mutate(); }} disabled={undo.isPending}>
+                      <Undo2 className="mr-2 h-4 w-4" />{undo.isPending ? "Undoing…" : "Undo Import"}
+                    </Button>
+                  )}
+                  {job.undone_at && <Badge variant="outline">Undone {new Date(job.undone_at).toLocaleDateString()}</Badge>}
+                </>
+              )}
             </>
           )}
         </div>
