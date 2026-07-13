@@ -277,16 +277,32 @@ function extractRow(scope: FlexScope, row: Row, scopeMap: ScopeMap): ExtractOut 
       continue;
     }
 
-    const value = coerce(raw, field.type);
+    let value = coerce(raw, field.type);
     if (value === null) continue;
 
+    // Enum normalization: case-insensitive match against allowed list.
+    // If the value doesn't match, drop it (GHL rejects unknown picklist values).
+    if (field.enum && typeof value === "string") {
+      const match = field.enum.find((opt) => opt.toLowerCase() === String(value).toLowerCase().trim());
+      if (!match) {
+        console.warn(`[flex-import] Dropping unknown ${scope}.${field.key} value: "${value}" (allowed: ${field.enum.join(", ")})`);
+        continue;
+      }
+      value = match;
+    }
+
+    // Multi-select fields must be sent to GHL as arrays.
+    const MULTI_SELECT_KEYS = new Set(["property_type"]);
+    const outValue: unknown = MULTI_SELECT_KEYS.has(field.key)
+      ? (Array.isArray(value) ? value : String(value).split(",").map((s) => s.trim()).filter(Boolean))
+      : value;
+
     if (field.role === "record_id") ids.record_id = String(value);
-    else if (field.role === "external_id") { ids.external_id = String(value); if (field.crmField) properties[field.crmField] = value; }
-    else if (field.role === "name") { ids.name = String(value); if (field.crmField) properties[field.crmField] = value; }
-    else if (field.role === "code") { ids.code = String(value); if (field.crmField) properties[field.crmField] = value; }
+    else if (field.role === "external_id") { ids.external_id = String(value); if (field.crmField) properties[field.crmField] = outValue; }
+    else if (field.role === "name") { ids.name = String(value); if (field.crmField) properties[field.crmField] = outValue; }
+    else if (field.role === "code") { ids.code = String(value); if (field.crmField) properties[field.crmField] = outValue; }
     else if (field.crmField) {
-      // Enum validation (soft): keep value as-is; downstream CRM will enforce
-      properties[field.crmField] = value;
+      properties[field.crmField] = outValue;
       if (field.key === "number") ids.number = String(value);
     }
   }
