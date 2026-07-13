@@ -8,7 +8,7 @@ import type { FlexScope } from "./flex-mapping";
 import { FIELD_CATALOG, coerce } from "./flex-mapping";
 import { createCrmClient } from "../kleegr/client.server";
 import { readRecord } from "../kleegr/objects.server";
-import { normalizeRecordProperties, objectKey, requestObject } from "../kleegr/object-config.server";
+import { normalizeRecordProperties, requestObject } from "../kleegr/object-config.server";
 import { toCsv } from "./flex-parse.server";
 import type { Database } from "@/integrations/supabase/types";
 
@@ -379,7 +379,6 @@ async function resolveParent(
 }
 
 async function autoCreateParent(client: CrmClient, scope: FlexScope, ref: Ids): Promise<string> {
-  const key = objectKey(client, scope);
   const nameField = FIELD_CATALOG[scope].find((f) => f.role === "name")?.crmField;
   const codeField = FIELD_CATALOG[scope].find((f) => f.role === "code")?.crmField;
   const extField = FIELD_CATALOG[scope].find((f) => f.role === "external_id")?.crmField;
@@ -407,7 +406,6 @@ function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
 }
 
 async function createRecord(client: CrmClient, scope: FlexScope, properties: Record<string, unknown>, _ids: Ids): Promise<string> {
-  const key = objectKey(client, scope);
   const normalized = await normalizeRecordProperties(client, scope, stripEmpty(properties));
   const res = await requestObject<{ record?: { id?: string }; id?: string }>(
     client, "POST", scope, `/records`,
@@ -419,7 +417,6 @@ async function createRecord(client: CrmClient, scope: FlexScope, properties: Rec
 }
 
 async function updateRecord(client: CrmClient, scope: FlexScope, crmId: string, properties: Record<string, unknown>) {
-  const key = objectKey(client, scope);
   const normalized = await normalizeRecordProperties(client, scope, stripEmpty(properties));
   if (Object.keys(normalized).length === 0) return;
   await requestObject(client, "PUT", scope, `/records/${crmId}`, { body: { properties: normalized } });

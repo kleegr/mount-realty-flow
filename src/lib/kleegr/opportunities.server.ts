@@ -11,6 +11,7 @@
  *   3. Return the first matching Unit CRM ID (preferred) or Building CRM ID.
  */
 import type { CrmClient } from "./client.server";
+import { requestObject } from "./object-config.server";
 
 export interface OpportunityAssociations {
   unitCrmId: string | null;
@@ -23,8 +24,6 @@ export async function fetchOpportunityAssociations(
   opportunityId: string,
 ): Promise<OpportunityAssociations> {
   const locationId = client.config.location_id;
-  const unitObjectKey = client.config.unit_object_key;
-  const buildingObjectKey = client.config.building_object_key;
   if (!locationId) return { unitCrmId: null, buildingCrmId: null };
 
   // Try the associations endpoint first
@@ -52,7 +51,7 @@ export async function fetchOpportunityAssociations(
   // Fallback: probe each related ID against the Unit / Building custom-object endpoints
   if (!unitCrmId && !buildingCrmId) {
     for (const id of relatedIds) {
-      const scope = await probeRecordScope(client, id, unitObjectKey, buildingObjectKey);
+      const scope = await probeRecordScope(client, id);
       if (scope === "unit") { unitCrmId = id; break; }
       if (scope === "building" && !buildingCrmId) buildingCrmId = id;
     }
@@ -115,15 +114,13 @@ function extractRelatedIds(data: unknown, opportunityId: string): string[] {
 async function probeRecordScope(
   client: CrmClient,
   recordId: string,
-  unitObjectKey: string,
-  buildingObjectKey: string,
 ): Promise<"unit" | "building" | null> {
   try {
-    await client.request("GET", `/objects/${unitObjectKey}/records/${recordId}`);
+    await requestObject(client, "GET", "unit", `/records/${recordId}`);
     return "unit";
   } catch { /* not a unit */ }
   try {
-    await client.request("GET", `/objects/${buildingObjectKey}/records/${recordId}`);
+    await requestObject(client, "GET", "building", `/records/${recordId}`);
     return "building";
   } catch { /* not a building */ }
   return null;
