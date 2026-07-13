@@ -435,9 +435,14 @@ async function saveMap(supabaseAdmin: SupabaseAdmin, scope: FlexScope, crmId: st
 }
 
 function objectKey(client: CrmClient, scope: FlexScope): string {
-  return scope === "project" ? client.config.project_object_key
-    : scope === "building" ? client.config.building_object_key
-    : client.config.unit_object_key;
+  // Prefer numeric object ID over the `custom_objects.<name>` key — GHL accepts
+  // {objectKeyOrId} in the path and the pseudo-key often does not match the
+  // actual key configured in the target location.
+  const c = client.config as unknown as Record<string, string | null>;
+  const pick = (id?: string | null, key?: string | null) => (id || key || "") as string;
+  if (scope === "project") return pick(c.project_object_id, c.project_object_key);
+  if (scope === "building") return pick(c.building_object_id, c.building_object_key);
+  return pick(c.unit_object_id, c.unit_object_key);
 }
 
 function extractId(data: unknown): string | null {
