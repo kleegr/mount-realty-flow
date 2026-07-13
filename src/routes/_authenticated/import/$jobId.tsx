@@ -140,6 +140,17 @@ function JobPage() {
             <>
               <Button variant="outline" onClick={copyReport}><Copy className="mr-2 h-4 w-4" />Copy Report</Button>
               <Button variant="outline" onClick={downloadReport}><Download className="mr-2 h-4 w-4" />Download CSV</Button>
+              {job.mode === "flexible" && (
+                <>
+                  <Button variant="outline" onClick={downloadFailedRows}><Download className="mr-2 h-4 w-4" />Failed Rows CSV</Button>
+                  {!job.undone_at && (
+                    <Button variant="destructive" onClick={() => { if (confirm.isPending) return; if (window.confirm("Undo this import? This deletes newly-created records and reverts updates.")) undo.mutate(); }} disabled={undo.isPending}>
+                      <Undo2 className="mr-2 h-4 w-4" />{undo.isPending ? "Undoing…" : "Undo Import"}
+                    </Button>
+                  )}
+                  {job.undone_at && <Badge variant="outline">Undone {new Date(job.undone_at).toLocaleDateString()}</Badge>}
+                </>
+              )}
             </>
           )}
         </div>
