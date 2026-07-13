@@ -11,6 +11,7 @@
  */
 import { createCrmClient, type CrmClient } from "./client.server";
 import { FIELDS } from "./field-map";
+import { normalizeRecordProperties, requestObject } from "./object-config.server";
 
 export type Scope = "project" | "building" | "unit";
 
@@ -18,17 +19,6 @@ export interface UpsertResult {
   crmId: string;
   action: "created" | "updated";
   correlationId: string;
-}
-
-function objectKey(client: CrmClient, scope: Scope): string {
-  // GHL accepts {objectKeyOrId} in the path. Prefer the numeric object ID
-  // when configured, because the `custom_objects.<name>` key varies per
-  // location and often does not match what the workspace actually uses.
-  const c = client.config as unknown as Record<string, string | null>;
-  const pick = (id?: string | null, key?: string | null) => (id || key || "") as string;
-  if (scope === "project") return pick(c.project_object_id, c.project_object_key);
-  if (scope === "building") return pick(c.building_object_id, c.building_object_key);
-  return pick(c.unit_object_id, c.unit_object_key);
 }
 
 function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
@@ -75,38 +65,39 @@ export async function upsertRecord(params: {
   jobId?: string;
 }): Promise<UpsertResult> {
   const { client, scope, externalImportId, fallbackSearch, properties, jobId } = params;
-  const key = objectKey(client, scope);
   const locationId = client.config.location_id;
   if (!locationId) throw new Error("crm_config.location_id is not set");
 
   // Stamp external_import_id only for objects that expose that CRM field.
   const externalField = extIdField(scope);
-  const props = stripEmpty(externalField ? { ...properties, [externalField]: externalImportId } : { ...properties });
+  const props = await normalizeRecordProperties(client, scope, stripEmpty(externalField ? { ...properties, [externalField]: externalImportId } : { ...properties }));
 
   // 1) mapping
   let crmId = await lookupMapping(scope, externalImportId);
 
   // 2) CRM search by external id
   if (!crmId && externalField) {
-    crmId = await searchRecordId(client, key, locationId, { [externalField]: externalImportId });
+    crmId = await searchRecordId(client, scope, locationId, { [externalField]: externalImportId });
   }
 
   // 3) fallback search
   if (!crmId && fallbackSearch) {
-    crmId = await searchRecordId(client, key, locationId, fallbackSearch);
+    crmId = await searchRecordId(client, scope, locationId, fallbackSearch);
   }
 
   if (crmId) {
-    const res = await client.request("PUT", `/objects/${key}/records/${crmId}`, {
+    const res = await requestObject(client, "PUT", scope, `/records/${crmId}`, {
       body: { properties: props },
     });
     await saveMapping(scope, externalImportId, crmId, jobId);
     return { crmId, action: "updated", correlationId: res.correlationId };
   }
 
-  const res = await client.request<{ record?: { id?: string }; id?: string }>(
+  const res = await requestObject<{ record?: { id?: string }; id?: string }>(
+    client,
     "POST",
-    `/objects/${key}/records`,
+    scope,
+    `/records`,
     { body: { locationId, properties: props } },
   );
   const created = extractRecordId(res.data);
@@ -117,14 +108,16 @@ export async function upsertRecord(params: {
 
 async function searchRecordId(
   client: CrmClient,
-  key: string,
+  scope: Scope,
   locationId: string,
   match: Record<string, unknown>,
 ): Promise<string | null> {
   try {
-    const res = await client.request<{ records?: Array<{ id?: string }> }>(
+    const res = await requestObject<{ records?: Array<{ id?: string }> }>(
+      client,
       "POST",
-      `/objects/${key}/records/search`,
+      scope,
+      `/records/search`,
       {
         body: {
           locationId,
@@ -152,8 +145,7 @@ async function searchRecordId(
 }
 
 export async function readRecord(client: CrmClient, scope: Scope, crmId: string) {
-  const key = objectKey(client, scope);
-  const res = await client.request(`GET`, `/objects/${key}/records/${crmId}`);
+  const res = await requestObject(client, `GET`, scope, `/records/${crmId}`);
   return res.data;
 }
 

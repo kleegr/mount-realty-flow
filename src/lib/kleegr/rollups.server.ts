@@ -4,6 +4,7 @@
  */
 import type { CrmClient } from "./client.server";
 import { FIELDS } from "./field-map";
+import { normalizeRecordProperties, requestObject } from "./object-config.server";
 
 export interface UnitStateSummary {
   total: number;
@@ -35,16 +36,17 @@ export async function writeBuildingRollup(
   buildingCrmId: string,
   summary: UnitStateSummary,
 ) {
-  await client.request("PUT", `/objects/${client.config.building_object_key}/records/${buildingCrmId}`, {
+  const properties = await normalizeRecordProperties(client, "building", {
+    [FIELDS.building.total_units]: summary.total,
+    [FIELDS.building.available_units]: summary.available,
+    [FIELDS.building.reserved_locked_units]: summary.reserved,
+    [FIELDS.building.under_contract_units]: summary.underContract,
+    [FIELDS.building.sold_units]: summary.sold,
+    [FIELDS.building.recalc_requested]: "No",
+  });
+  await requestObject(client, "PUT", "building", `/records/${buildingCrmId}`, {
     body: {
-      properties: {
-        [FIELDS.building.total_units]: summary.total,
-        [FIELDS.building.available_units]: summary.available,
-        [FIELDS.building.reserved_locked_units]: summary.reserved,
-        [FIELDS.building.under_contract_units]: summary.underContract,
-        [FIELDS.building.sold_units]: summary.sold,
-        [FIELDS.building.recalc_requested]: "No",
-      },
+      properties,
     },
   });
 }
@@ -54,16 +56,17 @@ export async function writeProjectRollup(
   projectCrmId: string,
   summary: UnitStateSummary,
 ) {
-  await client.request("PUT", `/objects/${client.config.project_object_key}/records/${projectCrmId}`, {
+  const properties = await normalizeRecordProperties(client, "project", {
+    [FIELDS.project.total_units]: summary.total,
+    [FIELDS.project.available_units]: summary.available,
+    [FIELDS.project.reserved_locked_units]: summary.reserved,
+    [FIELDS.project.under_contract_units]: summary.underContract,
+    [FIELDS.project.sold_units]: summary.sold,
+    [FIELDS.project.recalc_requested]: "No",
+  });
+  await requestObject(client, "PUT", "project", `/records/${projectCrmId}`, {
     body: {
-      properties: {
-        [FIELDS.project.total_units]: summary.total,
-        [FIELDS.project.available_units]: summary.available,
-        [FIELDS.project.reserved_locked_units]: summary.reserved,
-        [FIELDS.project.under_contract_units]: summary.underContract,
-        [FIELDS.project.sold_units]: summary.sold,
-        [FIELDS.project.recalc_requested]: "No",
-      },
+      properties,
     },
   });
 }

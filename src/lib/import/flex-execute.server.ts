@@ -8,6 +8,7 @@ import type { FlexScope } from "./flex-mapping";
 import { FIELD_CATALOG, coerce } from "./flex-mapping";
 import { createCrmClient } from "../kleegr/client.server";
 import { readRecord } from "../kleegr/objects.server";
+import { normalizeRecordProperties, requestObject } from "../kleegr/object-config.server";
 import { toCsv } from "./flex-parse.server";
 import type { Database } from "@/integrations/supabase/types";
 
@@ -378,7 +379,6 @@ async function resolveParent(
 }
 
 async function autoCreateParent(client: CrmClient, scope: FlexScope, ref: Ids): Promise<string> {
-  const key = objectKey(client, scope);
   const nameField = FIELD_CATALOG[scope].find((f) => f.role === "name")?.crmField;
   const codeField = FIELD_CATALOG[scope].find((f) => f.role === "code")?.crmField;
   const extField = FIELD_CATALOG[scope].find((f) => f.role === "external_id")?.crmField;
@@ -386,9 +386,10 @@ async function autoCreateParent(client: CrmClient, scope: FlexScope, ref: Ids): 
   if (nameField && ref.name) properties[nameField] = ref.name;
   if (codeField && ref.code) properties[codeField] = ref.code;
   if (extField && ref.external_id) properties[extField] = ref.external_id;
-  const res = await client.request<{ record?: { id?: string }; id?: string }>(
-    "POST", `/objects/${key}/records`,
-    { body: { locationId: client.config.location_id, properties } },
+  const normalized = await normalizeRecordProperties(client, scope, properties);
+  const res = await requestObject<{ record?: { id?: string }; id?: string }>(
+    client, "POST", scope, `/records`,
+    { body: { locationId: client.config.location_id, properties: normalized } },
   );
   const id = extractId(res.data);
   if (!id) throw new Error(`Auto-create ${scope}: no id returned`);
@@ -405,10 +406,10 @@ function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
 }
 
 async function createRecord(client: CrmClient, scope: FlexScope, properties: Record<string, unknown>, _ids: Ids): Promise<string> {
-  const key = objectKey(client, scope);
-  const res = await client.request<{ record?: { id?: string }; id?: string }>(
-    "POST", `/objects/${key}/records`,
-    { body: { locationId: client.config.location_id, properties: stripEmpty(properties) } },
+  const normalized = await normalizeRecordProperties(client, scope, stripEmpty(properties));
+  const res = await requestObject<{ record?: { id?: string }; id?: string }>(
+    client, "POST", scope, `/records`,
+    { body: { locationId: client.config.location_id, properties: normalized } },
   );
   const id = extractId(res.data);
   if (!id) throw new Error(`Create ${scope}: CRM did not return an id`);
@@ -416,8 +417,9 @@ async function createRecord(client: CrmClient, scope: FlexScope, properties: Rec
 }
 
 async function updateRecord(client: CrmClient, scope: FlexScope, crmId: string, properties: Record<string, unknown>) {
-  const key = objectKey(client, scope);
-  await client.request("PUT", `/objects/${key}/records/${crmId}`, { body: { properties: stripEmpty(properties) } });
+  const normalized = await normalizeRecordProperties(client, scope, stripEmpty(properties));
+  if (Object.keys(normalized).length === 0) return;
+  await requestObject(client, "PUT", scope, `/records/${crmId}`, { body: { properties: normalized } });
 }
 
 async function tryReadPrevious(client: CrmClient, scope: FlexScope, crmId: string): Promise<Record<string, unknown> | null> {
@@ -441,17 +443,6 @@ async function saveMap(supabaseAdmin: SupabaseAdmin, scope: FlexScope, crmId: st
     display_name: ids.name ?? null,
     code: ids.code ?? null,
   }, { onConflict: "scope,external_import_id" });
-}
-
-function objectKey(client: CrmClient, scope: FlexScope): string {
-  // Prefer numeric object ID over the `custom_objects.<name>` key — GHL accepts
-  // {objectKeyOrId} in the path and the pseudo-key often does not match the
-  // actual key configured in the target location.
-  const c = client.config as unknown as Record<string, string | null>;
-  const pick = (id?: string | null, key?: string | null) => (id || key || "") as string;
-  if (scope === "project") return pick(c.project_object_id, c.project_object_key);
-  if (scope === "building") return pick(c.building_object_id, c.building_object_key);
-  return pick(c.unit_object_id, c.unit_object_key);
 }
 
 function extractId(data: unknown): string | null {

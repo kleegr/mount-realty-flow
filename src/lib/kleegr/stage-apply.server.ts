@@ -1,3 +1,6 @@
+import { FIELDS } from "./field-map";
+import { normalizeRecordProperties, requestObject } from "./object-config.server";
+
 /**
  * Shared stage-change application logic.
  * Used by both the opportunity-stage webhook and the unit-associated replay webhook.
@@ -112,7 +115,7 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     const cur = await readRecord(await createCrmClient(), "unit", unitId);
     const props = extractProps(cur);
     currentStage = String(props?.["stages"] ?? "");
-    currentAvailability = String(props?.["availablenot_available"] ?? "");
+    currentAvailability = String(props?.[FIELDS.unit.availability] ?? "");
   } catch (err) {
     return { outcome: "read_failed", unitCrmId: unitId, message: err instanceof Error ? err.message : String(err) };
   }
@@ -125,14 +128,15 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
   }
 
   const client = await createCrmClient();
-  await client.request("PUT", `/objects/${client.config.unit_object_key}/records/${unitId}`, {
+  const properties = await normalizeRecordProperties(client, "unit", {
+    [FIELDS.unit.availability]: availability,
+    [FIELDS.unit.stage]: stage,
+    [FIELDS.unit.inventory_deducted]: inventoryDeducted,
+    [FIELDS.unit.locked_date]: stage === "Reserved/Locked" ? new Date().toISOString().slice(0, 10) : "",
+  });
+  await requestObject(client, "PUT", "unit", `/records/${unitId}`, {
     body: {
-      properties: {
-        availablenot_available: availability,
-        stages: stage,
-        inventory_deducted: inventoryDeducted,
-        locked_date: stage === "Reserved/Locked" ? new Date().toISOString().slice(0, 10) : "",
-      },
+      properties,
     },
   });
 
@@ -279,8 +283,8 @@ async function applyBuildingStage(
     return { outcome: "blocked_sold_reversal", buildingCrmId };
   }
 
-  await client.request("PUT", `/objects/${client.config.building_object_key}/records/${buildingCrmId}`, {
-    body: { properties: { building_status: nextStatus } },
+  await requestObject(client, "PUT", "building", `/records/${buildingCrmId}`, {
+    body: { properties: await normalizeRecordProperties(client, "building", { [FIELDS.building.status]: nextStatus }) },
   });
 
   await supabaseAdmin.from("audit_events").insert({

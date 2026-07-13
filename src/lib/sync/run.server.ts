@@ -4,8 +4,9 @@
  * external_id_map so the app knows about pre-existing CRM records
  * (i.e. records not created through the Import Center).
  */
-import { createCrmClient, type CrmClient } from "@/lib/kleegr/client.server";
+import { createCrmClient } from "@/lib/kleegr/client.server";
 import { FIELDS } from "@/lib/kleegr/field-map";
+import { requestObject } from "@/lib/kleegr/object-config.server";
 
 export type SyncScope = "project" | "building" | "unit";
 
@@ -16,14 +17,6 @@ interface SyncCounters {
   updated: number;
   errors: number;
   errorSummary: string[];
-}
-
-function objectKey(client: CrmClient, scope: SyncScope): string {
-  return scope === "project"
-    ? client.config.project_object_key
-    : scope === "building"
-      ? client.config.building_object_key
-      : client.config.unit_object_key;
 }
 
 function extractRecords(data: unknown): Array<Record<string, unknown>> {
@@ -79,7 +72,6 @@ async function updateJob(
 async function syncScope(jobId: string, scope: SyncScope, counters: SyncCounters): Promise<void> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const client = await createCrmClient();
-  const key = objectKey(client, scope);
   const locationId = client.config.location_id;
   if (!locationId) throw new Error("crm_config.location_id is not set");
 
@@ -89,9 +81,11 @@ async function syncScope(jobId: string, scope: SyncScope, counters: SyncCounters
   const maxPages = 500;
 
   while (page <= maxPages) {
-    const res = await client.request<unknown>(
+    const res = await requestObject<unknown>(
+      client,
       "POST",
-      `/objects/${key}/records/search`,
+      scope,
+      `/records/search`,
       { body: { locationId, page, pageLimit, query: "" } },
     );
     const records = extractRecords(res.data);

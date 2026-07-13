@@ -23,6 +23,9 @@ export const getCrmConfig = createServerFn({ method: "GET" })
 const cfgSchema = z.object({
   location_id: z.string().optional().nullable(),
   api_base_url: z.string().url().optional(),
+  project_object_key: z.string().optional().nullable(),
+  building_object_key: z.string().optional().nullable(),
+  unit_object_key: z.string().optional().nullable(),
   project_object_id: z.string().optional().nullable(),
   building_object_id: z.string().optional().nullable(),
   unit_object_id: z.string().optional().nullable(),
