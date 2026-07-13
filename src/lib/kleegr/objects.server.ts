@@ -25,9 +25,10 @@ function objectKey(client: CrmClient, scope: Scope): string {
   // when configured, because the `custom_objects.<name>` key varies per
   // location and often does not match what the workspace actually uses.
   const c = client.config as unknown as Record<string, string | null>;
-  if (scope === "project") return c.project_object_id || c.project_object_key;
-  if (scope === "building") return c.building_object_id || c.building_object_key;
-  return c.unit_object_id || c.unit_object_key;
+  const pick = (id?: string | null, key?: string | null) => (id || key || "") as string;
+  if (scope === "project") return pick(c.project_object_id, c.project_object_key);
+  if (scope === "building") return pick(c.building_object_id, c.building_object_key);
+  return pick(c.unit_object_id, c.unit_object_key);
 }
 
 function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
