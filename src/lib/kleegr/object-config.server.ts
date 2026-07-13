@@ -35,10 +35,10 @@ export function objectKey(client: CrmClient, scope: CrmObjectScope): string {
 export function objectKeyCandidates(client: CrmClient, scope: CrmObjectScope): string[] {
   const c = client.config as unknown as Record<string, string | null>;
   const configured = scope === "project"
-    ? [c.project_object_key, c.project_object_id]
+    ? [c.project_object_id, c.project_object_key]
     : scope === "building"
-      ? [c.building_object_key, c.building_object_id]
-      : [c.unit_object_key, c.unit_object_id];
+      ? [c.building_object_id, c.building_object_key]
+      : [c.unit_object_id, c.unit_object_key];
   const aliases = scope === "project"
     ? ["custom_objects.projects", "custom_objects.project"]
     : scope === "building"
@@ -171,10 +171,18 @@ function normalizeBySchemaType(prop: string, value: unknown, schemaType: string)
   if (OPTION_FIELDS.has(prop)) return normalizeWithFallback(prop, value);
   if (isTextType(schemaType)) return String(value).trim();
   if (isCurrencyType(schemaType)) {
-    if (value && typeof value === "object" && "value" in (value as Record<string, unknown>)) return value;
+    if (value && typeof value === "object" && "value" in (value as Record<string, unknown>)) {
+      const currencyValue = value as Record<string, unknown>;
+      return {
+        ...currencyValue,
+        currency: typeof currencyValue.currency === "string" && currencyValue.currency.trim()
+          ? currencyValue.currency
+          : "default",
+      };
+    }
     const n = Number(String(value).replace(/[$,\s]/g, ""));
     if (!Number.isFinite(n)) return value;
-    return { currency: "USD", value: n };
+    return { currency: "default", value: n };
   }
   if (isNumberType(schemaType)) {
     const n = Number(String(value).replace(/[$,\s]/g, ""));
