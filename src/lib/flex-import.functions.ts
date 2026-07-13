@@ -154,7 +154,8 @@ export const flexFailedCsv = createServerFn({ method: "GET" })
   .handler(async ({ data, context }) => {
     await requireImporter(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: job } = await supabaseAdmin.from("import_jobs").select("raw_rows").eq("id", data.jobId).maybeSingle();
+    const { data: job } = await supabaseAdmin.from("import_jobs").select("raw_rows, report").eq("id", data.jobId).maybeSingle();
     const raw = job?.raw_rows as { failedCsv?: string } | null;
-    return { csv: raw?.failedCsv ?? "" };
+    const report = job?.report as { failedCsv?: string } | null;
+    return { csv: report?.failedCsv ?? raw?.failedCsv ?? "" };
   });
