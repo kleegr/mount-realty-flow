@@ -122,7 +122,7 @@ export async function normalizeRecordProperties(
 async function fetchSchemaFields(client: CrmClient, scope: CrmObjectScope): Promise<SchemaField[]> {
   const locationId = client.config.location_id;
   if (!locationId) return [];
-  const res = await client.request<{ fields?: SchemaField[] }>("GET", `/objects/${objectKey(client, scope)}`, {
+  const res = await requestObject<{ fields?: SchemaField[] }>(client, "GET", scope, "", {
     query: { locationId, fetchProperties: "true" },
   });
   return Array.isArray(res.data?.fields) ? res.data.fields : [];
