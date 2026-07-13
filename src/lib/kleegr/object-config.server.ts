@@ -158,7 +158,8 @@ function normalizeWithFallback(prop: string, value: unknown): unknown {
 
 function fallbackOption(prop: string, value: unknown): string | null {
   const key = normalizeOption(value);
-  return FALLBACK_OPTION_KEYS[prop]?.[key] ?? null;
+  if (!key) return null;
+  return FALLBACK_OPTION_KEYS[prop]?.[key] ?? toOptionKey(value);
 }
 
 function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
@@ -172,4 +173,12 @@ function stripEmpty(props: Record<string, unknown>): Record<string, unknown> {
 
 function normalizeOption(value: unknown): string {
   return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
+}
+
+function toOptionKey(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
 }
