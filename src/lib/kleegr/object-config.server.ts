@@ -2,9 +2,13 @@ import { CrmError, type CrmClient } from "./client.server";
 
 export type CrmObjectScope = "project" | "building" | "unit";
 
-const OPTION_FIELDS = new Set(["unit_status", "stages", "style", "property_type", "project_status", "building_status", "movein_ready", "inventory_deducted", "recalc_requested"]);
+const OPTION_FIELDS = new Set(["availablenot_available", "unit_status", "stages", "style", "property_type", "project_status", "building_status", "movein_ready", "inventory_deducted", "recalc_requested"]);
 
 const FALLBACK_OPTION_KEYS: Record<string, Record<string, string>> = {
+  availablenot_available: {
+    available: "available",
+    notavailable: "not_available",
+  },
   unit_status: {
     available: "available",
     notavailable: "not_available",
@@ -35,10 +39,10 @@ export function objectKeyCandidates(client: CrmClient, scope: CrmObjectScope): s
       ? [c.building_object_key, c.building_object_id]
       : [c.unit_object_key, c.unit_object_id];
   const aliases = scope === "project"
-    ? ["custom_objects.project", "custom_objects.projects"]
+    ? ["custom_objects.projects", "custom_objects.project"]
     : scope === "building"
-      ? ["custom_objects.building", "custom_objects.buildings"]
-      : ["custom_objects.unit", "custom_objects.units"];
+      ? ["custom_objects.buildings", "custom_objects.building"]
+      : ["custom_objects.units", "custom_objects.unit"];
   const candidates = [...configured, ...aliases]
     .map((v) => (v ?? "").trim())
     .filter(Boolean);
