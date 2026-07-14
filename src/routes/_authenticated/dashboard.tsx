@@ -16,7 +16,13 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 
 function Dashboard() {
   const fetch = useServerFn(getDashboardSnapshot);
-  const { data, isLoading } = useQuery({ queryKey: ["dashboard"], queryFn: () => fetch() });
+  const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
+    queryKey: ["dashboard"],
+    queryFn: () => fetch(),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    refetchIntervalInBackground: true,
+  });
 
   return (
     <div className="space-y-8">
