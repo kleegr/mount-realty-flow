@@ -28,7 +28,7 @@ function ReportPage() {
   const qc = useQueryClient();
   const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["unit-report"],
-    queryFn: () => fn(),
+    queryFn: () => fn({ data: { refresh: true } }),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
     refetchIntervalInBackground: true,
