@@ -62,13 +62,18 @@ export async function executeFlexImport(params: {
     status: "success",
     imported: 0, updated: 0, skipped: 0, failed: 0,
     auto_created_projects: 0, auto_created_buildings: 0, duplicates_created: 0,
+    associations_ok: 0, associations_failed: 0,
     per_scope: {
       project: { created: 0, updated: 0, skipped: 0, failed: 0 },
       building: { created: 0, updated: 0, skipped: 0, failed: 0 },
       unit: { created: 0, updated: 0, skipped: 0, failed: 0 },
     },
     errors: [],
+    warnings: [],
   };
+
+  // Pairs discovered during the row loop; processed after all upserts complete.
+  const assocPairs: Array<{ parent: FlexScope; parentId: string; child: FlexScope; childId: string }> = [];
 
   const items: ItemInsert[] = [];
   const failedRows: Array<Record<string, unknown>> = [];
