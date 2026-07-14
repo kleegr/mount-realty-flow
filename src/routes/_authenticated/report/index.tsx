@@ -25,7 +25,13 @@ const STATUS_META: Record<UnitStatus, { label: string; badge: string; row: strin
 
 function ReportPage() {
   const fn = useServerFn(getUnitReport);
-  const { data, isLoading } = useQuery({ queryKey: ["unit-report"], queryFn: () => fn() });
+  const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
+    queryKey: ["unit-report"],
+    queryFn: () => fn(),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    refetchIntervalInBackground: true,
+  });
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<"all" | UnitStatus>("all");
 
