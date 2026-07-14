@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { getDashboardSnapshot } from "@/lib/inventory.functions";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Building2, Home, Layers, Upload, Activity, Webhook, CheckCircle2, Clock, FileSignature, DollarSign, RefreshCw } from "lucide-react";
+import { Building2, Home, Layers, Upload, Activity, Webhook, RefreshCw } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
