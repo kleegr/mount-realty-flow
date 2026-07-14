@@ -33,6 +33,10 @@ function ReportPage() {
     refetchOnWindowFocus: true,
     refetchIntervalInBackground: true,
   });
+  const syncNow = async () => {
+    await fn({ data: { refresh: true } });
+    qc.invalidateQueries({ queryKey: ["unit-report"] });
+  };
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<"all" | UnitStatus>("all");
 
@@ -60,11 +64,12 @@ function ReportPage() {
           <h1 className="text-3xl font-bold tracking-tight">Unit Report</h1>
           <p className="mt-1 text-muted-foreground">Every unit with its current status and the associated lead / contact. <span className="text-xs">· Auto-refreshes every 30s{isFetching ? " · updating…" : dataUpdatedAt ? ` · updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}</span></p>
         </div>
-        <Button variant="outline" onClick={() => qc.invalidateQueries({ queryKey: ["unit-report"] })} disabled={isFetching}>
+        <Button variant="outline" onClick={syncNow} disabled={isFetching}>
           <RefreshCw className={cn("mr-2 h-4 w-4", isFetching && "animate-spin")} />
           {isFetching ? "Syncing…" : "Sync now"}
         </Button>
       </div>
+
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatusTile label="Available" value={totals?.available} icon={CheckCircle2} tone="success" active={filter === "available"} onClick={() => setFilter(filter === "available" ? "all" : "available")} />

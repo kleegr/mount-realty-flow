@@ -1,5 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { z } from "zod";
+
 
 async function requireImporter(userId: string) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -71,17 +73,23 @@ function extractContactName(raw: unknown): string | null {
 
 export const getUnitReport = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
-  .handler(async ({ context }) => {
+  .inputValidator((d: unknown) => z.object({ refresh: z.boolean().optional() }).optional().parse(d) ?? {})
+  .handler(async ({ data, context }) => {
     await requireImporter(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const refresh = data?.refresh === true;
 
-    // Prune stale local mappings against live CRM so deleted records disappear.
-    try {
-      const { reconcileScopes } = await import("@/lib/kleegr/live-records.server");
-      await reconcileScopes(["project", "building", "unit"]);
-    } catch (err) {
-      console.warn("[report] reconcile failed:", err instanceof Error ? err.message : err);
+    // Heavy CRM reconciliation only runs on explicit refresh — otherwise
+    // the report renders instantly from the local mirror.
+    if (refresh) {
+      try {
+        const { reconcileScopes } = await import("@/lib/kleegr/live-records.server");
+        await reconcileScopes(["project", "building", "unit"]);
+      } catch (err) {
+        console.warn("[report] reconcile failed:", err instanceof Error ? err.message : err);
+      }
     }
+
 
     const [unitsRes, buildingsRes, statesRes, webhooksRes] = await Promise.all([
       supabaseAdmin.from("external_id_map").select("crm_record_id, display_name, code, parent_crm_id").eq("scope", "unit"),
@@ -111,36 +119,39 @@ export const getUnitReport = createServerFn({ method: "GET" })
     }
 
     // Enrich with live CRM opportunities → contact/lead name + live status per unit.
-    const liveStatus = new Map<string, UnitStatus>();
-    try {
-      const { fetchUnitLeadsMap } = await import("@/lib/kleegr/opportunity-leads.server");
-      const leads = await fetchUnitLeadsMap();
-      for (const [unitId, lead] of leads) {
-        const existing = contactMap.get(unitId);
-        if (!existing?.contactName && lead.contactName) {
-          contactMap.set(unitId, { contactName: lead.contactName, opportunityId: lead.opportunityId });
+    // Only on explicit refresh; on auto-loads we serve the cached snapshot fast.
+    if (refresh) {
+      const liveStatus = new Map<string, UnitStatus>();
+      try {
+        const { fetchUnitLeadsMap } = await import("@/lib/kleegr/opportunity-leads.server");
+        const leads = await fetchUnitLeadsMap();
+        for (const [unitId, lead] of leads) {
+          const existing = contactMap.get(unitId);
+          if (!existing?.contactName && lead.contactName) {
+            contactMap.set(unitId, { contactName: lead.contactName, opportunityId: lead.opportunityId });
+          }
+          if (lead.status && lead.status !== "unknown") {
+            liveStatus.set(unitId, lead.status);
+          }
         }
-        if (lead.status && lead.status !== "unknown") {
-          liveStatus.set(unitId, lead.status);
-        }
+      } catch (err) {
+        console.warn("[report] lead enrichment failed:", err instanceof Error ? err.message : err);
       }
-    } catch (err) {
-      console.warn("[report] lead enrichment failed:", err instanceof Error ? err.message : err);
+
+      const stateUpserts: Array<{ unit_crm_id: string; availability: string; stage: string }> = [];
+      for (const [unitId, status] of liveStatus) {
+        const prev = stateMap.get(unitId);
+        const prevStatus = classify(prev?.availability ?? null, prev?.stage ?? null);
+        if (prevStatus === status) continue;
+        const target = statusToState(status);
+        stateUpserts.push({ unit_crm_id: unitId, ...target });
+        stateMap.set(unitId, { ...target, updated_at: new Date().toISOString() });
+      }
+      if (stateUpserts.length > 0) {
+        await supabaseAdmin.from("unit_state").upsert(stateUpserts, { onConflict: "unit_crm_id" });
+      }
     }
 
-    // Persist any live-status corrections into unit_state so the Dashboard matches.
-    const stateUpserts: Array<{ unit_crm_id: string; availability: string; stage: string }> = [];
-    for (const [unitId, status] of liveStatus) {
-      const prev = stateMap.get(unitId);
-      const prevStatus = classify(prev?.availability ?? null, prev?.stage ?? null);
-      if (prevStatus === status) continue;
-      const target = statusToState(status);
-      stateUpserts.push({ unit_crm_id: unitId, ...target });
-      stateMap.set(unitId, { ...target, updated_at: new Date().toISOString() });
-    }
-    if (stateUpserts.length > 0) {
-      await supabaseAdmin.from("unit_state").upsert(stateUpserts, { onConflict: "unit_crm_id" });
-    }
 
     const rows: UnitReportRow[] = (unitsRes.data ?? []).map((u) => {
       const state = stateMap.get(u.crm_record_id);
