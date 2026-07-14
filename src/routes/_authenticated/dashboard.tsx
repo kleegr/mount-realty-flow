@@ -17,6 +17,7 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 
 function Dashboard() {
   const fetch = useServerFn(getDashboardSnapshot);
+  const qc = useQueryClient();
   const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["dashboard"],
     queryFn: () => fetch(),
@@ -32,9 +33,15 @@ function Dashboard() {
           <h1 className="text-3xl font-bold tracking-tight">Inventory Dashboard</h1>
           <p className="mt-1 text-muted-foreground">Live view of Projects, Buildings and Units synced with the CRM. <span className="text-xs">· Auto-refreshes every 30s{isFetching ? " · updating…" : dataUpdatedAt ? ` · updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}</span></p>
         </div>
-        <Button asChild>
-          <Link to="/import"><Upload className="mr-2 h-4 w-4" />Start an Import</Link>
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => qc.invalidateQueries({ queryKey: ["dashboard"] })} disabled={isFetching}>
+            <RefreshCw className={cn("mr-2 h-4 w-4", isFetching && "animate-spin")} />
+            {isFetching ? "Syncing…" : "Sync now"}
+          </Button>
+          <Button asChild>
+            <Link to="/import"><Upload className="mr-2 h-4 w-4" />Start an Import</Link>
+          </Button>
+        </div>
       </div>
 
       <div>
