@@ -78,7 +78,7 @@ export const listPendingEvents = createServerFn({ method: "GET" })
           buildingExternalId: normalized.buildingExternalId,
           autoFetchAssociations: true,
         });
-        if (res.outcome === "no_unit_reference") {
+        if (res.outcome === "no_unit_reference" || res.outcome === "read_failed") {
           await supabaseAdmin
             .from("webhook_events")
             .update({
@@ -86,6 +86,7 @@ export const listPendingEvents = createServerFn({ method: "GET" })
               pipeline_id: pipelineId,
               stage_id: stageId,
               outcome: "pending_no_unit",
+              unit_crm_id: res.unitCrmId ?? res.buildingCrmId ?? null,
             })
             .eq("id", ev.id);
           stillPending.push(evOut);

@@ -336,11 +336,12 @@ export async function replayPendingForOpportunity(
       unitExternalId: null,
     });
     outcomes.push(res.outcome);
+    const shouldRemainPending = res.outcome === "no_unit_reference" || res.outcome === "read_failed";
     await supabaseAdmin
       .from("webhook_events")
       .update({
-        processed_at: new Date().toISOString(),
-        outcome: res.outcome,
+        processed_at: shouldRemainPending ? null : new Date().toISOString(),
+        outcome: shouldRemainPending ? "pending_no_unit" : res.outcome,
         unit_crm_id: res.unitCrmId ?? unitCrmId,
         pipeline_id: ev.pipeline_id ?? normalized.pipelineId,
         stage_id: ev.stage_id ?? normalized.stageId,
