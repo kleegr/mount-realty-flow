@@ -28,6 +28,20 @@ type SchemaField = {
   options?: Array<{ key?: string; label?: string }>;
 };
 
+type CrmObjectDefinition = {
+  id?: string;
+  key?: string;
+  labels?: { singular?: string; plural?: string };
+};
+
+const OBJECT_LABELS: Record<CrmObjectScope, { singular: string; plural: string }> = {
+  project: { singular: "project", plural: "projects" },
+  building: { singular: "building", plural: "buildings" },
+  unit: { singular: "unit", plural: "units" },
+};
+
+const objectListCache = new WeakMap<CrmClient, Promise<CrmObjectDefinition[]>>();
+
 export function objectKey(client: CrmClient, scope: CrmObjectScope): string {
   return objectKeyCandidates(client, scope)[0];
 }
@@ -60,7 +74,7 @@ export async function requestObject<T = unknown>(
   suffix: string,
   opts?: Parameters<CrmClient["request"]>[2],
 ): Promise<{ status: number; data: T; correlationId: string }> {
-  const candidates = objectKeyCandidates(client, scope);
+  const candidates = await objectKeyCandidatesWithLiveMatch(client, scope);
   const tried: string[] = [];
   for (const key of candidates) {
     tried.push(key);
@@ -77,6 +91,60 @@ export async function requestObject<T = unknown>(
     }
   }
   throw new Error(`CRM ${scope} object not found.`);
+}
+
+async function objectKeyCandidatesWithLiveMatch(client: CrmClient, scope: CrmObjectScope): Promise<string[]> {
+  const candidates = objectKeyCandidates(client, scope);
+  const liveKey = await resolveLiveObjectKey(client, scope, candidates).catch(() => null);
+  return liveKey ? [liveKey, ...candidates.filter((candidate) => candidate !== liveKey)] : candidates;
+}
+
+async function resolveLiveObjectKey(
+  client: CrmClient,
+  scope: CrmObjectScope,
+  candidates: string[],
+): Promise<string | null> {
+  const objects = await listCrmObjects(client);
+  const candidateSet = new Set(candidates.map(normalizeCandidate));
+  const exact = objects.find((object) =>
+    (object.id && candidateSet.has(normalizeCandidate(object.id)))
+    || (object.key && candidateSet.has(normalizeCandidate(object.key))),
+  );
+  if (exact?.key || exact?.id) return exact.key ?? exact.id ?? null;
+
+  const labels = OBJECT_LABELS[scope];
+  const byLabel = objects.find((object) => {
+    const singular = normalizeLabel(object.labels?.singular);
+    const plural = normalizeLabel(object.labels?.plural);
+    return singular === labels.singular || plural === labels.plural;
+  });
+  if (byLabel?.key || byLabel?.id) return byLabel.key ?? byLabel.id ?? null;
+
+  const suffix = `.${labels.plural}`;
+  const byKeySuffix = objects.find((object) => object.key?.toLowerCase().endsWith(suffix));
+  return byKeySuffix?.key ?? byKeySuffix?.id ?? null;
+}
+
+async function listCrmObjects(client: CrmClient): Promise<CrmObjectDefinition[]> {
+  const locationId = client.config.location_id;
+  if (!locationId) return [];
+
+  let cached = objectListCache.get(client);
+  if (!cached) {
+    cached = client
+      .request<{ objects?: CrmObjectDefinition[] }>("GET", "/objects/", { query: { locationId } })
+      .then((res) => Array.isArray(res.data?.objects) ? res.data.objects : []);
+    objectListCache.set(client, cached);
+  }
+  return cached;
+}
+
+function normalizeCandidate(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeLabel(value: string | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 export async function normalizeRecordProperties(
