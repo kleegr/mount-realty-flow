@@ -349,11 +349,7 @@ function extractRow(scope: FlexScope, row: Row, scopeMap: ScopeMap): ExtractOut 
       value = match;
     }
 
-    // Multi-select fields must be sent to GHL as arrays.
-    const MULTI_SELECT_KEYS = new Set(["property_type"]);
-    const outValue: unknown = MULTI_SELECT_KEYS.has(field.key)
-      ? (Array.isArray(value) ? value : String(value).split(",").map((s) => s.trim()).filter(Boolean))
-      : value;
+    const outValue: unknown = value;
 
     if (field.role === "record_id") ids.record_id = String(value);
     else if (field.role === "external_id") { ids.external_id = String(value); if (field.crmField) properties[field.crmField] = outValue; }
