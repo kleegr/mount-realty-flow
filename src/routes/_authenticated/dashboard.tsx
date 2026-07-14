@@ -16,14 +16,20 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 
 function Dashboard() {
   const fetch = useServerFn(getDashboardSnapshot);
-  const { data, isLoading } = useQuery({ queryKey: ["dashboard"], queryFn: () => fetch() });
+  const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
+    queryKey: ["dashboard"],
+    queryFn: () => fetch(),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    refetchIntervalInBackground: true,
+  });
 
   return (
     <div className="space-y-8">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Inventory Dashboard</h1>
-          <p className="mt-1 text-muted-foreground">Live view of Projects, Buildings and Units synced with the CRM.</p>
+          <p className="mt-1 text-muted-foreground">Live view of Projects, Buildings and Units synced with the CRM. <span className="text-xs">· Auto-refreshes every 30s{isFetching ? " · updating…" : dataUpdatedAt ? ` · updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}</span></p>
         </div>
         <Button asChild>
           <Link to="/import"><Upload className="mr-2 h-4 w-4" />Start an Import</Link>
