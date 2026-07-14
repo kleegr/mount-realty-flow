@@ -20,13 +20,16 @@ function Dashboard() {
   const qc = useQueryClient();
   const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["dashboard"],
-    queryFn: () => fetch({ data: { refresh: true } }),
+    queryFn: () => fetch({ data: { refresh: false } }),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
     refetchIntervalInBackground: true,
   });
   const syncNow = async () => {
-    await fetch({ data: { refresh: true } });
+    // Kick off heavy CRM reconcile in the background; refresh local view immediately after.
+    fetch({ data: { refresh: true } })
+      .then(() => qc.invalidateQueries({ queryKey: ["dashboard"] }))
+      .catch(() => {});
     qc.invalidateQueries({ queryKey: ["dashboard"] });
   };
 
