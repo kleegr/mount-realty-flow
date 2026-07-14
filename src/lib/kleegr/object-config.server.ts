@@ -208,7 +208,9 @@ async function fetchSchemaFields(client: CrmClient, scope: CrmObjectScope): Prom
 }
 
 function isMissingObject(err: unknown): boolean {
-  return err instanceof CrmError && err.status === 404 && /Custom Object .* not found|object .* not found/i.test(err.message);
+  return err instanceof CrmError
+    && err.status === 404
+    && /Custom Object \([^)]+\) not found/i.test(err.message);
 }
 
 function propertyKeysFor(field: SchemaField): string[] {
