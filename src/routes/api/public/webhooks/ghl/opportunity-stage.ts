@@ -34,20 +34,19 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
         let payload: Record<string, unknown>;
         try { payload = JSON.parse(raw); } catch { return json({ error: "Invalid JSON" }, 400); }
 
-        const opportunityId = strOrNull(payload.opportunity_id);
-        const pipelineId = strOrNull(payload.pipeline_id);
-        const stageId = strOrNull(payload.stage_id);
-        const pipelineName = strOrNull(payload.pipeline_name);
-        const stageName = strOrNull(payload.stage_name);
-        const unitCrmIdHint = strOrNull(payload.unit_crm_id);
-        const unitExternalId = strOrNull(payload.unit_external_import_id);
-        const buildingCrmIdHint = strOrNull(payload.building_crm_id);
-        const buildingExternalId = strOrNull(payload.building_external_import_id);
-
-        const eventId = String(
-          payload.event_id ??
-            `${opportunityId ?? "unknown"}-${stageId ?? stageName ?? "unknown"}-${Date.now()}`,
-        );
+        const { normalizeStagePayload } = await import("@/lib/kleegr/webhook-payload.server");
+        const {
+          eventId,
+          opportunityId,
+          pipelineId,
+          stageId,
+          pipelineName,
+          stageName,
+          unitCrmIdHint,
+          unitExternalId,
+          buildingCrmIdHint,
+          buildingExternalId,
+        } = normalizeStagePayload(payload);
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
@@ -131,10 +130,6 @@ function verifyAuth(request: Request, raw: string, secret: string): boolean {
     } catch { /* fall through */ }
   }
   return false;
-}
-
-function strOrNull(v: unknown): string | null {
-  return typeof v === "string" && v.length > 0 ? v : null;
 }
 
 function json(obj: unknown, status = 200) {

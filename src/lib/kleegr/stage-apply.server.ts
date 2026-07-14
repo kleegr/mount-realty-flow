@@ -1,5 +1,6 @@
 import { FIELDS } from "./field-map";
 import { normalizeRecordProperties, requestObject } from "./object-config.server";
+import { normalizeStagePayload } from "./webhook-payload.server";
 
 /**
  * Shared stage-change application logic.
@@ -114,8 +115,8 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
   try {
     const cur = await readRecord(await createCrmClient(), "unit", unitId);
     const props = extractProps(cur);
-    currentStage = String(props?.["stages"] ?? "");
-    currentAvailability = String(props?.[FIELDS.unit.availability] ?? "");
+    currentStage = normalizeUnitStage(props?.["stages"]);
+    currentAvailability = normalizeAvailability(props?.[FIELDS.unit.availability]);
   } catch (err) {
     return { outcome: "read_failed", unitCrmId: unitId, message: err instanceof Error ? err.message : String(err) };
   }
@@ -316,7 +317,7 @@ export async function replayPendingForOpportunity(
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const { data: pending } = await supabaseAdmin
     .from("webhook_events")
-    .select("id, pipeline_id, stage_id, opportunity_id")
+    .select("id, pipeline_id, stage_id, opportunity_id, raw")
     .eq("opportunity_id", opportunityId)
     .eq("outcome", "pending_no_unit")
     .is("processed_at", null)
@@ -324,20 +325,27 @@ export async function replayPendingForOpportunity(
 
   const outcomes: string[] = [];
   for (const ev of pending ?? []) {
+    const normalized = normalizeStagePayload((ev.raw ?? {}) as Record<string, unknown>);
     const res = await processStageChange({
-      pipelineId: ev.pipeline_id,
-      stageId: ev.stage_id,
-      opportunityId: ev.opportunity_id,
+      pipelineId: ev.pipeline_id ?? normalized.pipelineId,
+      stageId: ev.stage_id ?? normalized.stageId,
+      pipelineName: normalized.pipelineName,
+      stageName: normalized.stageName,
+      opportunityId: ev.opportunity_id ?? normalized.opportunityId,
       unitCrmIdHint: unitCrmId,
       unitExternalId: null,
     });
     outcomes.push(res.outcome);
+    const shouldRemainPending = res.outcome === "no_unit_reference" || res.outcome === "read_failed";
     await supabaseAdmin
       .from("webhook_events")
       .update({
-        processed_at: new Date().toISOString(),
-        outcome: res.outcome,
+        processed_at: shouldRemainPending ? null : new Date().toISOString(),
+        outcome: shouldRemainPending ? "pending_no_unit" : res.outcome,
         unit_crm_id: res.unitCrmId ?? unitCrmId,
+        pipeline_id: ev.pipeline_id ?? normalized.pipelineId,
+        stage_id: ev.stage_id ?? normalized.stageId,
+        opportunity_id: ev.opportunity_id ?? normalized.opportunityId,
       })
       .eq("id", ev.id);
   }
@@ -351,4 +359,21 @@ function extractProps(data: unknown): Record<string, unknown> | null {
   const rec = d.record as Record<string, unknown> | undefined;
   if (rec?.properties && typeof rec.properties === "object") return rec.properties as Record<string, unknown>;
   return null;
+}
+
+function normalizeUnitStage(value: unknown): string {
+  const raw = Array.isArray(value) ? String(value[0] ?? "") : String(value ?? "");
+  const key = raw.trim().toLowerCase().replace(/[\s_/-]+/g, "");
+  if (key === "reservedlocked") return "Reserved/Locked";
+  if (key === "undercontract") return "Under Contract";
+  if (key === "closedsold") return "Closed/Sold";
+  return raw.trim();
+}
+
+function normalizeAvailability(value: unknown): string {
+  const raw = Array.isArray(value) ? String(value[0] ?? "") : String(value ?? "");
+  const key = raw.trim().toLowerCase().replace(/[\s_/-]+/g, "");
+  if (key === "available") return "Available";
+  if (key === "notavailable") return "Not Available";
+  return raw.trim();
 }
