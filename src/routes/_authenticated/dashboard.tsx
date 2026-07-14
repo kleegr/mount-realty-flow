@@ -29,7 +29,7 @@ function Dashboard() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Inventory Dashboard</h1>
-          <p className="mt-1 text-muted-foreground">Live view of Projects, Buildings and Units synced with the CRM.</p>
+          <p className="mt-1 text-muted-foreground">Live view of Projects, Buildings and Units synced with the CRM. <span className="text-xs">· Auto-refreshes every 30s{isFetching ? " · updating…" : dataUpdatedAt ? ` · updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}</span></p>
         </div>
         <Button asChild>
           <Link to="/import"><Upload className="mr-2 h-4 w-4" />Start an Import</Link>
