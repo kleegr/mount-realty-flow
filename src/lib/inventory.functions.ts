@@ -23,6 +23,47 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
       console.warn("[dashboard] reconcile failed:", err instanceof Error ? err.message : err);
     }
 
+    // Sync live unit status (Reserved / Under Contract / Sold) from CRM
+    // opportunities into unit_state so the Dashboard tiles match reality.
+    try {
+      const { fetchUnitLeadsMap } = await import("@/lib/kleegr/opportunity-leads.server");
+      const leads = await fetchUnitLeadsMap();
+      const { data: existingStates } = await supabaseAdmin
+        .from("unit_state").select("unit_crm_id, availability, stage");
+      const prevMap = new Map<string, { availability: string | null; stage: string | null }>();
+      for (const s of existingStates ?? []) prevMap.set(s.unit_crm_id, { availability: s.availability, stage: s.stage });
+
+      const classify = (availability: string | null, stage: string | null): string => {
+        const st = (stage ?? "").trim().toLowerCase();
+        const av = (availability ?? "").trim().toLowerCase();
+        if (st === "closed/sold" || st === "sold" || st === "closed" || av.includes("sold") || av.includes("closed")) return "sold";
+        if (st === "under contract" || (av.includes("under") && av.includes("contract"))) return "under_contract";
+        if (st === "reserved/locked" || st === "reserved" || st === "locked" || av.includes("reserved") || av.includes("locked")) return "reserved";
+        if (av === "available" || av === "") return "available";
+        return "unknown";
+      };
+      const toState = (status: string): { availability: string; stage: string } => {
+        if (status === "sold") return { availability: "Not Available", stage: "Closed/Sold" };
+        if (status === "under_contract") return { availability: "Not Available", stage: "Under Contract" };
+        if (status === "reserved") return { availability: "Not Available", stage: "Reserved/Locked" };
+        if (status === "available") return { availability: "Available", stage: "" };
+        return { availability: "", stage: "" };
+      };
+      const upserts: Array<{ unit_crm_id: string; availability: string; stage: string }> = [];
+      for (const [unitId, lead] of leads) {
+        if (!lead.status || lead.status === "unknown") continue;
+        const prev = prevMap.get(unitId);
+        if (classify(prev?.availability ?? null, prev?.stage ?? null) === lead.status) continue;
+        upserts.push({ unit_crm_id: unitId, ...toState(lead.status) });
+      }
+      if (upserts.length > 0) {
+        await supabaseAdmin.from("unit_state").upsert(upserts, { onConflict: "unit_crm_id" });
+      }
+    } catch (err) {
+      console.warn("[dashboard] live status sync failed:", err instanceof Error ? err.message : err);
+    }
+
+
     const [projectsMap, buildingsMap, unitsMap, unitStates, recentJobs, recentAudit, recentWebhooks] = await Promise.all([
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "project"),
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "building"),
