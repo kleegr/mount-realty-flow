@@ -126,6 +126,8 @@ export async function fetchUnitLeadsMap(): Promise<Map<string, UnitLead>> {
     }
   }
 
+  const pipelineMap = await loadPipelineMap();
+
   // 2. For each opp, resolve associated unit via associations endpoint (parallel with concurrency cap).
   let index = 0;
   async function worker() {
@@ -139,13 +141,20 @@ export async function fetchUnitLeadsMap(): Promise<Map<string, UnitLead>> {
         const assoc = await fetchOpportunityAssociations(client!, oppId);
         if (!assoc.unitCrmId) continue;
         if (result.has(assoc.unitCrmId)) continue;
+        const stageName = typeof opp["stageName"] === "string"
+          ? (opp["stageName"] as string)
+          : (typeof opp["stage"] === "string" ? (opp["stage"] as string) : null);
+        const stageId = typeof opp["pipelineStageId"] === "string" ? (opp["pipelineStageId"] as string)
+          : (typeof opp["stageId"] === "string" ? (opp["stageId"] as string) : null);
+        const pipelineId = typeof opp["pipelineId"] === "string" ? (opp["pipelineId"] as string) : null;
         result.set(assoc.unitCrmId, {
           contactName: extractName(opp),
           opportunityId: oppId,
           opportunityName: typeof opp["name"] === "string" ? (opp["name"] as string) : null,
-          stageName: typeof opp["stageName"] === "string"
-            ? (opp["stageName"] as string)
-            : (typeof opp["stage"] === "string" ? (opp["stage"] as string) : null),
+          stageName,
+          stageId,
+          pipelineId,
+          status: classifyLead(stageId, stageName, pipelineMap),
         });
       } catch (err) {
         console.warn("[unit-leads] assoc failed for opp:", oppId, err instanceof Error ? err.message : err);
