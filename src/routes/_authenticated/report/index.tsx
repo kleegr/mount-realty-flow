@@ -25,7 +25,13 @@ const STATUS_META: Record<UnitStatus, { label: string; badge: string; row: strin
 
 function ReportPage() {
   const fn = useServerFn(getUnitReport);
-  const { data, isLoading } = useQuery({ queryKey: ["unit-report"], queryFn: () => fn() });
+  const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
+    queryKey: ["unit-report"],
+    queryFn: () => fn(),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    refetchIntervalInBackground: true,
+  });
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<"all" | UnitStatus>("all");
 
@@ -50,7 +56,7 @@ function ReportPage() {
     <div className="space-y-8">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Unit Report</h1>
-        <p className="mt-1 text-muted-foreground">Every unit with its current status and the associated lead / contact.</p>
+        <p className="mt-1 text-muted-foreground">Every unit with its current status and the associated lead / contact. <span className="text-xs">· Auto-refreshes every 30s{isFetching ? " · updating…" : dataUpdatedAt ? ` · updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}</span></p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">

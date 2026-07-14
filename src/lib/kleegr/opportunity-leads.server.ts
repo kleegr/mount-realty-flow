@@ -5,11 +5,71 @@
 import { createCrmClient } from "./client.server";
 import { fetchOpportunityAssociations } from "./opportunities.server";
 
+export type LeadStatus = "available" | "reserved" | "under_contract" | "sold" | "unknown";
+
 export interface UnitLead {
   contactName: string | null;
   opportunityId: string;
   opportunityName: string | null;
   stageName: string | null;
+  stageId: string | null;
+  pipelineId: string | null;
+  status: LeadStatus;
+}
+
+interface PipelineMap {
+  reserved_ids: Set<string>;
+  under_contract_ids: Set<string>;
+  closed_ids: Set<string>;
+  release_ids: Set<string>;
+  reserved_names: Set<string>;
+  under_contract_names: Set<string>;
+  closed_names: Set<string>;
+  release_names: Set<string>;
+}
+
+async function loadPipelineMap(): Promise<PipelineMap> {
+  const empty: PipelineMap = {
+    reserved_ids: new Set(), under_contract_ids: new Set(), closed_ids: new Set(), release_ids: new Set(),
+    reserved_names: new Set(), under_contract_names: new Set(), closed_names: new Set(), release_names: new Set(),
+  };
+  try {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data } = await supabaseAdmin.from("crm_pipelines").select(
+      "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name",
+    );
+    for (const r of data ?? []) {
+      if (r.stage_reserved_id) empty.reserved_ids.add(r.stage_reserved_id);
+      if (r.stage_under_contract_id) empty.under_contract_ids.add(r.stage_under_contract_id);
+      if (r.stage_closed_id) empty.closed_ids.add(r.stage_closed_id);
+      if (r.stage_release_id) empty.release_ids.add(r.stage_release_id);
+      if (r.stage_reserved_name) empty.reserved_names.add(r.stage_reserved_name.trim().toLowerCase());
+      if (r.stage_under_contract_name) empty.under_contract_names.add(r.stage_under_contract_name.trim().toLowerCase());
+      if (r.stage_closed_name) empty.closed_names.add(r.stage_closed_name.trim().toLowerCase());
+      if (r.stage_release_name) empty.release_names.add(r.stage_release_name.trim().toLowerCase());
+    }
+  } catch { /* no config yet */ }
+  return empty;
+}
+
+function classifyLead(stageId: string | null, stageName: string | null, m: PipelineMap): LeadStatus {
+  if (stageId) {
+    if (m.closed_ids.has(stageId)) return "sold";
+    if (m.under_contract_ids.has(stageId)) return "under_contract";
+    if (m.reserved_ids.has(stageId)) return "reserved";
+    if (m.release_ids.has(stageId)) return "available";
+  }
+  if (stageName) {
+    const s = stageName.trim().toLowerCase();
+    if (m.closed_names.has(s)) return "sold";
+    if (m.under_contract_names.has(s)) return "under_contract";
+    if (m.reserved_names.has(s)) return "reserved";
+    if (m.release_names.has(s)) return "available";
+    if (s.includes("closed") || s === "sold" || s.includes("won")) return "sold";
+    if (s.includes("contract")) return "under_contract";
+    if (s.includes("reserved") || s.includes("lock")) return "reserved";
+  }
+  return "unknown";
 }
 
 const MAX_OPPS = 500;
@@ -66,6 +126,8 @@ export async function fetchUnitLeadsMap(): Promise<Map<string, UnitLead>> {
     }
   }
 
+  const pipelineMap = await loadPipelineMap();
+
   // 2. For each opp, resolve associated unit via associations endpoint (parallel with concurrency cap).
   let index = 0;
   async function worker() {
@@ -79,13 +141,20 @@ export async function fetchUnitLeadsMap(): Promise<Map<string, UnitLead>> {
         const assoc = await fetchOpportunityAssociations(client!, oppId);
         if (!assoc.unitCrmId) continue;
         if (result.has(assoc.unitCrmId)) continue;
+        const stageName = typeof opp["stageName"] === "string"
+          ? (opp["stageName"] as string)
+          : (typeof opp["stage"] === "string" ? (opp["stage"] as string) : null);
+        const stageId = typeof opp["pipelineStageId"] === "string" ? (opp["pipelineStageId"] as string)
+          : (typeof opp["stageId"] === "string" ? (opp["stageId"] as string) : null);
+        const pipelineId = typeof opp["pipelineId"] === "string" ? (opp["pipelineId"] as string) : null;
         result.set(assoc.unitCrmId, {
           contactName: extractName(opp),
           opportunityId: oppId,
           opportunityName: typeof opp["name"] === "string" ? (opp["name"] as string) : null,
-          stageName: typeof opp["stageName"] === "string"
-            ? (opp["stageName"] as string)
-            : (typeof opp["stage"] === "string" ? (opp["stage"] as string) : null),
+          stageName,
+          stageId,
+          pipelineId,
+          status: classifyLead(stageId, stageName, pipelineMap),
         });
       } catch (err) {
         console.warn("[unit-leads] assoc failed for opp:", oppId, err instanceof Error ? err.message : err);
