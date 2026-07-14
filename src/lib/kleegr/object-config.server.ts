@@ -76,10 +76,11 @@ export async function requestObject<T = unknown>(
 ): Promise<{ status: number; data: T; correlationId: string }> {
   const candidates = await objectKeyCandidatesWithLiveMatch(client, scope);
   const tried: string[] = [];
+  const requestOpts = withRecordLocationQuery(client, method, suffix, opts);
   for (const key of candidates) {
     tried.push(key);
     try {
-      return await client.request<T>(method, `/objects/${key}${suffix}`, opts);
+      return await client.request<T>(method, `/objects/${key}${suffix}`, requestOpts);
     } catch (err) {
       if (isMissingObject(err) && key !== candidates[candidates.length - 1]) continue;
       if (isMissingObject(err)) {
@@ -91,6 +92,30 @@ export async function requestObject<T = unknown>(
     }
   }
   throw new Error(`CRM ${scope} object not found.`);
+}
+
+function withRecordLocationQuery(
+  client: CrmClient,
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+  suffix: string,
+  opts?: Parameters<CrmClient["request"]>[2],
+): Parameters<CrmClient["request"]>[2] | undefined {
+  if (
+    !client.config.location_id
+    || method === "POST"
+    || !/^\/records\/[^/]+/.test(suffix)
+    || opts?.query?.locationId
+  ) {
+    return opts;
+  }
+
+  return {
+    ...opts,
+    query: {
+      ...opts?.query,
+      locationId: client.config.location_id,
+    },
+  };
 }
 
 async function objectKeyCandidatesWithLiveMatch(client: CrmClient, scope: CrmObjectScope): Promise<string[]> {
