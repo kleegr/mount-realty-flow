@@ -202,10 +202,13 @@ export async function normalizeRecordProperties(
   const out: Record<string, unknown> = {};
   for (const [prop, value] of Object.entries(clean)) {
     if (!schemaTypeMap.has(prop)) continue;
+    const schemaType = schemaTypeMap.get(prop) ?? "";
+    const isMulti = isMultiSelectType(schemaType);
 
     const map = optionMap.get(prop);
     if (!map) {
-      out[prop] = normalizeBySchemaType(prop, value, schemaTypeMap.get(prop) ?? "");
+      const normalized = normalizeBySchemaType(prop, value, schemaType);
+      out[prop] = isMulti && !Array.isArray(normalized) ? [normalized].filter(Boolean) : normalized;
       continue;
     }
 
@@ -218,10 +221,14 @@ export async function normalizeRecordProperties(
     }
 
     const mapped = map.get(normalizeOption(value)) ?? fallbackOption(prop, value);
-    if (mapped) out[prop] = mapped;
+    if (mapped) out[prop] = isMulti ? [mapped] : mapped;
   }
   return out;
 }
+
+function isMultiSelectType(schemaType: string): boolean {
+  return /checkbox|multi|list/.test(schemaType);
+
 
 async function fetchSchemaFields(client: CrmClient, scope: CrmObjectScope): Promise<SchemaField[]> {
   const locationId = client.config.location_id;
