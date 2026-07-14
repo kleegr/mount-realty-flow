@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { getDashboardSnapshot } from "@/lib/inventory.functions";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Building2, Home, Layers, Upload, Activity, Webhook, CheckCircle2, Clock, FileSignature, DollarSign, RefreshCw } from "lucide-react";
+import { Building2, Home, Layers, Upload, Activity, Webhook, RefreshCw } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
@@ -53,15 +53,8 @@ function Dashboard() {
         </div>
       </div>
 
-      <div>
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Unit Status</h2>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard label="Available" value={data?.availability.available ?? "—"} icon={CheckCircle2} tone="success" loading={isLoading} />
-          <StatCard label="Reserved" value={data?.availability.reserved ?? "—"} icon={Clock} tone="warning" loading={isLoading} />
-          <StatCard label="Under Contract" value={data?.availability.under_contract ?? "—"} icon={FileSignature} tone="info" loading={isLoading} />
-          <StatCard label="Sold" value={data?.availability.sold ?? "—"} icon={DollarSign} tone="danger" loading={isLoading} />
-        </div>
-      </div>
+
+
 
       <PendingEventsCard />
 
