@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { getUnitReport, type UnitStatus } from "@/lib/report.functions";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CheckCircle2, Clock, FileSignature, DollarSign, HelpCircle, Users } from "lucide-react";
+import { CheckCircle2, Clock, FileSignature, DollarSign, HelpCircle, Users, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/report/")({
@@ -25,6 +25,7 @@ const STATUS_META: Record<UnitStatus, { label: string; badge: string; row: strin
 
 function ReportPage() {
   const fn = useServerFn(getUnitReport);
+  const qc = useQueryClient();
   const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["unit-report"],
     queryFn: () => fn(),
@@ -54,9 +55,15 @@ function ReportPage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Unit Report</h1>
-        <p className="mt-1 text-muted-foreground">Every unit with its current status and the associated lead / contact. <span className="text-xs">· Auto-refreshes every 30s{isFetching ? " · updating…" : dataUpdatedAt ? ` · updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}</span></p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Unit Report</h1>
+          <p className="mt-1 text-muted-foreground">Every unit with its current status and the associated lead / contact. <span className="text-xs">· Auto-refreshes every 30s{isFetching ? " · updating…" : dataUpdatedAt ? ` · updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}</span></p>
+        </div>
+        <Button variant="outline" onClick={() => qc.invalidateQueries({ queryKey: ["unit-report"] })} disabled={isFetching}>
+          <RefreshCw className={cn("mr-2 h-4 w-4", isFetching && "animate-spin")} />
+          {isFetching ? "Syncing…" : "Sync now"}
+        </Button>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
