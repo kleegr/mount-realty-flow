@@ -25,6 +25,10 @@ function Dashboard() {
     refetchOnWindowFocus: true,
     refetchIntervalInBackground: true,
   });
+  const syncNow = async () => {
+    await fetch({ data: { refresh: true } });
+    qc.invalidateQueries({ queryKey: ["dashboard"] });
+  };
 
   return (
     <div className="space-y-8">
@@ -34,10 +38,11 @@ function Dashboard() {
           <p className="mt-1 text-muted-foreground">Live view of Projects, Buildings and Units synced with the CRM. <span className="text-xs">· Auto-refreshes every 30s{isFetching ? " · updating…" : dataUpdatedAt ? ` · updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}</span></p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => qc.invalidateQueries({ queryKey: ["dashboard"] })} disabled={isFetching}>
+          <Button variant="outline" onClick={syncNow} disabled={isFetching}>
             <RefreshCw className={cn("mr-2 h-4 w-4", isFetching && "animate-spin")} />
             {isFetching ? "Syncing…" : "Sync now"}
           </Button>
+
           <Button asChild>
             <Link to="/import"><Upload className="mr-2 h-4 w-4" />Start an Import</Link>
           </Button>
