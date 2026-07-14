@@ -219,9 +219,8 @@ export async function executeFlexImport(params: {
           if (scope === "building" && parentCrm.project) {
             assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "building", childId: crmId });
           }
-          if (scope === "unit") {
-            if (parentCrm.building) assocPairs.push({ parent: "building", parentId: parentCrm.building, child: "unit", childId: crmId });
-            if (parentCrm.project) assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "unit", childId: crmId });
+          if (scope === "unit" && parentCrm.building) {
+            assocPairs.push({ parent: "building", parentId: parentCrm.building, child: "unit", childId: crmId });
           }
         }
 
