@@ -119,36 +119,39 @@ export const getUnitReport = createServerFn({ method: "GET" })
     }
 
     // Enrich with live CRM opportunities → contact/lead name + live status per unit.
-    const liveStatus = new Map<string, UnitStatus>();
-    try {
-      const { fetchUnitLeadsMap } = await import("@/lib/kleegr/opportunity-leads.server");
-      const leads = await fetchUnitLeadsMap();
-      for (const [unitId, lead] of leads) {
-        const existing = contactMap.get(unitId);
-        if (!existing?.contactName && lead.contactName) {
-          contactMap.set(unitId, { contactName: lead.contactName, opportunityId: lead.opportunityId });
+    // Only on explicit refresh; on auto-loads we serve the cached snapshot fast.
+    if (refresh) {
+      const liveStatus = new Map<string, UnitStatus>();
+      try {
+        const { fetchUnitLeadsMap } = await import("@/lib/kleegr/opportunity-leads.server");
+        const leads = await fetchUnitLeadsMap();
+        for (const [unitId, lead] of leads) {
+          const existing = contactMap.get(unitId);
+          if (!existing?.contactName && lead.contactName) {
+            contactMap.set(unitId, { contactName: lead.contactName, opportunityId: lead.opportunityId });
+          }
+          if (lead.status && lead.status !== "unknown") {
+            liveStatus.set(unitId, lead.status);
+          }
         }
-        if (lead.status && lead.status !== "unknown") {
-          liveStatus.set(unitId, lead.status);
-        }
+      } catch (err) {
+        console.warn("[report] lead enrichment failed:", err instanceof Error ? err.message : err);
       }
-    } catch (err) {
-      console.warn("[report] lead enrichment failed:", err instanceof Error ? err.message : err);
+
+      const stateUpserts: Array<{ unit_crm_id: string; availability: string; stage: string }> = [];
+      for (const [unitId, status] of liveStatus) {
+        const prev = stateMap.get(unitId);
+        const prevStatus = classify(prev?.availability ?? null, prev?.stage ?? null);
+        if (prevStatus === status) continue;
+        const target = statusToState(status);
+        stateUpserts.push({ unit_crm_id: unitId, ...target });
+        stateMap.set(unitId, { ...target, updated_at: new Date().toISOString() });
+      }
+      if (stateUpserts.length > 0) {
+        await supabaseAdmin.from("unit_state").upsert(stateUpserts, { onConflict: "unit_crm_id" });
+      }
     }
 
-    // Persist any live-status corrections into unit_state so the Dashboard matches.
-    const stateUpserts: Array<{ unit_crm_id: string; availability: string; stage: string }> = [];
-    for (const [unitId, status] of liveStatus) {
-      const prev = stateMap.get(unitId);
-      const prevStatus = classify(prev?.availability ?? null, prev?.stage ?? null);
-      if (prevStatus === status) continue;
-      const target = statusToState(status);
-      stateUpserts.push({ unit_crm_id: unitId, ...target });
-      stateMap.set(unitId, { ...target, updated_at: new Date().toISOString() });
-    }
-    if (stateUpserts.length > 0) {
-      await supabaseAdmin.from("unit_state").upsert(stateUpserts, { onConflict: "unit_crm_id" });
-    }
 
     const rows: UnitReportRow[] = (unitsRes.data ?? []).map((u) => {
       const state = stateMap.get(u.crm_record_id);
