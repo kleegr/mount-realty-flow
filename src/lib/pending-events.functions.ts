@@ -29,8 +29,8 @@ export const listPendingEvents = createServerFn({ method: "GET" })
     const { data: pending, error } = await supabaseAdmin
       .from("webhook_events")
       .select("id, opportunity_id, pipeline_id, stage_id, received_at, outcome, raw")
-      .eq("outcome", "pending_no_unit")
       .is("processed_at", null)
+      .or("outcome.is.null,outcome.eq.pending_no_unit")
       .order("received_at", { ascending: false })
       .limit(50);
     if (error) throw new Error(error.message);
@@ -40,6 +40,7 @@ export const listPendingEvents = createServerFn({ method: "GET" })
     //    the CRM, the association becomes visible and the event applies on its
     //    own — no manual "Apply" click needed.
     const { processStageChange } = await import("@/lib/kleegr/stage-apply.server");
+    const { normalizeStagePayload } = await import("@/lib/kleegr/webhook-payload.server");
     const stillPending: Array<{
       id: string;
       opportunity_id: string | null;
@@ -50,28 +51,43 @@ export const listPendingEvents = createServerFn({ method: "GET" })
     }> = [];
     for (const ev of pending ?? []) {
       const raw = (ev.raw ?? {}) as Record<string, unknown>;
-      const pipelineName = typeof raw.pipeline_name === "string" ? raw.pipeline_name : null;
-      const stageName = typeof raw.stage_name === "string" ? raw.stage_name : null;
+      const normalized = normalizeStagePayload(raw);
+      const opportunityId = ev.opportunity_id ?? normalized.opportunityId;
+      const pipelineId = ev.pipeline_id ?? normalized.pipelineId;
+      const stageId = ev.stage_id ?? normalized.stageId;
+      const pipelineName = normalized.pipelineName;
+      const stageName = normalized.stageName;
       const evOut = {
         id: ev.id,
-        opportunity_id: ev.opportunity_id,
-        pipeline_id: ev.pipeline_id,
-        stage_id: ev.stage_id,
+        opportunity_id: opportunityId,
+        pipeline_id: pipelineId,
+        stage_id: stageId,
         received_at: ev.received_at,
-        outcome: ev.outcome,
+        outcome: "pending_no_unit",
       };
       try {
         const res = await processStageChange({
-          pipelineId: ev.pipeline_id,
-          stageId: ev.stage_id,
+          pipelineId,
+          stageId,
           pipelineName,
           stageName,
-          opportunityId: ev.opportunity_id,
-          unitCrmIdHint: null,
-          unitExternalId: null,
+          opportunityId,
+          unitCrmIdHint: normalized.unitCrmIdHint,
+          unitExternalId: normalized.unitExternalId,
+          buildingCrmIdHint: normalized.buildingCrmIdHint,
+          buildingExternalId: normalized.buildingExternalId,
           autoFetchAssociations: true,
         });
         if (res.outcome === "no_unit_reference") {
+          await supabaseAdmin
+            .from("webhook_events")
+            .update({
+              opportunity_id: opportunityId,
+              pipeline_id: pipelineId,
+              stage_id: stageId,
+              outcome: "pending_no_unit",
+            })
+            .eq("id", ev.id);
           stillPending.push(evOut);
         } else {
           await supabaseAdmin
@@ -80,6 +96,9 @@ export const listPendingEvents = createServerFn({ method: "GET" })
               processed_at: new Date().toISOString(),
               outcome: res.outcome,
               unit_crm_id: res.unitCrmId ?? null,
+              opportunity_id: opportunityId,
+              pipeline_id: pipelineId,
+              stage_id: stageId,
             })
             .eq("id", ev.id);
         }

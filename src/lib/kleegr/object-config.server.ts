@@ -203,7 +203,7 @@ export async function normalizeRecordProperties(
   for (const [prop, value] of Object.entries(clean)) {
     if (!schemaTypeMap.has(prop)) continue;
     const schemaType = schemaTypeMap.get(prop) ?? "";
-    const isMulti = isMultiSelectType(schemaType);
+    const isMulti = prop !== "stages" && isMultiSelectType(schemaType);
 
     const map = optionMap.get(prop);
     if (!map) {
