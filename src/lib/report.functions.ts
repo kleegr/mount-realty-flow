@@ -73,17 +73,23 @@ function extractContactName(raw: unknown): string | null {
 
 export const getUnitReport = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
-  .handler(async ({ context }) => {
+  .inputValidator((d: unknown) => z.object({ refresh: z.boolean().optional() }).optional().parse(d) ?? {})
+  .handler(async ({ data, context }) => {
     await requireImporter(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const refresh = data?.refresh === true;
 
-    // Prune stale local mappings against live CRM so deleted records disappear.
-    try {
-      const { reconcileScopes } = await import("@/lib/kleegr/live-records.server");
-      await reconcileScopes(["project", "building", "unit"]);
-    } catch (err) {
-      console.warn("[report] reconcile failed:", err instanceof Error ? err.message : err);
+    // Heavy CRM reconciliation only runs on explicit refresh — otherwise
+    // the report renders instantly from the local mirror.
+    if (refresh) {
+      try {
+        const { reconcileScopes } = await import("@/lib/kleegr/live-records.server");
+        await reconcileScopes(["project", "building", "unit"]);
+      } catch (err) {
+        console.warn("[report] reconcile failed:", err instanceof Error ? err.message : err);
+      }
     }
+
 
     const [unitsRes, buildingsRes, statesRes, webhooksRes] = await Promise.all([
       supabaseAdmin.from("external_id_map").select("crm_record_id, display_name, code, parent_crm_id").eq("scope", "unit"),
