@@ -228,6 +228,9 @@ export async function normalizeRecordProperties(
 
 function isMultiSelectType(schemaType: string): boolean {
   return /checkbox|multi|list/.test(schemaType);
+}
+
+
 
 
 async function fetchSchemaFields(client: CrmClient, scope: CrmObjectScope): Promise<SchemaField[]> {
