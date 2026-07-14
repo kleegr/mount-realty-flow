@@ -14,6 +14,15 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
     await requireImporter(context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
+    // Reconcile local mirror against live CRM so counts drop when records
+    // are deleted directly in the CRM.
+    try {
+      const { reconcileScopes } = await import("@/lib/kleegr/live-records.server");
+      await reconcileScopes(["project", "building", "unit"]);
+    } catch (err) {
+      console.warn("[dashboard] reconcile failed:", err instanceof Error ? err.message : err);
+    }
+
     const [projectsMap, buildingsMap, unitsMap, unitStates, recentJobs, recentAudit, recentWebhooks] = await Promise.all([
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "project"),
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "building"),
