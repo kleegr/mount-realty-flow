@@ -214,6 +214,15 @@ export async function executeFlexImport(params: {
           if (ids.external_id) cache[scope].byExternalId.set(ids.external_id, crmId);
           if (ids.name) cache[scope].byName.set(ids.name.toLowerCase(), crmId);
           if (ids.code) cache[scope].byCode.set(ids.code.toLowerCase(), crmId);
+
+          // Queue associations Project→Building and Building→Unit for this row.
+          if (scope === "building" && parentCrm.project) {
+            assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "building", childId: crmId });
+          }
+          if (scope === "unit") {
+            if (parentCrm.building) assocPairs.push({ parent: "building", parentId: parentCrm.building, child: "unit", childId: crmId });
+            if (parentCrm.project) assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "unit", childId: crmId });
+          }
         }
 
         items.push(makeItem(jobId, scope, ids, action, resolution, parentResolution, properties, crmId, [], null, undoOp, null));
