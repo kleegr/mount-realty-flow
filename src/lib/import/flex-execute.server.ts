@@ -271,7 +271,7 @@ export async function executeFlexImport(params: {
   // Determine status
   if (report.failed > 0 && report.imported + report.updated === 0) report.status = "failed";
   else if (report.failed > 0) report.status = "partial_failure";
-  else if (report.duplicates_created > 0 || report.auto_created_projects + report.auto_created_buildings > 0) report.status = "success_with_warnings";
+  else if (report.duplicates_created > 0 || report.auto_created_projects + report.auto_created_buildings > 0 || report.associations_failed > 0) report.status = "success_with_warnings";
   else report.status = "success";
 
   await supabaseAdmin.from("import_jobs").update({
