@@ -236,6 +236,30 @@ export async function executeFlexImport(params: {
     }
   }
 
+  // ---------- Associations pass ----------
+  // Dedupe, then create Project↔Building and Building↔Unit relations in the CRM.
+  const assocSeen = new Set<string>();
+  const uniquePairs = assocPairs.filter((p) => {
+    const key = `${p.parent}:${p.parentId}->${p.child}:${p.childId}`;
+    if (assocSeen.has(key)) return false;
+    assocSeen.add(key);
+    return true;
+  });
+  for (const p of uniquePairs) {
+    try {
+      const r = await associateByScopes(client, p.parent, p.parentId, p.child, p.childId);
+      if (r.ok) {
+        report.associations_ok++;
+      } else {
+        report.associations_failed++;
+        report.warnings.push(`${p.parent}→${p.child} association failed: ${r.message ?? "unknown error"}`);
+      }
+    } catch (err) {
+      report.associations_failed++;
+      report.warnings.push(`${p.parent}→${p.child} association error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // Bulk insert items
   if (items.length > 0) {
     // Insert in batches to avoid payload limits
