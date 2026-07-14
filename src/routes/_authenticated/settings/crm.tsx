@@ -46,9 +46,9 @@ function Settings() {
     save.mutate({
       location_id: form.location_id ?? "",
       api_base_url: form.api_base_url ?? "https://services.leadconnectorhq.com",
-      project_object_key: form.project_object_key ?? "custom_objects.project",
-      building_object_key: form.building_object_key ?? "custom_objects.building",
-      unit_object_key: form.unit_object_key ?? "custom_objects.unit",
+      project_object_key: form.project_object_key ?? "custom_objects.projects",
+      building_object_key: form.building_object_key ?? "custom_objects.buildings",
+      unit_object_key: form.unit_object_key ?? "custom_objects.units",
       project_object_id: form.project_object_id ?? "",
       building_object_id: form.building_object_id ?? "",
       unit_object_id: form.unit_object_id ?? "",
@@ -95,7 +95,7 @@ function Settings() {
         <Card>
           <CardHeader>
             <CardTitle>Custom Objects</CardTitle>
-            <CardDescription>Use the schema keys from CRM Custom Objects, for example custom_objects.project.</CardDescription>
+            <CardDescription>Use the schema keys from CRM Custom Objects, for example custom_objects.projects.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-3">
             <Field label="Project schema key" k="project_object_key" form={form} setForm={setForm} readOnly={!isAdmin} />
