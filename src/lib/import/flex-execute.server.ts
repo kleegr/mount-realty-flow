@@ -9,6 +9,7 @@ import { FIELD_CATALOG, coerce } from "./flex-mapping";
 import { createCrmClient } from "../kleegr/client.server";
 import { readRecord } from "../kleegr/objects.server";
 import { normalizeRecordProperties, requestObject } from "../kleegr/object-config.server";
+import { associateByScopes } from "../kleegr/associations.server";
 import { toCsv } from "./flex-parse.server";
 import type { Database } from "@/integrations/supabase/types";
 
