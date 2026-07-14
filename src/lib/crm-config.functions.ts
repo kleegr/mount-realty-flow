@@ -49,9 +49,9 @@ export const updateCrmConfig = createServerFn({ method: "POST" })
       .maybeSingle();
     const payload = {
       ...data,
-      project_object_key: cleanString(data.project_object_key) || "custom_objects.project",
-      building_object_key: cleanString(data.building_object_key) || "custom_objects.building",
-      unit_object_key: cleanString(data.unit_object_key) || "custom_objects.unit",
+      project_object_key: cleanString(data.project_object_key) || "custom_objects.projects",
+      building_object_key: cleanString(data.building_object_key) || "custom_objects.buildings",
+      unit_object_key: cleanString(data.unit_object_key) || "custom_objects.units",
       project_object_id: cleanString(data.project_object_id) || existingConfig?.project_object_id || null,
       building_object_id: cleanString(data.building_object_id) || existingConfig?.building_object_id || null,
       unit_object_id: cleanString(data.unit_object_id) || existingConfig?.unit_object_id || null,
