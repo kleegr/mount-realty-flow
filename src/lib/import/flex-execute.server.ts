@@ -9,6 +9,7 @@ import { FIELD_CATALOG, coerce } from "./flex-mapping";
 import { createCrmClient } from "../kleegr/client.server";
 import { readRecord } from "../kleegr/objects.server";
 import { normalizeRecordProperties, requestObject } from "../kleegr/object-config.server";
+import { associateByScopes } from "../kleegr/associations.server";
 import { toCsv } from "./flex-parse.server";
 import type { Database } from "@/integrations/supabase/types";
 
@@ -32,8 +33,11 @@ export interface FlexReport {
   auto_created_projects: number;
   auto_created_buildings: number;
   duplicates_created: number;
+  associations_ok: number;
+  associations_failed: number;
   per_scope: Record<FlexScope, { created: number; updated: number; skipped: number; failed: number }>;
   errors: Array<{ scope: FlexScope; ref: string; message: string; rowNumber: number }>;
+  warnings: string[];
 }
 
 type Row = Record<string, unknown>;
@@ -58,13 +62,18 @@ export async function executeFlexImport(params: {
     status: "success",
     imported: 0, updated: 0, skipped: 0, failed: 0,
     auto_created_projects: 0, auto_created_buildings: 0, duplicates_created: 0,
+    associations_ok: 0, associations_failed: 0,
     per_scope: {
       project: { created: 0, updated: 0, skipped: 0, failed: 0 },
       building: { created: 0, updated: 0, skipped: 0, failed: 0 },
       unit: { created: 0, updated: 0, skipped: 0, failed: 0 },
     },
     errors: [],
+    warnings: [],
   };
+
+  // Pairs discovered during the row loop; processed after all upserts complete.
+  const assocPairs: Array<{ parent: FlexScope; parentId: string; child: FlexScope; childId: string }> = [];
 
   const items: ItemInsert[] = [];
   const failedRows: Array<Record<string, unknown>> = [];
@@ -205,6 +214,14 @@ export async function executeFlexImport(params: {
           if (ids.external_id) cache[scope].byExternalId.set(ids.external_id, crmId);
           if (ids.name) cache[scope].byName.set(ids.name.toLowerCase(), crmId);
           if (ids.code) cache[scope].byCode.set(ids.code.toLowerCase(), crmId);
+
+          // Queue associations Project→Building and Building→Unit for this row.
+          if (scope === "building" && parentCrm.project) {
+            assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "building", childId: crmId });
+          }
+          if (scope === "unit" && parentCrm.building) {
+            assocPairs.push({ parent: "building", parentId: parentCrm.building, child: "unit", childId: crmId });
+          }
         }
 
         items.push(makeItem(jobId, scope, ids, action, resolution, parentResolution, properties, crmId, [], null, undoOp, null));
@@ -219,6 +236,30 @@ export async function executeFlexImport(params: {
     }
   }
 
+  // ---------- Associations pass ----------
+  // Dedupe, then create Project↔Building and Building↔Unit relations in the CRM.
+  const assocSeen = new Set<string>();
+  const uniquePairs = assocPairs.filter((p) => {
+    const key = `${p.parent}:${p.parentId}->${p.child}:${p.childId}`;
+    if (assocSeen.has(key)) return false;
+    assocSeen.add(key);
+    return true;
+  });
+  for (const p of uniquePairs) {
+    try {
+      const r = await associateByScopes(client, p.parent, p.parentId, p.child, p.childId);
+      if (r.ok) {
+        report.associations_ok++;
+      } else {
+        report.associations_failed++;
+        report.warnings.push(`${p.parent}→${p.child} association failed: ${r.message ?? "unknown error"}`);
+      }
+    } catch (err) {
+      report.associations_failed++;
+      report.warnings.push(`${p.parent}→${p.child} association error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // Bulk insert items
   if (items.length > 0) {
     // Insert in batches to avoid payload limits
@@ -230,7 +271,7 @@ export async function executeFlexImport(params: {
   // Determine status
   if (report.failed > 0 && report.imported + report.updated === 0) report.status = "failed";
   else if (report.failed > 0) report.status = "partial_failure";
-  else if (report.duplicates_created > 0 || report.auto_created_projects + report.auto_created_buildings > 0) report.status = "success_with_warnings";
+  else if (report.duplicates_created > 0 || report.auto_created_projects + report.auto_created_buildings > 0 || report.associations_failed > 0) report.status = "success_with_warnings";
   else report.status = "success";
 
   await supabaseAdmin.from("import_jobs").update({
