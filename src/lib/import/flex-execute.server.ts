@@ -3,7 +3,7 @@
  * Given rows + column_map + options, resolve identity, resolve parents, write to CRM,
  * append import_items, and return a report + failed-rows CSV blob.
  */
-import type { CrmClient } from "../kleegr/client.server";
+import { CrmError, type CrmClient } from "../kleegr/client.server";
 import type { FlexScope } from "./flex-mapping";
 import { FIELD_CATALOG, coerce } from "./flex-mapping";
 import { createCrmClient } from "../kleegr/client.server";
@@ -174,8 +174,9 @@ export async function executeFlexImport(params: {
             undoOp = { kind: "delete", scope, crmId };
           } else {
             // update, unless the saved local CRM mapping points at a record that no longer exists.
-            previous = await tryReadPrevious(client, scope, existing);
-            if (previous === null) {
+            const previousResult = await tryReadPrevious(client, scope, existing);
+            previous = previousResult.properties;
+            if (previousResult.missing) {
               await removeStaleMap(supabaseAdmin, scope, existing, ids);
               crmId = await createRecord(client, scope, properties, ids);
               resolution = action = "create";
@@ -438,13 +439,22 @@ async function removeStaleMap(supabaseAdmin: SupabaseAdmin, scope: FlexScope, cr
   if (error) console.warn(`Failed to remove stale ${scope} mapping ${crmId}: ${error.message}`);
 }
 
-async function tryReadPrevious(client: CrmClient, scope: FlexScope, crmId: string): Promise<Record<string, unknown> | null> {
+async function tryReadPrevious(
+  client: CrmClient,
+  scope: FlexScope,
+  crmId: string,
+): Promise<{ properties: Record<string, unknown> | null; missing: boolean }> {
   try {
     const data = await readRecord(client, scope, crmId);
     const rec = (data as { record?: { properties?: unknown } })?.record ?? data;
     const props = (rec as { properties?: unknown })?.properties;
-    return (props ?? null) as Record<string, unknown> | null;
-  } catch { return null; }
+    return { properties: (props ?? null) as Record<string, unknown> | null, missing: false };
+  } catch (err) {
+    if (err instanceof CrmError && err.status === 404 && /record with id/i.test(err.message)) {
+      return { properties: null, missing: true };
+    }
+    throw err;
+  }
 }
 
 async function saveMap(supabaseAdmin: SupabaseAdmin, scope: FlexScope, crmId: string, ids: Ids, jobId: string) {
