@@ -3,7 +3,7 @@
  * Given rows + column_map + options, resolve identity, resolve parents, write to CRM,
  * append import_items, and return a report + failed-rows CSV blob.
  */
-import type { CrmClient } from "../kleegr/client.server";
+import { CrmError, type CrmClient } from "../kleegr/client.server";
 import type { FlexScope } from "./flex-mapping";
 import { FIELD_CATALOG, coerce } from "./flex-mapping";
 import { createCrmClient } from "../kleegr/client.server";
@@ -173,13 +173,23 @@ export async function executeFlexImport(params: {
             report.imported++;
             undoOp = { kind: "delete", scope, crmId };
           } else {
-            // update
-            previous = await tryReadPrevious(client, scope, existing);
-            await updateRecord(client, scope, existing, properties);
-            resolution = action = "update";
-            report.updated++;
-            report.per_scope[scope].updated++;
-            undoOp = previous ? { kind: "patch", scope, crmId: existing, properties: previous } : null;
+            // update, unless the saved local CRM mapping points at a record that no longer exists.
+            const previousResult = await tryReadPrevious(client, scope, existing);
+            previous = previousResult.properties;
+            if (previousResult.missing) {
+              await removeStaleMap(supabaseAdmin, scope, existing, ids);
+              crmId = await createRecord(client, scope, properties, ids);
+              resolution = action = "create";
+              report.imported++;
+              report.per_scope[scope].created++;
+              undoOp = { kind: "delete", scope, crmId };
+            } else {
+              await updateRecord(client, scope, existing, properties);
+              resolution = action = "update";
+              report.updated++;
+              report.per_scope[scope].updated++;
+              undoOp = { kind: "patch", scope, crmId: existing, properties: previous };
+            }
           }
         } else {
           crmId = await createRecord(client, scope, properties, ids);
@@ -422,13 +432,29 @@ async function updateRecord(client: CrmClient, scope: FlexScope, crmId: string, 
   await requestObject(client, "PUT", scope, `/records/${crmId}`, { body: { properties: normalized } });
 }
 
-async function tryReadPrevious(client: CrmClient, scope: FlexScope, crmId: string): Promise<Record<string, unknown> | null> {
+async function removeStaleMap(supabaseAdmin: SupabaseAdmin, scope: FlexScope, crmId: string, ids: Ids) {
+  let query = supabaseAdmin.from("external_id_map").delete().eq("scope", scope).eq("crm_record_id", crmId);
+  if (ids.external_id) query = query.eq("external_import_id", ids.external_id);
+  const { error } = await query;
+  if (error) console.warn(`Failed to remove stale ${scope} mapping ${crmId}: ${error.message}`);
+}
+
+async function tryReadPrevious(
+  client: CrmClient,
+  scope: FlexScope,
+  crmId: string,
+): Promise<{ properties: Record<string, unknown> | null; missing: boolean }> {
   try {
     const data = await readRecord(client, scope, crmId);
     const rec = (data as { record?: { properties?: unknown } })?.record ?? data;
     const props = (rec as { properties?: unknown })?.properties;
-    return (props ?? null) as Record<string, unknown> | null;
-  } catch { return null; }
+    return { properties: (props ?? null) as Record<string, unknown> | null, missing: false };
+  } catch (err) {
+    if (err instanceof CrmError && err.status === 404 && /record with id/i.test(err.message)) {
+      return { properties: null, missing: true };
+    }
+    throw err;
+  }
 }
 
 async function saveMap(supabaseAdmin: SupabaseAdmin, scope: FlexScope, crmId: string, ids: Ids, jobId: string) {
