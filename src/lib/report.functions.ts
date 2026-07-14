@@ -36,6 +36,16 @@ function classify(availability: string | null, stage: string | null): UnitStatus
   return "unknown";
 }
 
+function statusToState(status: UnitStatus): { availability: string; stage: string } {
+  switch (status) {
+    case "sold": return { availability: "Not Available", stage: "Closed/Sold" };
+    case "under_contract": return { availability: "Not Available", stage: "Under Contract" };
+    case "reserved": return { availability: "Not Available", stage: "Reserved/Locked" };
+    case "available": return { availability: "Available", stage: "" };
+    default: return { availability: "", stage: "" };
+  }
+}
+
 function extractContactName(raw: unknown): string | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
