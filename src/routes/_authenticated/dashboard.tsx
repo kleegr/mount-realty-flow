@@ -20,7 +20,7 @@ function Dashboard() {
   const qc = useQueryClient();
   const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["dashboard"],
-    queryFn: () => fetch(),
+    queryFn: () => fetch({ data: { refresh: true } }),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
     refetchIntervalInBackground: true,
