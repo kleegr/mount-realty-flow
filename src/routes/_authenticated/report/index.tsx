@@ -25,6 +25,7 @@ const STATUS_META: Record<UnitStatus, { label: string; badge: string; row: strin
 
 function ReportPage() {
   const fn = useServerFn(getUnitReport);
+  const qc = useQueryClient();
   const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["unit-report"],
     queryFn: () => fn(),
