@@ -33,8 +33,11 @@ export interface FlexReport {
   auto_created_projects: number;
   auto_created_buildings: number;
   duplicates_created: number;
+  associations_ok: number;
+  associations_failed: number;
   per_scope: Record<FlexScope, { created: number; updated: number; skipped: number; failed: number }>;
   errors: Array<{ scope: FlexScope; ref: string; message: string; rowNumber: number }>;
+  warnings: string[];
 }
 
 type Row = Record<string, unknown>;
