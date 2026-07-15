@@ -17,9 +17,24 @@
  *
  * The backend automatically calls the GHL API to find the Unit/Building
  * associated with the opportunity — no manual custom field required.
+ *
+ * DEDUPE — read this before changing it:
+ * GHL workflows typically build event_id as "{{opportunity.id}}-{{stage}}", so
+ * the id is NOT unique per event: a deal that returns to a stage it already
+ * visited (Reserved -> Under Contract -> back to Reserved) reuses the same id.
+ * Some workflows are worse — if the stage merge tag resolves to empty, EVERY
+ * event for that opportunity carries the identical id. So an id we have seen
+ * before cannot be treated as a duplicate outright; that silently drops real
+ * moves and strands units as permanently Reserved.
+ * What a duplicate actually means here is a RETRY: GHL re-delivers a failed
+ * webhook within a couple of minutes. Hence a short time window, rather than
+ * "seen before, ever".
  */
 import { createFileRoute } from "@tanstack/react-router";
 import { createHmac, timingSafeEqual } from "crypto";
+
+/** A repeat inside this window is a GHL retry; outside it, a genuine move. */
+const DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 
 export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage")({
   server: {
@@ -50,17 +65,21 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-        // Dedupe replay
-        const existing = await supabaseAdmin
+        // Dedupe retries only — see the note at the top of this file.
+        const since = new Date(Date.now() - DEDUPE_WINDOW_MS).toISOString();
+        const { data: recent } = await supabaseAdmin
           .from("webhook_events")
-          .select("id, processed_at, outcome")
+          .select("id, outcome")
           .eq("provider_event_id", eventId)
-          .maybeSingle();
-        if (existing.data?.processed_at) {
-          return json({ ok: true, deduped: true, outcome: existing.data.outcome });
+          .not("processed_at", "is", null)
+          .gte("received_at", since)
+          .order("received_at", { ascending: false })
+          .limit(1);
+        if (recent && recent.length > 0) {
+          return json({ ok: true, deduped: true, outcome: recent[0].outcome });
         }
 
-        const { data: inserted } = await supabaseAdmin
+        const { data: inserted, error: insertError } = await supabaseAdmin
           .from("webhook_events")
           .insert({
             provider_event_id: eventId,
@@ -70,7 +89,15 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
             raw: payload as never,
           })
           .select("id")
-          .single();
+          .maybeSingle();
+
+        // Logging must never sink the event itself. Previously this blind-inserted
+        // and then dereferenced the result, so a unique-constraint collision on
+        // provider_event_id threw and the stage change was lost with no trace.
+        if (insertError) {
+          console.error("[webhook] could not log event:", insertError.message);
+        }
+        const eventRowId = inserted?.id ?? null;
 
         const { processStageChange } = await import("@/lib/kleegr/stage-apply.server");
         const outcome = await processStageChange({
@@ -83,10 +110,12 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
         // Grace window: no unit yet → keep event pending so it can be replayed
         // when the salesperson associates a unit later.
         if (outcome.outcome === "no_unit_reference") {
-          await supabaseAdmin
-            .from("webhook_events")
-            .update({ outcome: "pending_no_unit" }) // leave processed_at null
-            .eq("id", inserted!.id);
+          if (eventRowId) {
+            await supabaseAdmin
+              .from("webhook_events")
+              .update({ outcome: "pending_no_unit" }) // leave processed_at null
+              .eq("id", eventRowId);
+          }
           return json({
             ok: true,
             pending: true,
@@ -94,14 +123,16 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
           });
         }
 
-        await supabaseAdmin
-          .from("webhook_events")
-          .update({
-            processed_at: new Date().toISOString(),
-            outcome: outcome.outcome,
-            unit_crm_id: outcome.unitCrmId ?? null,
-          })
-          .eq("id", inserted!.id);
+        if (eventRowId) {
+          await supabaseAdmin
+            .from("webhook_events")
+            .update({
+              processed_at: new Date().toISOString(),
+              outcome: outcome.outcome,
+              unit_crm_id: outcome.unitCrmId ?? null,
+            })
+            .eq("id", eventRowId);
+        }
 
         return json({ ok: true, ...outcome });
       },
