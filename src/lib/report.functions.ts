@@ -12,7 +12,8 @@ async function requireImporter(userId: string) {
   }
 }
 
-export type UnitStatus = "available" | "reserved" | "under_contract" | "sold" | "unknown";
+// There is no "unknown" — every unit is always exactly one of these four.
+export type UnitStatus = "available" | "reserved" | "under_contract" | "sold";
 
 export interface UnitReportRow {
   unitCrmId: string;
@@ -34,8 +35,10 @@ function classify(availability: string | null, stage: string | null): UnitStatus
   if (s === "closed/sold" || s === "sold" || s === "closed" || a.includes("sold") || a.includes("closed")) return "sold";
   if (s === "under contract" || (a.includes("under") && a.includes("contract"))) return "under_contract";
   if (s === "reserved/locked" || s === "reserved" || s === "locked" || a.includes("reserved") || a.includes("locked")) return "reserved";
-  if (a === "available" || a === "" || a === "not available") return a === "available" || a === "" ? "available" : "unknown";
-  return "unknown";
+  // Anything locked in a shape we don't recognize renders as Reserved rather
+  // than inventing a fifth status; everything else is Available.
+  if (a === "not available" && s) return "reserved";
+  return "available";
 }
 
 function statusToState(status: UnitStatus): { availability: string; stage: string } {
@@ -44,7 +47,6 @@ function statusToState(status: UnitStatus): { availability: string; stage: strin
     case "under_contract": return { availability: "Not Available", stage: "Under Contract" };
     case "reserved": return { availability: "Not Available", stage: "Reserved/Locked" };
     case "available": return { availability: "Available", stage: "" };
-    default: return { availability: "", stage: "" };
   }
 }
 
@@ -81,11 +83,9 @@ export const getUnitReport = createServerFn({ method: "GET" })
 
     // SELF-HEAL runs from this page too — this is the page people actually
     // watch. Throttled internally (one real run per ~2 minutes), so the 30s
-    // polling loop stays cheap. It prunes deleted records, mirrors every
-    // unit's ACTUAL availability/stage from the CRM, and releases any unit
-    // whose holding opportunity is deleted / lost / moved to a release stage /
-    // no longer holds the Locked association. THE REPORT BELOW IS RENDERED
-    // FROM THE HEALED STATE.
+    // polling loop stays cheap. It enforces the stage→status table against
+    // the live CRM in both directions. THE REPORT BELOW IS RENDERED FROM THE
+    // HEALED STATE.
     try {
       const { selfHealCrmState } = await import("@/lib/kleegr/release.server");
       await selfHealCrmState(false);
@@ -121,12 +121,11 @@ export const getUnitReport = createServerFn({ method: "GET" })
       });
     }
 
-    // Enrich with live CRM opportunities → contact/lead name + live status per unit.
-    // Only on explicit refresh; on auto-loads we serve the cached snapshot fast.
-    // NOTE: this can both LOCK (deal sits in a locking stage) and RELEASE (deal
-    // sits in a release stage) now that classifyLead knows the full release
-    // list — previously it could only ever lock, which made the report a
-    // one-way ratchet.
+    // Enrich with live CRM opportunities → contact/lead name + live status per
+    // unit. Only on explicit refresh. Position is truth in BOTH directions
+    // here too — a card in a release stage frees the unit, a card dragged back
+    // out of Closing un-sells it. Stages missing from the table return
+    // "unknown" and are not touched.
     if (refresh) {
       const liveStatus = new Map<string, UnitStatus>();
       try {
@@ -148,8 +147,6 @@ export const getUnitReport = createServerFn({ method: "GET" })
       const stateUpserts: Array<{ unit_crm_id: string; availability: string; stage: string }> = [];
       for (const [unitId, status] of liveStatus) {
         const prev = stateMap.get(unitId);
-        // Sold is terminal for automated paths — never let live enrichment undo it.
-        if ((prev?.stage ?? "").trim() === "Closed/Sold" && status !== "sold") continue;
         const prevStatus = classify(prev?.availability ?? null, prev?.stage ?? null);
         if (prevStatus === status) continue;
         const target = statusToState(status);
@@ -181,7 +178,7 @@ export const getUnitReport = createServerFn({ method: "GET" })
       };
     });
 
-    const totals = { available: 0, reserved: 0, under_contract: 0, sold: 0, unknown: 0, total: rows.length };
+    const totals = { available: 0, reserved: 0, under_contract: 0, sold: 0, total: rows.length };
     for (const r of rows) totals[r.status]++;
 
     rows.sort((a, b) => a.unitName.localeCompare(b.unitName));

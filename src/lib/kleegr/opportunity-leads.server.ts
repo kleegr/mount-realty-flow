@@ -1,6 +1,12 @@
 /**
  * Fetch opportunities from GHL and map contact/lead name → unit CRM id.
  * Server-only. Used by the Unit Report to display the lead that reserved a unit.
+ *
+ * Status classification uses the SAME stage→status table as everything else:
+ * every stage in crm_pipelines lands in exactly one of
+ * available / reserved / under_contract / sold. A stage missing from the
+ * table returns "unknown", which callers treat as "do not touch" — no keyword
+ * guessing, the table is the truth.
  */
 import { createCrmClient } from "./client.server";
 import { fetchOpportunityAssociations } from "./opportunities.server";
@@ -36,10 +42,15 @@ async function loadPipelineMap(): Promise<PipelineMap> {
   try {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { data } = await supabaseAdmin.from("crm_pipelines").select(
-      "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name, release_stage_names",
+      "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name, release_stage_names, reserved_stage_names, under_contract_stage_names, sold_stage_names",
     );
     for (const raw of (data ?? []) as Array<Record<string, unknown>>) {
       const s = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
+      const addAll = (list: unknown, set: Set<string>) => {
+        if (Array.isArray(list)) {
+          for (const n of list) if (typeof n === "string" && n.trim()) set.add(n.trim().toLowerCase());
+        }
+      };
       const rid = s(raw.stage_reserved_id); if (rid) empty.reserved_ids.add(rid);
       const uid = s(raw.stage_under_contract_id); if (uid) empty.under_contract_ids.add(uid);
       const cid = s(raw.stage_closed_id); if (cid) empty.closed_ids.add(cid);
@@ -48,16 +59,11 @@ async function loadPipelineMap(): Promise<PipelineMap> {
       const un = s(raw.stage_under_contract_name); if (un) empty.under_contract_names.add(un.trim().toLowerCase());
       const cn = s(raw.stage_closed_name); if (cn) empty.closed_names.add(cn.trim().toLowerCase());
       const ln = s(raw.stage_release_name); if (ln) empty.release_names.add(ln.trim().toLowerCase());
-      // EVERY configured release stage counts — this is what lets the live
-      // enrichment classify a deal dragged back to Meeting / Showing as
-      // "available" instead of "unknown" (which used to make releases
-      // impossible from this path).
-      const list = raw.release_stage_names;
-      if (Array.isArray(list)) {
-        for (const n of list) {
-          if (typeof n === "string" && n.trim()) empty.release_names.add(n.trim().toLowerCase());
-        }
-      }
+      // The full stage→status table.
+      addAll(raw.reserved_stage_names, empty.reserved_names);
+      addAll(raw.under_contract_stage_names, empty.under_contract_names);
+      addAll(raw.sold_stage_names, empty.closed_names);
+      addAll(raw.release_stage_names, empty.release_names);
     }
   } catch { /* no config yet */ }
   return empty;
@@ -71,15 +77,13 @@ function classifyLead(stageId: string | null, stageName: string | null, m: Pipel
     if (m.release_ids.has(stageId)) return "available";
   }
   if (stageName) {
-    const s = stageName.trim().toLowerCase();
+    const s = stageName.trim().toLowerCase().replace(/\s+/g, " ");
     if (m.closed_names.has(s)) return "sold";
     if (m.under_contract_names.has(s)) return "under_contract";
     if (m.reserved_names.has(s)) return "reserved";
     if (m.release_names.has(s)) return "available";
-    if (s.includes("closed") || s === "sold" || s.includes("won")) return "sold";
-    if (s.includes("contract")) return "under_contract";
-    if (s.includes("reserved") || s.includes("lock")) return "reserved";
   }
+  // Not in the table — do not guess, do not touch.
   return "unknown";
 }
 

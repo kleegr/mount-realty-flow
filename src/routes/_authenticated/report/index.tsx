@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CheckCircle2, Clock, FileSignature, DollarSign, HelpCircle, Users, RefreshCw } from "lucide-react";
+import { CheckCircle2, Clock, FileSignature, DollarSign, Users, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/report/")({
@@ -20,7 +20,6 @@ const STATUS_META: Record<UnitStatus, { label: string; badge: string; row: strin
   reserved: { label: "Reserved", badge: "bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30", row: "" },
   under_contract: { label: "Under Contract", badge: "bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30", row: "" },
   sold: { label: "Sold", badge: "bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/30", row: "" },
-  unknown: { label: "Unknown", badge: "bg-muted text-muted-foreground border-border", row: "" },
 };
 
 function ReportPage() {
@@ -71,12 +70,11 @@ function ReportPage() {
       </div>
 
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatusTile label="Available" value={totals?.available} icon={CheckCircle2} tone="success" active={filter === "available"} onClick={() => setFilter(filter === "available" ? "all" : "available")} />
         <StatusTile label="Reserved" value={totals?.reserved} icon={Clock} tone="warning" active={filter === "reserved"} onClick={() => setFilter(filter === "reserved" ? "all" : "reserved")} />
         <StatusTile label="Under Contract" value={totals?.under_contract} icon={FileSignature} tone="info" active={filter === "under_contract"} onClick={() => setFilter(filter === "under_contract" ? "all" : "under_contract")} />
         <StatusTile label="Sold" value={totals?.sold} icon={DollarSign} tone="danger" active={filter === "sold"} onClick={() => setFilter(filter === "sold" ? "all" : "sold")} />
-        <StatusTile label="Unknown" value={totals?.unknown} icon={HelpCircle} tone="muted" active={filter === "unknown"} onClick={() => setFilter(filter === "unknown" ? "all" : "unknown")} />
       </div>
 
       <Card>
@@ -158,7 +156,7 @@ function StatusTile({
   label: string;
   value: number | undefined;
   icon: React.ComponentType<{ className?: string }>;
-  tone: "success" | "warning" | "info" | "danger" | "muted";
+  tone: "success" | "warning" | "info" | "danger";
   active: boolean;
   onClick: () => void;
 }) {
@@ -167,7 +165,6 @@ function StatusTile({
     warning: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
     info: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
     danger: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
-    muted: "bg-muted text-muted-foreground",
   };
   return (
     <button
