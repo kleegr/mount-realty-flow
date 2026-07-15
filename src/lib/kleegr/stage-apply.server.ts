@@ -21,6 +21,13 @@ import { normalizeStagePayload } from "./webhook-payload.server";
  *   - anything else → stage_not_mapped, unit keeps its current state. This is
  *     deliberate: mid-contract stages such as Payment Tracking or Attorney /
  *     Title must HOLD Under Contract, not release it.
+ *
+ * Ownership rules:
+ *   - Closed/Sold is terminal. Only a human can undo it.
+ *   - While a unit is locked, unit_state.held_by_opportunity_id records WHICH
+ *     opportunity holds it. The holding opportunity may move freely in either
+ *     direction (Reserved <-> Under Contract, or back out to Available).
+ *     A DIFFERENT opportunity cannot touch the unit until it is released.
  */
 export interface StageChangeInput {
   pipelineId: string | null;
@@ -111,11 +118,17 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
 
   // Unit path (default) — unitCrmId is guaranteed non-null here.
   const unitId = unitCrmId!;
-
-
-
-
   const { availability, stage, inventoryDeducted } = target;
+  const incomingOpportunityId = params.opportunityId ?? null;
+
+  // Cached state: who holds this unit, and its parents (for rollups).
+  // Read BEFORE any write so the ownership guards can use it.
+  const { data: cachedState } = await supabaseAdmin
+    .from("unit_state")
+    .select("building_crm_id, project_crm_id, held_by_opportunity_id")
+    .eq("unit_crm_id", unitId)
+    .maybeSingle();
+  const heldBy = cachedState?.held_by_opportunity_id ?? null;
 
   const { createCrmClient } = await import("./client.server");
   const { readRecord } = await import("./objects.server");
@@ -130,11 +143,43 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     return { outcome: "read_failed", unitCrmId: unitId, message: err instanceof Error ? err.message : String(err) };
   }
 
+  // ---- Guard 1: Closed/Sold is terminal. Nothing automated reverses a sale.
   if (currentStage === "Closed/Sold" && stage !== "Closed/Sold") {
-    return { outcome: "blocked_sold_reversal", unitCrmId: unitId };
+    return {
+      outcome: "blocked_sold_reversal",
+      unitCrmId: unitId,
+      message: "Unit is Sold. Releasing a sold unit must be done manually.",
+    };
   }
-  if (stage === "Reserved/Locked" && currentAvailability === "Not Available" && currentStage && currentStage !== "Reserved/Locked") {
-    return { outcome: "blocked_double_reservation", unitCrmId: unitId, message: `Unit is currently ${currentStage}.` };
+
+  // ---- Guard 2: a DIFFERENT opportunity is holding this unit.
+  // The holder may move freely (forward, backward, or release). Anyone else is
+  // locked out until the holder gives it up.
+  const isLocked = currentAvailability === "Not Available" && currentStage !== "";
+  if (isLocked && heldBy && incomingOpportunityId && heldBy !== incomingOpportunityId) {
+    return {
+      outcome: "blocked_held_by_other_opportunity",
+      unitCrmId: unitId,
+      message: `Unit is ${currentStage} under opportunity ${heldBy}. Release it there first.`,
+    };
+  }
+
+  // ---- Guard 3: legacy fallback. No holder on record (state came from an
+  // import or a CRM sync rather than a webhook), so we cannot prove the
+  // incoming opportunity owns the lock. Refuse a fresh reservation on a unit
+  // that is already locked in a different state.
+  if (
+    !heldBy
+    && stage === "Reserved/Locked"
+    && currentAvailability === "Not Available"
+    && currentStage
+    && currentStage !== "Reserved/Locked"
+  ) {
+    return {
+      outcome: "blocked_double_reservation",
+      unitCrmId: unitId,
+      message: `Unit is currently ${currentStage}.`,
+    };
   }
 
   const client = await createCrmClient();
@@ -150,17 +195,20 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     },
   });
 
+  // Locking records the holder; releasing clears it.
+  const nextHeldBy = stage ? (incomingOpportunityId ?? heldBy) : null;
   await supabaseAdmin.from("unit_state").upsert(
-    { unit_crm_id: unitId, availability: availability ?? "", stage: stage ?? "" },
+    {
+      unit_crm_id: unitId,
+      availability: availability ?? "",
+      stage: stage ?? "",
+      held_by_opportunity_id: nextHeldBy,
+    },
     { onConflict: "unit_crm_id" },
   );
-  const { data: cached } = await supabaseAdmin
-    .from("unit_state")
-    .select("building_crm_id, project_crm_id")
-    .eq("unit_crm_id", unitId)
-    .maybeSingle();
-  const buildingId = cached?.building_crm_id ?? null;
-  const projectId = cached?.project_crm_id ?? null;
+
+  const buildingId = cachedState?.building_crm_id ?? null;
+  const projectId = cachedState?.project_crm_id ?? null;
 
   if (buildingId || projectId) {
     const { summarize, writeBuildingRollup, writeProjectRollup } = await import("./rollups.server");
@@ -184,9 +232,9 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     kind: "opportunity_stage_change",
     entity_scope: "unit",
     entity_crm_id: unitId,
-    previous: { availability: currentAvailability, stage: currentStage } as never,
-    next: { availability, stage } as never,
-    reason: `Opportunity ${params.opportunityId ?? ""} moved to stage ${params.stageName ?? params.stageId ?? ""}`,
+    previous: { availability: currentAvailability, stage: currentStage, held_by: heldBy } as never,
+    next: { availability, stage, held_by: nextHeldBy } as never,
+    reason: `Opportunity ${incomingOpportunityId ?? ""} moved to stage ${params.stageName ?? params.stageId ?? ""}`,
   });
 
   return { outcome: `applied:${stage || "available"}`, unitCrmId: unitId };
@@ -263,7 +311,7 @@ function matchByName(stageName: string | null, m: StageMapping): StageTarget | n
   if (!stageName) return null;
   const s = normalizeStageName(stageName);
   if (!s) return null;
-  const eq = (v?: string | null) => Boolean(v) && normalizeStageName(v!) === s;
+  const eq = (v?: string | null) => Boolean(v) && normalizeStageName(String(v)) === s;
 
   if (eq(m.stage_reserved_name)) return RESERVED;
   if (eq(m.stage_under_contract_name)) return UNDER_CONTRACT;
@@ -273,14 +321,14 @@ function matchByName(stageName: string | null, m: StageMapping): StageTarget | n
   // Any listed release stage frees the unit — this is what makes a deal moving
   // BACKWARD (e.g. back to Meeting / Showing) put the unit back on the market.
   const releaseList = m.release_stage_names ?? [];
-  if (Array.isArray(releaseList) && releaseList.some((n) => Boolean(n) && normalizeStageName(n) === s)) {
+  if (Array.isArray(releaseList) && releaseList.some((n) => Boolean(n) && normalizeStageName(String(n)) === s)) {
     return RELEASED;
   }
 
   return null;
 }
 
-/** Case/space/punctuation-insensitive stage name comparison. */
+/** Case/space-insensitive stage name comparison. */
 function normalizeStageName(value: string): string {
   return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
