@@ -10,6 +10,61 @@ async function requireImporter(userId: string) {
   if (!roles.includes("admin") && !roles.includes("importer")) throw new Error("Forbidden");
 }
 
+/**
+ * Self-healing CRM sync. Runs the unit-state mirror + the orphaned-lock
+ * reconcile sweep. Called on EVERY dashboard view, throttled to once per
+ * 5 minutes via a marker row in audit_events — so the dashboard is always
+ * eventually correct without anyone pressing anything. "Sync now" (refresh)
+ * forces it regardless of the throttle.
+ */
+async function selfHealCrmState(force: boolean): Promise<void> {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+  if (!force) {
+    const { data: last } = await supabaseAdmin
+      .from("audit_events")
+      .select("created_at")
+      .eq("kind", "reconcile_run")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (last?.created_at && Date.now() - new Date(last.created_at).getTime() < 5 * 60 * 1000) {
+      return; // healed recently — skip
+    }
+  }
+
+  // Marker first, so concurrent dashboard loads don't stampede the CRM.
+  await supabaseAdmin
+    .from("audit_events")
+    .insert({ kind: "reconcile_run", reason: force ? "manual sync" : "auto (dashboard view)" })
+    .then(() => undefined, () => undefined);
+
+  // 1) Mirror each Unit's ACTUAL state from the CRM — catches manual edits
+  //    made directly in GHL (Not Available -> Available and vice versa).
+  try {
+    const { syncUnitStatesFromCrm } = await import("@/lib/kleegr/live-records.server");
+    const res = await syncUnitStatesFromCrm();
+    if (res.skipped) console.warn("[heal] unit mirror skipped:", res.skipped);
+  } catch (err) {
+    console.warn("[heal] unit mirror failed:", err instanceof Error ? err.message : err);
+  }
+
+  // 2) Orphan sweep — any unit whose holding opportunity was deleted, lost,
+  //    moved to a release stage, or no longer holds the unit via a
+  //    Locked/Reserved association is released on BOTH sides.
+  try {
+    const { reconcileHeldUnits } = await import("@/lib/kleegr/release.server");
+    const rec = await reconcileHeldUnits();
+    if (rec.released.length > 0 || rec.skipped.length > 0) {
+      console.info(
+        `[heal] reconcile: checked ${rec.checked}, released ${rec.released.length}, kept ${rec.keptHeld}, skipped ${rec.skipped.length}`,
+      );
+    }
+  } catch (err) {
+    console.warn("[heal] held-unit reconcile failed:", err instanceof Error ? err.message : err);
+  }
+}
+
 export const getDashboardSnapshot = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ refresh: z.boolean().optional() }).optional().parse(d) ?? {})
@@ -18,7 +73,7 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const refresh = data?.refresh === true;
 
-    // Heavy CRM calls only run on explicit refresh — otherwise render fast from local mirror.
+    // Heaviest CRM calls only run on explicit refresh.
     if (refresh) {
       try {
         const { reconcileScopes } = await import("@/lib/kleegr/live-records.server");
@@ -64,37 +119,16 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
       } catch (err) {
         console.warn("[dashboard] live status sync failed:", err instanceof Error ? err.message : err);
       }
+    }
 
-      // Mirror each Unit's ACTUAL state from the CRM. Runs after the leads
-      // sync, so the CRM record wins: it is what the stage webhook writes and
-      // what a human edits by hand in GHL. This is the only step that notices
-      // a unit flipped from Not Available back to Available directly in the
-      // CRM — the leads sync above only ever visits units that still have an
-      // opportunity attached.
-      try {
-        const { syncUnitStatesFromCrm } = await import("@/lib/kleegr/live-records.server");
-        const res = await syncUnitStatesFromCrm();
-        if (res.skipped) console.warn("[dashboard] unit mirror skipped:", res.skipped);
-      } catch (err) {
-        console.warn("[dashboard] unit mirror failed:", err instanceof Error ? err.message : err);
-      }
-
-      // Orphan sweep, last: any unit whose lock was placed by an opportunity
-      // that has since been deleted, or that no longer holds the unit via a
-      // Locked/Reserved association, is released back to Available (GHL +
-      // mirror + rollups + audit log). Covers detach / delete — the events
-      // GHL fires no webhook for.
-      try {
-        const { reconcileHeldUnits } = await import("@/lib/kleegr/release.server");
-        const rec = await reconcileHeldUnits();
-        if (rec.released.length > 0 || rec.skipped.length > 0) {
-          console.info(
-            `[dashboard] reconcile: checked ${rec.checked}, released ${rec.released.length}, kept ${rec.keptHeld}, skipped ${rec.skipped.length}`,
-          );
-        }
-      } catch (err) {
-        console.warn("[dashboard] held-unit reconcile failed:", err instanceof Error ? err.message : err);
-      }
+    // Self-heal on EVERY view (throttled), forced on explicit refresh. This is
+    // what keeps the dashboard truthful even when a GHL workflow never fired:
+    // deleted/lost opportunities, backward stage moves, and detached units all
+    // get their inventory released here.
+    try {
+      await selfHealCrmState(refresh);
+    } catch (err) {
+      console.warn("[dashboard] self-heal failed:", err instanceof Error ? err.message : err);
     }
 
 

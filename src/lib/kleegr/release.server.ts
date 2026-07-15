@@ -2,10 +2,10 @@
  * Unit release engine — the single place a locked/reserved unit returns to
  * Available. Used by:
  *
- *   - the reconcile sweep (orphaned locks: association removed, opp deleted)
+ *   - the self-healing reconcile sweep (runs on every dashboard view, throttled)
  *   - the opportunity-deleted webhook
- *   - the unit-associated webhook (SELECTED_UNIT_CHANGED: new unit locked,
- *     previous unit freed)
+ *   - the unit-associated webhook (SELECTED_UNIT_CHANGED)
+ *   - the manual release-units admin endpoint
  *
  * Every release updates BOTH sides (the GHL Unit record and the unit_state
  * mirror the dashboard reads), clears the holder, recomputes parent rollups,
@@ -13,27 +13,28 @@
  *
  * Safety rules, in order:
  *   1. Closed/Sold never auto-releases. Only MANUAL_UNIT_RELEASE may free it.
- *   2. Releasing an already-Available unit is a successful no-op (idempotent —
- *      GHL redelivers webhooks).
- *   3. Callers that decide WHETHER to release must use strict CRM reads that
- *      throw on failure (see fetchUnitAssociationSets). A transient CRM outage
- *      must never look like "the association is gone".
+ *   2. Releasing an already-Available unit is a successful no-op (idempotent).
+ *   3. Callers that decide WHETHER to release use strict CRM reads. A
+ *      transient CRM outage must never look like "the association is gone" —
+ *      on any read failure the unit is SKIPPED, never released.
  */
 import type { CrmClient } from "./client.server";
 import { FIELDS } from "./field-map";
 import { normalizeRecordProperties, requestObject } from "./object-config.server";
 
 export type ReleaseReason =
-  | "UNIT_ASSOCIATION_REMOVED"   // locked association deleted / moved back to suggested
+  | "UNIT_ASSOCIATION_REMOVED"   // locked association deleted / switched to suggested
   | "SELECTED_UNIT_CHANGED"      // a different unit was locked for the same opportunity
   | "OPPORTUNITY_DELETED"        // the holding opportunity no longer exists
-  | "MOVED_TO_RELEASE_STAGE"     // (stage webhook path — logged for completeness)
+  | "OPPORTUNITY_LOST"           // the holding opportunity is lost/abandoned
+  | "MOVED_TO_RELEASE_STAGE"     // the holding opportunity sits in a release stage
   | "MANUAL_UNIT_RELEASE";       // human-initiated force release
 
 export interface ReleaseResult {
   unitCrmId: string;
   released: boolean;
   outcome: string; // released | already_available | sold_protected | ghl_failed:... | mirror_failed:...
+  reason?: ReleaseReason;
 }
 
 export interface ReconcileResult {
@@ -70,13 +71,13 @@ export async function releaseUnit(
 
   // Rule 1: a sale is terminal for every automated path.
   if (currentStage === "Closed/Sold" && reason !== "MANUAL_UNIT_RELEASE") {
-    return { unitCrmId, released: false, outcome: "sold_protected" };
+    return { unitCrmId, released: false, outcome: "sold_protected", reason };
   }
 
   // Rule 2: idempotent no-op.
   if (row && currentAvailability === "Available" && !currentStage) {
     await clearHolder(unitCrmId);
-    return { unitCrmId, released: false, outcome: "already_available" };
+    return { unitCrmId, released: false, outcome: "already_available", reason };
   }
 
   // ---- GHL side. Empty strings are stripped by normalizeRecordProperties,
@@ -100,6 +101,7 @@ export async function releaseUnit(
       unitCrmId,
       released: false,
       outcome: `ghl_failed: ${err instanceof Error ? err.message : String(err)}`,
+      reason,
     };
   }
 
@@ -109,7 +111,7 @@ export async function releaseUnit(
     { onConflict: "unit_crm_id" },
   );
   if (upErr) {
-    return { unitCrmId, released: false, outcome: `mirror_failed: ${upErr.message}` };
+    return { unitCrmId, released: false, outcome: `mirror_failed: ${upErr.message}`, reason };
   }
   await clearHolder(unitCrmId);
 
@@ -126,7 +128,7 @@ export async function releaseUnit(
     reason: `${reason}${opportunityId ? ` (opportunity ${opportunityId})` : ""}`,
   });
 
-  return { unitCrmId, released: true, outcome: "released" };
+  return { unitCrmId, released: true, outcome: "released", reason };
 }
 
 async function clearHolder(unitCrmId: string): Promise<void> {
@@ -178,7 +180,6 @@ export async function releaseUnitsHeldBy(
     .select("unit_crm_id")
     .eq("held_by_opportunity_id", opportunityId);
   if (error) {
-    // Column missing (migration not run) or query failure — nothing safe to do.
     console.warn("[release] held-by lookup failed:", error.message);
     return [];
   }
@@ -195,20 +196,114 @@ function isNotFound(err: unknown): boolean {
   return status === 404 || status === 400;
 }
 
+function normStage(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline catalog (stage id -> name) + release rules from crm_pipelines
+// ---------------------------------------------------------------------------
+
+interface PipelineCatalog {
+  stageNameById: Map<string, string>;
+  pipelineNameById: Map<string, string>;
+}
+
+async function fetchPipelineCatalog(c: CrmClient): Promise<PipelineCatalog | null> {
+  const locationId = c.config.location_id;
+  if (!locationId) return null;
+  try {
+    const res = await c.request<{ pipelines?: Array<Record<string, unknown>> }>(
+      "GET",
+      "/opportunities/pipelines",
+      { query: { locationId } },
+    );
+    const stageNameById = new Map<string, string>();
+    const pipelineNameById = new Map<string, string>();
+    for (const p of res.data?.pipelines ?? []) {
+      const pid = typeof p.id === "string" ? p.id : null;
+      if (pid && typeof p.name === "string") pipelineNameById.set(pid, p.name);
+      const stages = Array.isArray(p.stages) ? (p.stages as Array<Record<string, unknown>>) : [];
+      for (const s of stages) {
+        if (typeof s.id === "string" && typeof s.name === "string") stageNameById.set(s.id, s.name);
+      }
+    }
+    return { stageNameById, pipelineNameById };
+  } catch (err) {
+    console.warn("[release] pipeline catalog fetch failed:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+interface ReleaseRule {
+  releaseNames: Set<string>; // normalized
+}
+
+interface ReleaseRules {
+  byPipelineId: Map<string, ReleaseRule>;
+  byPipelineName: Map<string, ReleaseRule>;
+}
+
+async function loadReleaseRules(): Promise<ReleaseRules> {
+  const rules: ReleaseRules = { byPipelineId: new Map(), byPipelineName: new Map() };
+  const supabaseAdmin = await admin();
+  const { data, error } = await supabaseAdmin
+    .from("crm_pipelines")
+    .select("pipeline_id, pipeline_name, stage_release_name, release_stage_names");
+  if (error || !data) return rules;
+  for (const row of data as Array<Record<string, unknown>>) {
+    const releaseNames = new Set<string>();
+    const single = row.stage_release_name;
+    if (typeof single === "string" && single.trim()) releaseNames.add(normStage(single));
+    const list = row.release_stage_names;
+    if (Array.isArray(list)) {
+      for (const n of list) if (typeof n === "string" && n.trim()) releaseNames.add(normStage(n));
+    }
+    if (releaseNames.size === 0) continue;
+    const rule: ReleaseRule = { releaseNames };
+    if (typeof row.pipeline_id === "string" && row.pipeline_id) rules.byPipelineId.set(row.pipeline_id, rule);
+    if (typeof row.pipeline_name === "string" && row.pipeline_name) rules.byPipelineName.set(normStage(row.pipeline_name), rule);
+  }
+  return rules;
+}
+
+interface OppSnapshot {
+  exists: boolean;
+  status: string | null;
+  pipelineId: string | null;
+  stageId: string | null;
+}
+
+async function fetchOpportunitySnapshot(c: CrmClient, oppId: string): Promise<OppSnapshot | "error"> {
+  try {
+    const res = await c.request<Record<string, unknown>>("GET", `/opportunities/${oppId}`, {});
+    const d = (res.data ?? {}) as Record<string, unknown>;
+    const opp = (d.opportunity && typeof d.opportunity === "object" ? d.opportunity : d) as Record<string, unknown>;
+    const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+    return {
+      exists: true,
+      status: (str(opp.status) ?? "").toLowerCase() || null,
+      pipelineId: str(opp.pipelineId) ?? str(opp.pipeline_id),
+      stageId: str(opp.pipelineStageId) ?? str(opp.stageId) ?? str(opp.pipeline_stage_id),
+    };
+  } catch (err) {
+    if (isNotFound(err)) return { exists: false, status: null, pipelineId: null, stageId: null };
+    return "error";
+  }
+}
+
 /**
- * Reconcile sweep: for every unit whose lock was placed by an opportunity,
- * verify the opportunity still exists AND still holds the unit via a
- * Locked/Reserved association. Otherwise release it.
+ * Self-healing reconcile: for every unit whose lock was placed by an
+ * opportunity, verify against the LIVE CRM that the hold is still justified.
+ * Release when:
+ *   - the opportunity no longer exists / is deleted   -> OPPORTUNITY_DELETED
+ *   - the opportunity is lost or abandoned            -> OPPORTUNITY_LOST
+ *   - the opportunity sits in a configured release    -> MOVED_TO_RELEASE_STAGE
+ *     stage (covers GHL workflows that never fired)
+ *   - the Locked/Reserved association is gone         -> UNIT_ASSOCIATION_REMOVED
  *
- * Covers the events GHL fires no webhook for:
- *   - the unit was detached from the lead          -> UNIT_ASSOCIATION_REMOVED
- *   - the association was switched to Suggested    -> UNIT_ASSOCIATION_REMOVED
- *   - the opportunity was deleted from the pipeline-> OPPORTUNITY_DELETED
- *
- * Never touches:
- *   - Closed/Sold units (terminal)
- *   - units with no recorded holder (import-owned state)
- *   - anything when the CRM read fails (strict fetches; skip, don't guess)
+ * Never touches: Closed/Sold units, units with no recorded holder
+ * (import-owned state), or anything whose CRM read failed.
  */
 export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileResult> {
   const result: ReconcileResult = { checked: 0, released: [], keptHeld: 0, skipped: [] };
@@ -234,47 +329,66 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
 
   // Group units by holding opportunity so each opp is fetched once.
   const byOpp = new Map<string, Array<{ unitCrmId: string; stage: string }>>();
-  for (const row of held ?? []) {
-    const opp = row.held_by_opportunity_id as string;
-    const stage = (row.stage ?? "").trim();
+  for (const row of (held ?? []) as Array<Record<string, unknown>>) {
+    const opp = typeof row.held_by_opportunity_id === "string" ? row.held_by_opportunity_id : null;
+    const unitCrmId = typeof row.unit_crm_id === "string" ? row.unit_crm_id : null;
+    if (!opp || !unitCrmId) continue;
+    const stage = String(row.stage ?? "").trim();
     if (stage === "Closed/Sold") continue; // terminal — rule 1
     const arr = byOpp.get(opp) ?? [];
-    arr.push({ unitCrmId: row.unit_crm_id, stage });
+    arr.push({ unitCrmId, stage });
     byOpp.set(opp, arr);
   }
 
+  if (byOpp.size === 0) return result;
+
+  const [catalog, rules] = await Promise.all([fetchPipelineCatalog(c), loadReleaseRules()]);
   const { fetchUnitAssociationSets } = await import("./opportunities.server");
 
   for (const [oppId, units] of byOpp) {
     result.checked += units.length;
 
-    // 1) Does the opportunity still exist?
-    let oppExists = true;
-    try {
-      await c.request("GET", `/opportunities/${oppId}`, {});
-    } catch (err) {
-      if (isNotFound(err)) {
-        oppExists = false;
-      } else {
-        // Transient failure — do NOT release on a guess.
-        result.skipped.push({ opportunityId: oppId, reason: `opportunity read failed: ${err instanceof Error ? err.message : String(err)}` });
-        continue;
-      }
+    // 1) Does the opportunity still exist, and in what state?
+    const snap = await fetchOpportunitySnapshot(c, oppId);
+    if (snap === "error") {
+      result.skipped.push({ opportunityId: oppId, reason: "opportunity read failed (transient) — not releasing on a guess" });
+      continue;
     }
 
-    if (!oppExists) {
+    if (!snap.exists || snap.status === "deleted") {
       for (const u of units) {
         result.released.push(await releaseUnit(c, u.unitCrmId, "OPPORTUNITY_DELETED", oppId));
       }
       continue;
     }
 
-    // 2) Does it still hold each unit via a Locked/Reserved association?
+    if (snap.status === "lost" || snap.status === "abandoned") {
+      for (const u of units) {
+        result.released.push(await releaseUnit(c, u.unitCrmId, "OPPORTUNITY_LOST", oppId));
+      }
+      continue;
+    }
+
+    // 2) Is the opportunity sitting in a release stage? (Covers GHL workflows
+    //    that never fired for backward moves.)
+    if (snap.pipelineId && snap.stageId && catalog) {
+      const stageName = catalog.stageNameById.get(snap.stageId) ?? null;
+      const pipelineName = catalog.pipelineNameById.get(snap.pipelineId) ?? null;
+      const rule = rules.byPipelineId.get(snap.pipelineId)
+        ?? (pipelineName ? rules.byPipelineName.get(normStage(pipelineName)) : undefined);
+      if (rule && stageName && rule.releaseNames.has(normStage(stageName))) {
+        for (const u of units) {
+          result.released.push(await releaseUnit(c, u.unitCrmId, "MOVED_TO_RELEASE_STAGE", oppId));
+        }
+        continue;
+      }
+    }
+
+    // 3) Does it still hold each unit via a Locked/Reserved association?
     let lockedIds: Set<string>;
     try {
       const sets = await fetchUnitAssociationSets(c, oppId);
       if (!sets.lockedAssociationDefined) {
-        // Nothing to filter on — cannot distinguish held from suggested. Skip.
         result.skipped.push({ opportunityId: oppId, reason: "no Locked/Reserved association defined; cannot verify" });
         continue;
       }
