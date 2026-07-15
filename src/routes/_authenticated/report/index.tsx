@@ -25,9 +25,13 @@ const STATUS_META: Record<UnitStatus, { label: string; badge: string; row: strin
 function ReportPage() {
   const fn = useServerFn(getUnitReport);
   const qc = useQueryClient();
+  // 30s polls are LIGHT (refresh:false): they render the mirror, and the
+  // server-side self-heal keeps the mirror true on its own ~2-minute cycle.
+  // The Sync now button passes refresh:true, which FORCES a full live-CRM
+  // heal + lead enrichment immediately.
   const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["unit-report"],
-    queryFn: () => fn({ data: { refresh: true } }),
+    queryFn: () => fn({ data: { refresh: false } }),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
     refetchIntervalInBackground: true,
