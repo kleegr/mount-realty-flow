@@ -31,11 +31,11 @@ import { cn } from "@/lib/utils";
 
 /**
  * Top-ribbon app shell, built for running INSIDE GoHighLevel as an embedded
- * custom link. Customers see three simple tabs — Dashboard, Import Center,
- * Import History. Everything operational lives in a single "Menu" dropdown,
- * with the Admin Panel tucked under the settings group. Colors are the Kleegr
- * palette (deep navy bar, amber accent) so it never clashes with the GHL
- * chrome around it.
+ * custom link. GHL already draws its own dark/purple chrome above the iframe,
+ * so this ribbon is deliberately LIGHT — white bar, navy text, amber accents —
+ * to avoid two stacked dark bars fighting each other. Customers see three
+ * simple tabs; everything operational lives in one "Menu" dropdown, with the
+ * Admin Panel grouped under settings.
  */
 
 const PRIMARY_NAV = [
@@ -77,18 +77,18 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <header className="sticky top-0 z-40 bg-sidebar text-sidebar-foreground shadow-md">
+      <header className="sticky top-0 z-40 border-b border-border bg-card/95 backdrop-blur">
         <div className="mx-auto flex h-12 max-w-7xl items-center gap-2 px-3 sm:gap-4 sm:px-5">
-          {/* Brand — compact, light-on-navy */}
+          {/* Brand — navy square, amber-free so the underline is the only accent */}
           <Link to="/dashboard" className="flex shrink-0 items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
               <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" xmlns="http://www.w3.org/2000/svg">
                 <path d="M4 10 12 3l8 7v10a1 1 0 0 1-1 1h-5v-7h-4v7H5a1 1 0 0 1-1-1V10Z" fill="currentColor" opacity="0.9" />
               </svg>
             </div>
             <div className="hidden flex-col leading-none sm:flex">
-              <span className="text-sm font-bold tracking-tight text-sidebar-foreground">Kleegr</span>
-              <span className="text-[9px] font-medium uppercase tracking-wider text-sidebar-foreground/60">Mount Realty</span>
+              <span className="text-sm font-bold tracking-tight text-foreground">Kleegr</span>
+              <span className="text-[9px] font-medium uppercase tracking-wider text-muted-foreground">Mount Realty</span>
             </div>
           </Link>
 
@@ -104,11 +104,11 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
                   className={cn(
                     "flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 text-sm font-medium transition-colors sm:px-3",
                     active
-                      ? "border-sidebar-primary text-sidebar-foreground"
-                      : "border-transparent text-sidebar-foreground/70 hover:border-sidebar-primary/40 hover:text-sidebar-foreground",
+                      ? "border-accent text-foreground"
+                      : "border-transparent text-muted-foreground hover:border-accent/40 hover:text-foreground",
                   )}
                 >
-                  <Icon className={cn("h-4 w-4", active && "text-sidebar-primary")} />
+                  <Icon className={cn("h-4 w-4", active ? "text-accent" : "")} />
                   <span className="whitespace-nowrap">{item.label}</span>
                 </Link>
               );
@@ -122,8 +122,8 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
                 variant="ghost"
                 size="sm"
                 className={cn(
-                  "h-8 shrink-0 gap-1.5 px-2.5 text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
-                  menuActive && "bg-sidebar-accent text-sidebar-foreground",
+                  "h-8 shrink-0 gap-1.5 px-2.5 text-muted-foreground hover:text-foreground",
+                  menuActive && "bg-secondary text-foreground",
                 )}
               >
                 <MenuIcon className="h-4 w-4" />
