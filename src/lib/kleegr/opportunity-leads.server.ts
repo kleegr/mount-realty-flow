@@ -36,17 +36,28 @@ async function loadPipelineMap(): Promise<PipelineMap> {
   try {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { data } = await supabaseAdmin.from("crm_pipelines").select(
-      "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name",
+      "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name, release_stage_names",
     );
-    for (const r of data ?? []) {
-      if (r.stage_reserved_id) empty.reserved_ids.add(r.stage_reserved_id);
-      if (r.stage_under_contract_id) empty.under_contract_ids.add(r.stage_under_contract_id);
-      if (r.stage_closed_id) empty.closed_ids.add(r.stage_closed_id);
-      if (r.stage_release_id) empty.release_ids.add(r.stage_release_id);
-      if (r.stage_reserved_name) empty.reserved_names.add(r.stage_reserved_name.trim().toLowerCase());
-      if (r.stage_under_contract_name) empty.under_contract_names.add(r.stage_under_contract_name.trim().toLowerCase());
-      if (r.stage_closed_name) empty.closed_names.add(r.stage_closed_name.trim().toLowerCase());
-      if (r.stage_release_name) empty.release_names.add(r.stage_release_name.trim().toLowerCase());
+    for (const raw of (data ?? []) as Array<Record<string, unknown>>) {
+      const s = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
+      const rid = s(raw.stage_reserved_id); if (rid) empty.reserved_ids.add(rid);
+      const uid = s(raw.stage_under_contract_id); if (uid) empty.under_contract_ids.add(uid);
+      const cid = s(raw.stage_closed_id); if (cid) empty.closed_ids.add(cid);
+      const lid = s(raw.stage_release_id); if (lid) empty.release_ids.add(lid);
+      const rn = s(raw.stage_reserved_name); if (rn) empty.reserved_names.add(rn.trim().toLowerCase());
+      const un = s(raw.stage_under_contract_name); if (un) empty.under_contract_names.add(un.trim().toLowerCase());
+      const cn = s(raw.stage_closed_name); if (cn) empty.closed_names.add(cn.trim().toLowerCase());
+      const ln = s(raw.stage_release_name); if (ln) empty.release_names.add(ln.trim().toLowerCase());
+      // EVERY configured release stage counts — this is what lets the live
+      // enrichment classify a deal dragged back to Meeting / Showing as
+      // "available" instead of "unknown" (which used to make releases
+      // impossible from this path).
+      const list = raw.release_stage_names;
+      if (Array.isArray(list)) {
+        for (const n of list) {
+          if (typeof n === "string" && n.trim()) empty.release_names.add(n.trim().toLowerCase());
+        }
+      }
     }
   } catch { /* no config yet */ }
   return empty;

@@ -79,15 +79,18 @@ export const getUnitReport = createServerFn({ method: "GET" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const refresh = data?.refresh === true;
 
-    // Heavy CRM reconciliation only runs on explicit refresh — otherwise
-    // the report renders instantly from the local mirror.
-    if (refresh) {
-      try {
-        const { reconcileScopes } = await import("@/lib/kleegr/live-records.server");
-        await reconcileScopes(["project", "building", "unit"]);
-      } catch (err) {
-        console.warn("[report] reconcile failed:", err instanceof Error ? err.message : err);
-      }
+    // SELF-HEAL runs from this page too — this is the page people actually
+    // watch. Throttled internally (one real run per ~2 minutes), so the 30s
+    // polling loop stays cheap. It prunes deleted records, mirrors every
+    // unit's ACTUAL availability/stage from the CRM, and releases any unit
+    // whose holding opportunity is deleted / lost / moved to a release stage /
+    // no longer holds the Locked association. THE REPORT BELOW IS RENDERED
+    // FROM THE HEALED STATE.
+    try {
+      const { selfHealCrmState } = await import("@/lib/kleegr/release.server");
+      await selfHealCrmState(false);
+    } catch (err) {
+      console.warn("[report] self-heal failed:", err instanceof Error ? err.message : err);
     }
 
 
@@ -120,6 +123,10 @@ export const getUnitReport = createServerFn({ method: "GET" })
 
     // Enrich with live CRM opportunities → contact/lead name + live status per unit.
     // Only on explicit refresh; on auto-loads we serve the cached snapshot fast.
+    // NOTE: this can both LOCK (deal sits in a locking stage) and RELEASE (deal
+    // sits in a release stage) now that classifyLead knows the full release
+    // list — previously it could only ever lock, which made the report a
+    // one-way ratchet.
     if (refresh) {
       const liveStatus = new Map<string, UnitStatus>();
       try {
@@ -141,6 +148,8 @@ export const getUnitReport = createServerFn({ method: "GET" })
       const stateUpserts: Array<{ unit_crm_id: string; availability: string; stage: string }> = [];
       for (const [unitId, status] of liveStatus) {
         const prev = stateMap.get(unitId);
+        // Sold is terminal for automated paths — never let live enrichment undo it.
+        if ((prev?.stage ?? "").trim() === "Closed/Sold" && status !== "sold") continue;
         const prevStatus = classify(prev?.availability ?? null, prev?.stage ?? null);
         if (prevStatus === status) continue;
         const target = statusToState(status);
