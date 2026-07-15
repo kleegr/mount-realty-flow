@@ -12,6 +12,15 @@ import { normalizeStagePayload } from "./webhook-payload.server";
  *   2. Building — for "whole building" sales (villa/house sold as a single
  *                unit at the Building level). Applies status directly to the
  *                Building record; no rollup, since the Building IS the unit.
+ *
+ * Stage classification (see classifyStage):
+ *   - reserved / under_contract / closed  → lock the unit to that state
+ *   - release_stage_names[] (or legacy stage_release_name) → free the unit back
+ *     to Available. This covers a deal moving BACKWARD (e.g. contract fell
+ *     through → back to Meeting / Showing) as well as Lost / Not Interested.
+ *   - anything else → stage_not_mapped, unit keeps its current state. This is
+ *     deliberate: mid-contract stages such as Payment Tracking or Attorney /
+ *     Title must HOLD Under Contract, not release it.
  */
 export interface StageChangeInput {
   pipelineId: string | null;
@@ -177,7 +186,7 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     entity_crm_id: unitId,
     previous: { availability: currentAvailability, stage: currentStage } as never,
     next: { availability, stage } as never,
-    reason: `Opportunity ${params.opportunityId ?? ""} moved to stage ${params.stageId ?? ""}`,
+    reason: `Opportunity ${params.opportunityId ?? ""} moved to stage ${params.stageName ?? params.stageId ?? ""}`,
   });
 
   return { outcome: `applied:${stage || "available"}`, unitCrmId: unitId };
@@ -196,6 +205,13 @@ interface StageMapping {
   stage_under_contract_name?: string | null;
   stage_closed_name?: string | null;
   stage_release_name?: string | null;
+  /**
+   * Every stage that should FREE the unit back to Available.
+   * Typically the early/browsing stages (New Inquiry … Meeting / Showing) plus
+   * any explicit Lost / Released stage. A deal moving backward into one of
+   * these means the hold is over.
+   */
+  release_stage_names?: string[] | null;
 }
 
 interface StageTarget {
@@ -204,13 +220,18 @@ interface StageTarget {
   inventoryDeducted: string;
 }
 
+const RESERVED: StageTarget = { availability: "Not Available", stage: "Reserved/Locked", inventoryDeducted: "Yes" };
+const UNDER_CONTRACT: StageTarget = { availability: "Not Available", stage: "Under Contract", inventoryDeducted: "Yes" };
+const SOLD: StageTarget = { availability: "Not Available", stage: "Closed/Sold", inventoryDeducted: "Yes" };
+const RELEASED: StageTarget = { availability: "Available", stage: "", inventoryDeducted: "No" };
+
 async function resolveStageMapping(
   supabaseAdmin: Awaited<ReturnType<typeof importAdmin>>,
   pipelineId: string | null,
   pipelineName: string | null,
   cfg: StageMapping,
 ): Promise<StageMapping> {
-  const cols = "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name";
+  const cols = "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name, release_stage_names";
   if (pipelineId) {
     const pl = await supabaseAdmin.from("crm_pipelines").select(cols).eq("pipeline_id", pipelineId).maybeSingle();
     if (pl.data) return pl.data as StageMapping;
@@ -231,22 +252,37 @@ function classifyStage(stageId: string | null, stageName: string | null, m: Stag
 
 function matchById(stageId: string | null, m: StageMapping): StageTarget | null {
   if (!stageId) return null;
-  if (stageId === m.stage_reserved_id) return { availability: "Not Available", stage: "Reserved/Locked", inventoryDeducted: "Yes" };
-  if (stageId === m.stage_under_contract_id) return { availability: "Not Available", stage: "Under Contract", inventoryDeducted: "Yes" };
-  if (stageId === m.stage_closed_id) return { availability: "Not Available", stage: "Closed/Sold", inventoryDeducted: "Yes" };
-  if (stageId === m.stage_release_id) return { availability: "Available", stage: "", inventoryDeducted: "No" };
+  if (stageId === m.stage_reserved_id) return RESERVED;
+  if (stageId === m.stage_under_contract_id) return UNDER_CONTRACT;
+  if (stageId === m.stage_closed_id) return SOLD;
+  if (stageId === m.stage_release_id) return RELEASED;
   return null;
 }
 
 function matchByName(stageName: string | null, m: StageMapping): StageTarget | null {
   if (!stageName) return null;
-  const s = stageName.trim().toLowerCase();
-  const eq = (v?: string | null) => v && v.trim().toLowerCase() === s;
-  if (eq(m.stage_reserved_name)) return { availability: "Not Available", stage: "Reserved/Locked", inventoryDeducted: "Yes" };
-  if (eq(m.stage_under_contract_name)) return { availability: "Not Available", stage: "Under Contract", inventoryDeducted: "Yes" };
-  if (eq(m.stage_closed_name)) return { availability: "Not Available", stage: "Closed/Sold", inventoryDeducted: "Yes" };
-  if (eq(m.stage_release_name)) return { availability: "Available", stage: "", inventoryDeducted: "No" };
+  const s = normalizeStageName(stageName);
+  if (!s) return null;
+  const eq = (v?: string | null) => Boolean(v) && normalizeStageName(v!) === s;
+
+  if (eq(m.stage_reserved_name)) return RESERVED;
+  if (eq(m.stage_under_contract_name)) return UNDER_CONTRACT;
+  if (eq(m.stage_closed_name)) return SOLD;
+  if (eq(m.stage_release_name)) return RELEASED;
+
+  // Any listed release stage frees the unit — this is what makes a deal moving
+  // BACKWARD (e.g. back to Meeting / Showing) put the unit back on the market.
+  const releaseList = m.release_stage_names ?? [];
+  if (Array.isArray(releaseList) && releaseList.some((n) => Boolean(n) && normalizeStageName(n) === s)) {
+    return RELEASED;
+  }
+
   return null;
+}
+
+/** Case/space/punctuation-insensitive stage name comparison. */
+function normalizeStageName(value: string): string {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 function buildingStatusFor(stage: string): string {
@@ -294,7 +330,7 @@ async function applyBuildingStage(
     entity_crm_id: buildingCrmId,
     previous: { building_status: currentStatus } as never,
     next: { building_status: nextStatus } as never,
-    reason: `Opportunity ${params.opportunityId ?? ""} moved to stage ${params.stageId ?? ""} (whole-building sale)`,
+    reason: `Opportunity ${params.opportunityId ?? ""} moved to stage ${params.stageName ?? params.stageId ?? ""} (whole-building sale)`,
   });
 
   return { outcome: `applied_building:${nextStatus}`, buildingCrmId };
