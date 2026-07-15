@@ -65,17 +65,35 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
         console.warn("[dashboard] live status sync failed:", err instanceof Error ? err.message : err);
       }
 
-      // Mirror each Unit's ACTUAL state from the CRM. Runs last, so the CRM
-      // record wins: it is what the stage webhook writes and what a human edits
-      // by hand in GHL. This is the only step that notices a unit flipped from
-      // Not Available back to Available directly in the CRM — the leads sync
-      // above only ever visits units that still have an opportunity attached.
+      // Mirror each Unit's ACTUAL state from the CRM. Runs after the leads
+      // sync, so the CRM record wins: it is what the stage webhook writes and
+      // what a human edits by hand in GHL. This is the only step that notices
+      // a unit flipped from Not Available back to Available directly in the
+      // CRM — the leads sync above only ever visits units that still have an
+      // opportunity attached.
       try {
         const { syncUnitStatesFromCrm } = await import("@/lib/kleegr/live-records.server");
         const res = await syncUnitStatesFromCrm();
         if (res.skipped) console.warn("[dashboard] unit mirror skipped:", res.skipped);
       } catch (err) {
         console.warn("[dashboard] unit mirror failed:", err instanceof Error ? err.message : err);
+      }
+
+      // Orphan sweep, last: any unit whose lock was placed by an opportunity
+      // that has since been deleted, or that no longer holds the unit via a
+      // Locked/Reserved association, is released back to Available (GHL +
+      // mirror + rollups + audit log). Covers detach / delete — the events
+      // GHL fires no webhook for.
+      try {
+        const { reconcileHeldUnits } = await import("@/lib/kleegr/release.server");
+        const rec = await reconcileHeldUnits();
+        if (rec.released.length > 0 || rec.skipped.length > 0) {
+          console.info(
+            `[dashboard] reconcile: checked ${rec.checked}, released ${rec.released.length}, kept ${rec.keptHeld}, skipped ${rec.skipped.length}`,
+          );
+        }
+      } catch (err) {
+        console.warn("[dashboard] held-unit reconcile failed:", err instanceof Error ? err.message : err);
       }
     }
 
