@@ -6,23 +6,23 @@ import { normalizeStagePayload } from "./webhook-payload.server";
  * Shared stage-change application logic.
  * Used by both the opportunity-stage webhook and the unit-associated replay webhook.
  *
- * Stage classification (see classifyStage):
- *   - reserved / under_contract / closed  → lock the unit to that state
- *   - release_stage_names[] (or legacy stage_release_name) → free the unit back
- *     to Available. Covers a deal moving BACKWARD (contract fell through →
- *     back to Meeting / Showing) as well as Lost / Not Interested.
- *   - anything else → stage_not_mapped, unit keeps its current state (HOLD
- *     stages like Payment Tracking must keep Under Contract).
+ * MODEL: the pipeline card's CURRENT STAGE is absolute truth. Every stage in
+ * both pipelines maps to exactly one status via the crm_pipelines lists:
+ *   reserved_stage_names[]        → Reserved/Locked
+ *   under_contract_stage_names[]  → Under Contract   (incl. Payment Tracking,
+ *                                    Attorney/Title stages — "quoting the
+ *                                    numbers on the contract")
+ *   sold_stage_names[]            → Closed/Sold      (Closing, Closing Gift)
+ *   release_stage_names[]         → Available        (everything early + Lost)
+ * Direction of movement does not matter — dragging a card back out of Closing
+ * un-sells the unit. There is no terminal state.
  *
- * Ownership rules:
- *   - Closed/Sold is terminal. Only a human can undo it.
- *   - unit_state.held_by_opportunity_id records WHICH opportunity holds a
- *     locked unit. The holder moves freely in either direction. A DIFFERENT
- *     opportunity is normally locked out — BUT a recorded holder can be STALE
- *     (its deal deleted / lost / moved back). So before blocking, the holder
- *     is verified against the live CRM; an unjustified hold is auto-released
- *     and the incoming change proceeds. Without this, one stale holder
- *     deadlocks a unit forever.
+ * Ownership: unit_state.held_by_opportunity_id records WHICH opportunity
+ * holds a locked unit. The holder moves freely in either direction. A
+ * DIFFERENT opportunity is normally locked out — BUT a recorded holder can be
+ * STALE (its deal deleted / lost / moved back). So before blocking, the
+ * holder is verified against the live CRM; an unjustified hold is
+ * auto-released and the incoming change proceeds.
  */
 export interface StageChangeInput {
   pipelineId: string | null;
@@ -138,16 +138,11 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     return { outcome: "read_failed", unitCrmId: unitId, message: err instanceof Error ? err.message : String(err) };
   }
 
-  // ---- Guard 1: Closed/Sold is terminal. Nothing automated reverses a sale.
-  if (currentStage === "Closed/Sold" && stage !== "Closed/Sold") {
-    return {
-      outcome: "blocked_sold_reversal",
-      unitCrmId: unitId,
-      message: "Unit is Sold. Releasing a sold unit must be done manually.",
-    };
-  }
+  // NOTE: there is deliberately NO sold-reversal guard here. The card's
+  // position is absolute truth — dragging a deal back out of Closing must
+  // un-sell the unit (owner-confirmed rule).
 
-  // ---- Guard 2: a DIFFERENT opportunity is recorded as holding this unit.
+  // ---- Guard: a DIFFERENT opportunity is recorded as holding this unit.
   // Verify that hold against the live CRM before blocking: recorded holders go
   // stale when their deal is deleted, lost, or dragged back — blocking on a
   // stale holder deadlocks the unit for every future deal.
@@ -185,7 +180,7 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     }
   }
 
-  // ---- Guard 3: legacy fallback. No holder on record (state came from an
+  // ---- Guard: legacy fallback. No holder on record (state came from an
   // import or a CRM sync rather than a webhook), so we cannot prove the
   // incoming opportunity owns the lock. Refuse a fresh reservation on a unit
   // that is already locked in a different state.
@@ -282,9 +277,10 @@ interface StageMapping {
   stage_under_contract_name?: string | null;
   stage_closed_name?: string | null;
   stage_release_name?: string | null;
-  /**
-   * Every stage that should FREE the unit back to Available.
-   */
+  /** Full stage→status table — every stage lands in exactly one list. */
+  reserved_stage_names?: string[] | null;
+  under_contract_stage_names?: string[] | null;
+  sold_stage_names?: string[] | null;
   release_stage_names?: string[] | null;
 }
 
@@ -305,7 +301,7 @@ async function resolveStageMapping(
   pipelineName: string | null,
   cfg: StageMapping,
 ): Promise<StageMapping> {
-  const cols = "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name, release_stage_names";
+  const cols = "stage_reserved_id, stage_under_contract_id, stage_closed_id, stage_release_id, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name, reserved_stage_names, under_contract_stage_names, sold_stage_names, release_stage_names";
   if (pipelineId) {
     const pl = await supabaseAdmin.from("crm_pipelines").select(cols).eq("pipeline_id", pipelineId).maybeSingle();
     if (pl.data) return pl.data as StageMapping;
@@ -338,18 +334,20 @@ function matchByName(stageName: string | null, m: StageMapping): StageTarget | n
   const s = normalizeStageName(stageName);
   if (!s) return null;
   const eq = (v?: string | null) => Boolean(v) && normalizeStageName(String(v)) === s;
+  const inList = (list?: string[] | null) =>
+    Array.isArray(list) && list.some((n) => Boolean(n) && normalizeStageName(String(n)) === s);
 
+  // Full table first — every stage of both pipelines lands in one of these.
+  if (inList(m.sold_stage_names)) return SOLD;
+  if (inList(m.under_contract_stage_names)) return UNDER_CONTRACT;
+  if (inList(m.reserved_stage_names)) return RESERVED;
+  if (inList(m.release_stage_names)) return RELEASED;
+
+  // Legacy single-name columns (kept for backwards compatibility).
   if (eq(m.stage_reserved_name)) return RESERVED;
   if (eq(m.stage_under_contract_name)) return UNDER_CONTRACT;
   if (eq(m.stage_closed_name)) return SOLD;
   if (eq(m.stage_release_name)) return RELEASED;
-
-  // Any listed release stage frees the unit — this is what makes a deal moving
-  // BACKWARD (e.g. back to Meeting / Showing) put the unit back on the market.
-  const releaseList = m.release_stage_names ?? [];
-  if (Array.isArray(releaseList) && releaseList.some((n) => Boolean(n) && normalizeStageName(String(n)) === s)) {
-    return RELEASED;
-  }
 
   return null;
 }
@@ -389,10 +387,8 @@ async function applyBuildingStage(
     };
   }
 
+  // Position is truth for buildings too — no sold-out block.
   const nextStatus = buildingStatusFor(target.stage);
-  if (currentStatus === "Sold Out" && nextStatus !== "Sold Out") {
-    return { outcome: "blocked_sold_reversal", buildingCrmId };
-  }
 
   await requestObject(client, "PUT", "building", `/records/${buildingCrmId}`, {
     body: { properties: await normalizeRecordProperties(client, "building", { [FIELDS.building.status]: nextStatus }, { forUpdate: true }) },
