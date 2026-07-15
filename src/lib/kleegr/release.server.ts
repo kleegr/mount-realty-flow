@@ -302,8 +302,12 @@ async function fetchOpportunitySnapshot(c: CrmClient, oppId: string): Promise<Op
  *     stage (covers GHL workflows that never fired)
  *   - the Locked/Reserved association is gone         -> UNIT_ASSOCIATION_REMOVED
  *
- * Never touches: Closed/Sold units, units with no recorded holder
- * (import-owned state), or anything whose CRM read failed.
+ * Units locked BEFORE holder tracking existed have no recorded holder — for
+ * those, the holder is recovered from webhook history (the "applied:*" event
+ * that locked the unit names the opportunity). Units with no webhook history
+ * (pure CSV imports) are never touched.
+ *
+ * Never touches: Closed/Sold units, or anything whose CRM read failed.
  */
 export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileResult> {
   const result: ReconcileResult = { checked: 0, released: [], keptHeld: 0, skipped: [] };
@@ -337,6 +341,35 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
     if (stage === "Closed/Sold") continue; // terminal — rule 1
     const arr = byOpp.get(opp) ?? [];
     arr.push({ unitCrmId, stage });
+    byOpp.set(opp, arr);
+  }
+
+  // Backfill: locked units with NO recorded holder (locks that predate holder
+  // tracking). Recover the holder from webhook history — the "applied:*"
+  // event that locked the unit names the opportunity that did it. Units with
+  // no webhook history (pure CSV imports) stay untouched.
+  const { data: orphanRows } = await supabaseAdmin
+    .from("unit_state")
+    .select("unit_crm_id, stage, held_by_opportunity_id")
+    .is("held_by_opportunity_id", null);
+  for (const row of (orphanRows ?? []) as Array<Record<string, unknown>>) {
+    const unitCrmId = typeof row.unit_crm_id === "string" ? row.unit_crm_id : null;
+    if (!unitCrmId) continue;
+    const stage = String(row.stage ?? "").trim();
+    if (!stage || stage === "Closed/Sold") continue;
+    const { data: ev } = await supabaseAdmin
+      .from("webhook_events")
+      .select("opportunity_id")
+      .eq("unit_crm_id", unitCrmId)
+      .like("outcome", "applied:%")
+      .not("opportunity_id", "is", null)
+      .order("received_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const opp = ev?.opportunity_id;
+    if (typeof opp !== "string" || !opp) continue;
+    const arr = byOpp.get(opp) ?? [];
+    if (!arr.some((u) => u.unitCrmId === unitCrmId)) arr.push({ unitCrmId, stage });
     byOpp.set(opp, arr);
   }
 
