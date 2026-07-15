@@ -64,6 +64,19 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
       } catch (err) {
         console.warn("[dashboard] live status sync failed:", err instanceof Error ? err.message : err);
       }
+
+      // Mirror each Unit's ACTUAL state from the CRM. Runs last, so the CRM
+      // record wins: it is what the stage webhook writes and what a human edits
+      // by hand in GHL. This is the only step that notices a unit flipped from
+      // Not Available back to Available directly in the CRM — the leads sync
+      // above only ever visits units that still have an opportunity attached.
+      try {
+        const { syncUnitStatesFromCrm } = await import("@/lib/kleegr/live-records.server");
+        const res = await syncUnitStatesFromCrm();
+        if (res.skipped) console.warn("[dashboard] unit mirror skipped:", res.skipped);
+      } catch (err) {
+        console.warn("[dashboard] unit mirror failed:", err instanceof Error ? err.message : err);
+      }
     }
 
 
