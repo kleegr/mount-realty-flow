@@ -4,10 +4,13 @@
  *
  * Status classification uses the SAME stage→status table as everything else:
  * every stage in crm_pipelines lands in exactly one of
- * available / reserved / under_contract / sold. A stage missing from the
- * table returns "unknown", which callers treat as "do not touch" — no keyword
- * guessing, the table is the truth.
+ * available / reserved / under_contract / sold. GHL's search API returns
+ * stage IDs but usually NO stage names, and the table is keyed by names — so
+ * stage names are resolved via the live pipelines catalog (id → name) before
+ * classifying. A stage missing from the table returns "unknown", which
+ * callers treat as "do not touch".
  */
+import type { CrmClient } from "./client.server";
 import { createCrmClient } from "./client.server";
 import { fetchOpportunityAssociations } from "./opportunities.server";
 
@@ -48,17 +51,17 @@ async function loadPipelineMap(): Promise<PipelineMap> {
       const s = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
       const addAll = (list: unknown, set: Set<string>) => {
         if (Array.isArray(list)) {
-          for (const n of list) if (typeof n === "string" && n.trim()) set.add(n.trim().toLowerCase());
+          for (const n of list) if (typeof n === "string" && n.trim()) set.add(n.trim().toLowerCase().replace(/\s+/g, " "));
         }
       };
       const rid = s(raw.stage_reserved_id); if (rid) empty.reserved_ids.add(rid);
       const uid = s(raw.stage_under_contract_id); if (uid) empty.under_contract_ids.add(uid);
       const cid = s(raw.stage_closed_id); if (cid) empty.closed_ids.add(cid);
       const lid = s(raw.stage_release_id); if (lid) empty.release_ids.add(lid);
-      const rn = s(raw.stage_reserved_name); if (rn) empty.reserved_names.add(rn.trim().toLowerCase());
-      const un = s(raw.stage_under_contract_name); if (un) empty.under_contract_names.add(un.trim().toLowerCase());
-      const cn = s(raw.stage_closed_name); if (cn) empty.closed_names.add(cn.trim().toLowerCase());
-      const ln = s(raw.stage_release_name); if (ln) empty.release_names.add(ln.trim().toLowerCase());
+      const rn = s(raw.stage_reserved_name); if (rn) empty.reserved_names.add(rn.trim().toLowerCase().replace(/\s+/g, " "));
+      const un = s(raw.stage_under_contract_name); if (un) empty.under_contract_names.add(un.trim().toLowerCase().replace(/\s+/g, " "));
+      const cn = s(raw.stage_closed_name); if (cn) empty.closed_names.add(cn.trim().toLowerCase().replace(/\s+/g, " "));
+      const ln = s(raw.stage_release_name); if (ln) empty.release_names.add(ln.trim().toLowerCase().replace(/\s+/g, " "));
       // The full stage→status table.
       addAll(raw.reserved_stage_names, empty.reserved_names);
       addAll(raw.under_contract_stage_names, empty.under_contract_names);
@@ -67,6 +70,29 @@ async function loadPipelineMap(): Promise<PipelineMap> {
     }
   } catch { /* no config yet */ }
   return empty;
+}
+
+/** Live pipelines catalog: stage id → stage name (GHL search omits names). */
+async function fetchStageNameCatalog(client: CrmClient): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const locationId = client.config.location_id;
+  if (!locationId) return map;
+  try {
+    const res = await client.request<{ pipelines?: Array<Record<string, unknown>> }>(
+      "GET",
+      "/opportunities/pipelines",
+      { query: { locationId } },
+    );
+    for (const p of res.data?.pipelines ?? []) {
+      const stages = Array.isArray(p.stages) ? (p.stages as Array<Record<string, unknown>>) : [];
+      for (const st of stages) {
+        if (typeof st.id === "string" && typeof st.name === "string") map.set(st.id, st.name);
+      }
+    }
+  } catch (err) {
+    console.warn("[unit-leads] pipelines catalog failed:", err instanceof Error ? err.message : err);
+  }
+  return map;
 }
 
 function classifyLead(stageId: string | null, stageName: string | null, m: PipelineMap): LeadStatus {
@@ -141,7 +167,7 @@ export async function fetchUnitLeadsMap(): Promise<Map<string, UnitLead>> {
     }
   }
 
-  const pipelineMap = await loadPipelineMap();
+  const [pipelineMap, stageNames] = await Promise.all([loadPipelineMap(), fetchStageNameCatalog(client)]);
 
   // 2. For each opp, resolve associated unit via associations endpoint (parallel with concurrency cap).
   let index = 0;
@@ -156,11 +182,14 @@ export async function fetchUnitLeadsMap(): Promise<Map<string, UnitLead>> {
         const assoc = await fetchOpportunityAssociations(client!, oppId);
         if (!assoc.unitCrmId) continue;
         if (result.has(assoc.unitCrmId)) continue;
-        const stageName = typeof opp["stageName"] === "string"
+        const rawStageName = typeof opp["stageName"] === "string"
           ? (opp["stageName"] as string)
           : (typeof opp["stage"] === "string" ? (opp["stage"] as string) : null);
         const stageId = typeof opp["pipelineStageId"] === "string" ? (opp["pipelineStageId"] as string)
           : (typeof opp["stageId"] === "string" ? (opp["stageId"] as string) : null);
+        // GHL search usually returns only the stage ID — resolve the name via
+        // the catalog so the name-keyed table can classify it.
+        const stageName = rawStageName ?? (stageId ? stageNames.get(stageId) ?? null : null);
         const pipelineId = typeof opp["pipelineId"] === "string" ? (opp["pipelineId"] as string) : null;
         result.set(assoc.unitCrmId, {
           contactName: extractName(opp),

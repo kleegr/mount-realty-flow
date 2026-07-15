@@ -81,14 +81,14 @@ export const getUnitReport = createServerFn({ method: "GET" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const refresh = data?.refresh === true;
 
-    // SELF-HEAL runs from this page too — this is the page people actually
-    // watch. Throttled internally (one real run per ~2 minutes), so the 30s
-    // polling loop stays cheap. It enforces the stage→status table against
-    // the live CRM in both directions. THE REPORT BELOW IS RENDERED FROM THE
-    // HEALED STATE.
+    // SELF-HEAL runs from this page — the page people actually watch. The 30s
+    // polls call it throttled (one real run per ~2 minutes); the Sync now
+    // button passes refresh=true and FORCES a full run immediately. It
+    // enforces the stage→status table against the live CRM in both
+    // directions. THE REPORT BELOW IS RENDERED FROM THE HEALED STATE.
     try {
       const { selfHealCrmState } = await import("@/lib/kleegr/release.server");
-      await selfHealCrmState(false);
+      await selfHealCrmState(refresh);
     } catch (err) {
       console.warn("[report] self-heal failed:", err instanceof Error ? err.message : err);
     }
@@ -122,12 +122,13 @@ export const getUnitReport = createServerFn({ method: "GET" })
     }
 
     // Enrich with live CRM opportunities → contact/lead name + live status per
-    // unit. Only on explicit refresh. Position is truth in BOTH directions
-    // here too — a card in a release stage frees the unit, a card dragged back
-    // out of Closing un-sells it. Stages missing from the table return
-    // "unknown" and are not touched.
+    // unit. Only on explicit refresh (Sync now). Position is truth in BOTH
+    // directions here too. Writes record WHICH opportunity holds the unit —
+    // without that, locks created here look like untouchable imports to the
+    // sweep. Stages missing from the table return "unknown" and are not
+    // touched.
     if (refresh) {
-      const liveStatus = new Map<string, UnitStatus>();
+      const liveStatus = new Map<string, { status: UnitStatus; opportunityId: string | null }>();
       try {
         const { fetchUnitLeadsMap } = await import("@/lib/kleegr/opportunity-leads.server");
         const leads = await fetchUnitLeadsMap();
@@ -137,20 +138,24 @@ export const getUnitReport = createServerFn({ method: "GET" })
             contactMap.set(unitId, { contactName: lead.contactName, opportunityId: lead.opportunityId });
           }
           if (lead.status && lead.status !== "unknown") {
-            liveStatus.set(unitId, lead.status);
+            liveStatus.set(unitId, { status: lead.status, opportunityId: lead.opportunityId });
           }
         }
       } catch (err) {
         console.warn("[report] lead enrichment failed:", err instanceof Error ? err.message : err);
       }
 
-      const stateUpserts: Array<{ unit_crm_id: string; availability: string; stage: string }> = [];
-      for (const [unitId, status] of liveStatus) {
+      const stateUpserts: Array<{ unit_crm_id: string; availability: string; stage: string; held_by_opportunity_id: string | null }> = [];
+      for (const [unitId, live] of liveStatus) {
         const prev = stateMap.get(unitId);
         const prevStatus = classify(prev?.availability ?? null, prev?.stage ?? null);
-        if (prevStatus === status) continue;
-        const target = statusToState(status);
-        stateUpserts.push({ unit_crm_id: unitId, ...target });
+        if (prevStatus === live.status) continue;
+        const target = statusToState(live.status);
+        stateUpserts.push({
+          unit_crm_id: unitId,
+          ...target,
+          held_by_opportunity_id: live.status === "available" ? null : live.opportunityId,
+        });
         stateMap.set(unitId, { ...target, updated_at: new Date().toISOString() });
       }
       if (stateUpserts.length > 0) {
