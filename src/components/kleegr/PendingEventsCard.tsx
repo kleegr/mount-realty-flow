@@ -14,9 +14,15 @@ import { cn } from "@/lib/utils";
 
 const REFRESH_MS = 60_000;
 
+/**
+ * Collapsed by default — this is a power tool, not something customers need
+ * to stare at. The header always shows a live count of pending events, so
+ * nothing gets missed; one click expands the full list and controls.
+ */
 export function PendingEventsCard() {
   const list = useServerFn(listPendingEvents);
   const apply = useServerFn(applyPendingWithUnit);
+  const [open, setOpen] = useState(false);
   const query = useQuery({
     queryKey: ["pending-events"],
     queryFn: () => list(),
@@ -37,18 +43,34 @@ export function PendingEventsCard() {
 
   return (
     <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <AlertCircle className="h-4 w-4" />
-              Pending Stage Events
-            </CardTitle>
-            <CardDescription>
-              Stage changes waiting to be linked to a Unit or Building. Auto-rescans every minute.
-            </CardDescription>
-          </div>
+      <CardHeader className="py-4">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-4 text-left"
+          onClick={() => setOpen((v) => !v)}
+        >
           <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4" />
+            <CardTitle className="text-lg">Pending Stage Events</CardTitle>
+            {events.length > 0 ? (
+              <Badge variant="destructive">{events.length} pending</Badge>
+            ) : (
+              <Badge variant="outline" className="text-muted-foreground">
+                <CheckCircle2 className="mr-1 h-3 w-3 text-green-600" /> all clear
+              </Badge>
+            )}
+          </div>
+          <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
+        </button>
+        {open && (
+          <CardDescription className="pt-1">
+            Stage changes waiting to be linked to a Unit or Building. Auto-rescans every minute.
+          </CardDescription>
+        )}
+      </CardHeader>
+      {open && (
+        <CardContent className="space-y-2">
+          <div className="flex items-center justify-end gap-2">
             <div className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-2.5 py-1 text-xs tabular-nums text-muted-foreground">
               <Clock className="h-3 w-3" />
               Rescan in {secondsLeft}s
@@ -63,35 +85,33 @@ export function PendingEventsCard() {
               Rescan now
             </Button>
           </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {query.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-        {!query.isLoading && events.length === 0 && (
-          <div className="flex items-center gap-2 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-            <CheckCircle2 className="h-4 w-4 text-green-600" />
-            No pending events. All stage changes have been applied.
-          </div>
-        )}
-        {events.map((ev) => (
-          <PendingRow
-            key={ev.id}
-            opportunityId={ev.opportunity_id ?? ""}
-            stageId={ev.stage_id ?? ""}
-            pipelineId={ev.pipeline_id ?? ""}
-            receivedAt={ev.received_at}
-            onApply={async (crmId) => {
-              try {
-                const res = await apply({ data: { opportunityId: ev.opportunity_id!, unitCrmId: crmId } });
-                toast.success(`Applied ${res.replayed} event(s)`);
-                await query.refetch();
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : "Failed to apply");
-              }
-            }}
-          />
-        ))}
-      </CardContent>
+          {query.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+          {!query.isLoading && events.length === 0 && (
+            <div className="flex items-center gap-2 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+              <CheckCircle2 className="h-4 w-4 text-green-600" />
+              No pending events. All stage changes have been applied.
+            </div>
+          )}
+          {events.map((ev) => (
+            <PendingRow
+              key={ev.id}
+              opportunityId={ev.opportunity_id ?? ""}
+              stageId={ev.stage_id ?? ""}
+              pipelineId={ev.pipeline_id ?? ""}
+              receivedAt={ev.received_at}
+              onApply={async (crmId) => {
+                try {
+                  const res = await apply({ data: { opportunityId: ev.opportunity_id!, unitCrmId: crmId } });
+                  toast.success(`Applied ${res.replayed} event(s)`);
+                  await query.refetch();
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : "Failed to apply");
+                }
+              }}
+            />
+          ))}
+        </CardContent>
+      )}
     </Card>
   );
 }

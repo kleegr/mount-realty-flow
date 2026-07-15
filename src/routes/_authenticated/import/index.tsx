@@ -9,9 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Download, Upload, FileText, Info, Sparkles } from "lucide-react";
+import { Download, Upload, FileText, Info, Sparkles, ChevronDown } from "lucide-react";
 import { IMPORT_COLUMNS, ALLOWED } from "@/lib/kleegr/field-map";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/import/")({
   component: ImportCenter,
@@ -26,6 +27,7 @@ function ImportCenter() {
 
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showSpec, setShowSpec] = useState(false);
 
   async function onUpload() {
     if (!file) return toast.error("Choose a file first");
@@ -127,34 +129,50 @@ function ImportCenter() {
         </Card>
       </div>
 
+      {/* Reference material — collapsed by default to keep the page simple. */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Info className="h-4 w-4" />Template specification</CardTitle>
-          <CardDescription>The upload must have these 30 columns, in any order. Each row represents one Unit.</CardDescription>
+        <CardHeader className="py-4">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-4 text-left"
+            onClick={() => setShowSpec((v) => !v)}
+          >
+            <div className="flex items-center gap-2">
+              <Info className="h-4 w-4" />
+              <CardTitle className="text-lg">Template specification</CardTitle>
+              <span className="text-xs text-muted-foreground">{showSpec ? "" : "· tap to view column details"}</span>
+            </div>
+            <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", showSpec && "rotate-180")} />
+          </button>
+          {showSpec && (
+            <CardDescription className="pt-1">The upload must have these 30 columns, in any order. Each row represents one Unit.</CardDescription>
+          )}
         </CardHeader>
-        <CardContent className="space-y-6">
-          <div>
-            <h3 className="mb-2 text-sm font-semibold">Required columns</h3>
-            <ul className="grid list-disc grid-cols-2 gap-x-6 gap-y-1 pl-4 text-sm md:grid-cols-3">
-              {IMPORT_COLUMNS.map((c) => (<li key={c}>{c}</li>))}
-            </ul>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <ValueGroup label="Import Modes" values={["Project + Buildings + Units", "Building + Units", "Units Only"]} />
-            <ValueGroup label="Project Status" values={ALLOWED.projectStatus} />
-            <ValueGroup label="Property Type" values={ALLOWED.projectPropertyType} />
-            <ValueGroup label="Building Status" values={ALLOWED.buildingStatus} />
-            <ValueGroup label="Unit Availability" values={ALLOWED.unitAvailability} />
-            <ValueGroup label="Unit Stage" values={ALLOWED.unitStage} />
-            <ValueGroup label="Unit Style" values={ALLOWED.unitStyle} />
-          </div>
-          <Alert>
-            <AlertTitle>Rules</AlertTitle>
-            <AlertDescription>
-              A Project cannot be imported without at least one Building AND one Unit. A Building cannot be imported without at least one Unit. Standalone Units are allowed (Units Only mode). Duplicate Import Row IDs and Unit Import IDs are blocked.
-            </AlertDescription>
-          </Alert>
-        </CardContent>
+        {showSpec && (
+          <CardContent className="space-y-6">
+            <div>
+              <h3 className="mb-2 text-sm font-semibold">Required columns</h3>
+              <ul className="grid list-disc grid-cols-2 gap-x-6 gap-y-1 pl-4 text-sm md:grid-cols-3">
+                {IMPORT_COLUMNS.map((c) => (<li key={c}>{c}</li>))}
+              </ul>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <ValueGroup label="Import Modes" values={["Project + Buildings + Units", "Building + Units", "Units Only"]} />
+              <ValueGroup label="Project Status" values={ALLOWED.projectStatus} />
+              <ValueGroup label="Property Type" values={ALLOWED.projectPropertyType} />
+              <ValueGroup label="Building Status" values={ALLOWED.buildingStatus} />
+              <ValueGroup label="Unit Availability" values={ALLOWED.unitAvailability} />
+              <ValueGroup label="Unit Stage" values={ALLOWED.unitStage} />
+              <ValueGroup label="Unit Style" values={ALLOWED.unitStyle} />
+            </div>
+            <Alert>
+              <AlertTitle>Rules</AlertTitle>
+              <AlertDescription>
+                A Project cannot be imported without at least one Building AND one Unit. A Building cannot be imported without at least one Unit. Standalone Units are allowed (Units Only mode). Duplicate Import Row IDs and Unit Import IDs are blocked.
+              </AlertDescription>
+            </Alert>
+          </CardContent>
+        )}
       </Card>
     </div>
   );
