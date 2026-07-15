@@ -39,6 +39,23 @@ export interface OpportunityAssociations {
   raw?: unknown;
 }
 
+/**
+ * Full classification of an opportunity's unit associations.
+ * Unlike fetchOpportunityAssociations, fetchUnitAssociationSets THROWS on
+ * transport failure — callers that make release decisions (reconcile, deletion
+ * handling) must be able to tell "the CRM said there are no locked units"
+ * apart from "the CRM call failed". Releasing on a failed call would free
+ * units that are still legitimately held.
+ */
+export interface UnitAssociationSets {
+  lockedUnitIds: string[];
+  suggestedUnitIds: string[];
+  unclassifiedUnitIds: string[];
+  buildingIds: string[];
+  /** False when this location defines no Locked/Reserved association at all. */
+  lockedAssociationDefined: boolean;
+}
+
 interface Relation {
   id?: string;
   associationId?: string;
@@ -131,18 +148,27 @@ function relatedSide(rel: Relation, opportunityId: string): { objectKey: string;
   return null;
 }
 
+/** Throws on transport failure — for callers that must not confuse "no relations" with "call failed". */
+async function fetchRelationsStrict(
+  client: CrmClient,
+  opportunityId: string,
+  locationId: string,
+): Promise<Relation[]> {
+  const res = await client.request<{ relations?: Relation[] }>(
+    "GET",
+    `/associations/relations/${opportunityId}`,
+    { query: { locationId, skip: 0, limit: 100 } },
+  );
+  return Array.isArray(res.data?.relations) ? res.data.relations : [];
+}
+
 async function fetchRelations(
   client: CrmClient,
   opportunityId: string,
   locationId: string,
 ): Promise<Relation[]> {
   try {
-    const res = await client.request<{ relations?: Relation[] }>(
-      "GET",
-      `/associations/relations/${opportunityId}`,
-      { query: { locationId, skip: 0, limit: 100 } },
-    );
-    return Array.isArray(res.data?.relations) ? res.data.relations : [];
+    return await fetchRelationsStrict(client, opportunityId, locationId);
   } catch (err) {
     console.warn(
       "[opportunities] associations lookup failed:",
@@ -150,6 +176,56 @@ async function fetchRelations(
     );
     return [];
   }
+}
+
+function classifyRelations(
+  relations: Relation[],
+  opportunityId: string,
+  assoc: ResolvedAssociations,
+): Omit<UnitAssociationSets, "lockedAssociationDefined"> {
+  const lockedUnitIds: string[] = [];
+  const suggestedUnitIds: string[] = [];
+  const unclassifiedUnitIds: string[] = [];
+  const buildingIds: string[] = [];
+
+  for (const rel of relations) {
+    const side = relatedSide(rel, opportunityId);
+    if (!side) continue;
+    const assocId = String(rel.associationId ?? "");
+
+    if (/(^|\.)units?$/.test(side.objectKey)) {
+      if (assoc.suggested.has(assocId)) suggestedUnitIds.push(side.recordId);
+      else if (assoc.locked.has(assocId)) lockedUnitIds.push(side.recordId);
+      else unclassifiedUnitIds.push(side.recordId);
+      continue;
+    }
+    if (/(^|\.)buildings?$/.test(side.objectKey)) {
+      buildingIds.push(side.recordId);
+    }
+  }
+
+  return { lockedUnitIds, suggestedUnitIds, unclassifiedUnitIds, buildingIds };
+}
+
+/**
+ * Strict variant — throws on transport failure. Use for release decisions.
+ */
+export async function fetchUnitAssociationSets(
+  client: CrmClient,
+  opportunityId: string,
+): Promise<UnitAssociationSets> {
+  const locationId = client.config.location_id;
+  if (!locationId) throw new Error("crm_config.location_id is not set");
+
+  const [assoc, relations] = await Promise.all([
+    resolveAssociations(client),
+    fetchRelationsStrict(client, opportunityId, locationId),
+  ]);
+
+  return {
+    ...classifyRelations(relations, opportunityId, assoc),
+    lockedAssociationDefined: assoc.locked.size > 0,
+  };
 }
 
 export async function fetchOpportunityAssociations(
@@ -167,45 +243,30 @@ export async function fetchOpportunityAssociations(
 
   if (relations.length === 0) return empty;
 
-  const lockedUnits: string[] = [];
-  const suggestedUnits: string[] = [];
-  const unclassifiedUnits: string[] = [];
-  let buildingCrmId: string | null = null;
-
-  for (const rel of relations) {
-    const side = relatedSide(rel, opportunityId);
-    if (!side) continue;
-    const assocId = String(rel.associationId ?? "");
-
-    if (/(^|\.)units?$/.test(side.objectKey)) {
-      if (assoc.suggested.has(assocId)) suggestedUnits.push(side.recordId);
-      else if (assoc.locked.has(assocId)) lockedUnits.push(side.recordId);
-      else unclassifiedUnits.push(side.recordId);
-      continue;
-    }
-    if (/(^|\.)buildings?$/.test(side.objectKey) && !buildingCrmId) {
-      buildingCrmId = side.recordId;
-    }
-  }
+  const sets = classifyRelations(relations, opportunityId, assoc);
 
   // Only a Locked/Reserved unit may move inventory.
-  let unitCrmId: string | null = lockedUnits[0] ?? null;
+  let unitCrmId: string | null = sets.lockedUnitIds[0] ?? null;
 
-  if (lockedUnits.length > 1) {
+  if (sets.lockedUnitIds.length > 1) {
     console.warn(
-      `[opportunities] opportunity ${opportunityId} has ${lockedUnits.length} Locked/Reserved units; using the first (${unitCrmId}).`,
+      `[opportunities] opportunity ${opportunityId} has ${sets.lockedUnitIds.length} Locked/Reserved units; using the first (${unitCrmId}).`,
     );
   }
 
   // Fallback: this location defines no Locked/Reserved association at all, so
   // there is nothing to filter on. Use a non-suggested unit rather than doing
   // nothing — but never promote a Suggested unit into a lock.
-  if (!unitCrmId && assoc.locked.size === 0 && unclassifiedUnits.length > 0) {
-    unitCrmId = unclassifiedUnits[0];
+  if (!unitCrmId && assoc.locked.size === 0 && sets.unclassifiedUnitIds.length > 0) {
+    unitCrmId = sets.unclassifiedUnitIds[0];
     console.warn(
       `[opportunities] no Locked/Reserved association defined for this location; falling back to unclassified unit ${unitCrmId}.`,
     );
   }
 
-  return { unitCrmId, buildingCrmId, suggestedUnitCrmIds: suggestedUnits };
+  return {
+    unitCrmId,
+    buildingCrmId: sets.buildingIds[0] ?? null,
+    suggestedUnitCrmIds: sets.suggestedUnitIds,
+  };
 }
