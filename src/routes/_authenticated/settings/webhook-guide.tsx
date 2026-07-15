@@ -17,7 +17,7 @@ export const Route = createFileRoute("/_authenticated/settings/webhook-guide")({
 });
 
 const WEBHOOK_URL =
-  "https://mount-realty-flow.lovable.app/api/public/webhooks/ghl/opportunity-stage";
+  "https://mr.kleegr.com/api/public/webhooks/ghl/opportunity-stage";
 
 const PAYLOAD = `{
   "event_id": "{{opportunity.id}}-{{opportunity.stage_name}}",
