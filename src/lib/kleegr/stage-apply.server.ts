@@ -120,6 +120,7 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
   const unitId = unitCrmId!;
   const { availability, stage, inventoryDeducted } = target;
   const incomingOpportunityId = params.opportunityId ?? null;
+  const isRelease = stage === "";
 
   // Cached state: who holds this unit, and its parents (for rollups).
   // Read BEFORE any write so the ownership guards can use it.
@@ -183,12 +184,22 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
   }
 
   const client = await createCrmClient();
-  const properties = await normalizeRecordProperties(client, "unit", {
+
+  // Only non-empty values survive normalizeRecordProperties() — its stripEmpty()
+  // drops ""/null. So fields we need to CLEAR are appended afterwards as
+  // explicit nulls, which GHL accepts (verified against the live API).
+  const setProps = await normalizeRecordProperties(client, "unit", {
     [FIELDS.unit.availability]: availability,
-    [FIELDS.unit.stage]: stage,
     [FIELDS.unit.inventory_deducted]: inventoryDeducted,
-    [FIELDS.unit.locked_date]: stage === "Reserved/Locked" ? new Date().toISOString().slice(0, 10) : "",
+    ...(stage ? { [FIELDS.unit.stage]: stage } : {}),
+    ...(stage === "Reserved/Locked"
+      ? { [FIELDS.unit.locked_date]: new Date().toISOString().slice(0, 10) }
+      : {}),
   });
+  const properties: Record<string, unknown> = isRelease
+    ? { ...setProps, [FIELDS.unit.stage]: null, [FIELDS.unit.locked_date]: null }
+    : setProps;
+
   await requestObject(client, "PUT", "unit", `/records/${unitId}`, {
     body: {
       properties,
@@ -196,7 +207,7 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
   });
 
   // Locking records the holder; releasing clears it.
-  const nextHeldBy = stage ? (incomingOpportunityId ?? heldBy) : null;
+  const nextHeldBy = isRelease ? null : (incomingOpportunityId ?? heldBy);
   await supabaseAdmin.from("unit_state").upsert(
     {
       unit_crm_id: unitId,
