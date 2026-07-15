@@ -1,15 +1,10 @@
 /**
  * Unit release engine — the single place a locked/reserved unit returns to
- * Available. Used by:
- *
- *   - the self-healing reconcile sweep (runs on every dashboard view, throttled)
- *   - the opportunity-deleted webhook
- *   - the unit-associated webhook (SELECTED_UNIT_CHANGED)
- *   - the manual release-units admin endpoint
+ * Available — plus the shared self-heal entry point both pages call.
  *
  * Every release updates BOTH sides (the GHL Unit record and the unit_state
- * mirror the dashboard reads), clears the holder, recomputes parent rollups,
- * and writes an audit event carrying a machine-readable reason code.
+ * mirror the pages read), clears the holder, recomputes parent rollups, and
+ * writes an audit event carrying a machine-readable reason code.
  *
  * Safety rules, in order:
  *   1. Closed/Sold never auto-releases. Only MANUAL_UNIT_RELEASE may free it.
@@ -292,6 +287,54 @@ async function fetchOpportunitySnapshot(c: CrmClient, oppId: string): Promise<Op
   }
 }
 
+export interface HoldCheck {
+  verdict: "held" | "free" | "unknown";
+  reason?: ReleaseReason;
+  detail?: string;
+}
+
+/**
+ * Is this opportunity's hold on this unit still justified, per the LIVE CRM?
+ * Used by the reconcile sweep AND by the stage webhook when a unit carries a
+ * stale holder — instead of blocking blindly, the webhook verifies the holder
+ * and frees the unit when the hold is no longer real.
+ * "unknown" (read failure / nothing to filter on) must be treated as held.
+ */
+export async function checkOpportunityHold(
+  c: CrmClient,
+  opportunityId: string,
+  unitCrmId: string,
+): Promise<HoldCheck> {
+  const snap = await fetchOpportunitySnapshot(c, opportunityId);
+  if (snap === "error") return { verdict: "unknown", detail: "opportunity read failed" };
+  if (!snap.exists || snap.status === "deleted") return { verdict: "free", reason: "OPPORTUNITY_DELETED" };
+  if (snap.status === "lost" || snap.status === "abandoned") return { verdict: "free", reason: "OPPORTUNITY_LOST" };
+
+  if (snap.pipelineId && snap.stageId) {
+    const [catalog, rules] = await Promise.all([fetchPipelineCatalog(c), loadReleaseRules()]);
+    if (catalog) {
+      const stageName = catalog.stageNameById.get(snap.stageId) ?? null;
+      const pipelineName = catalog.pipelineNameById.get(snap.pipelineId) ?? null;
+      const rule = rules.byPipelineId.get(snap.pipelineId)
+        ?? (pipelineName ? rules.byPipelineName.get(normStage(pipelineName)) : undefined);
+      if (rule && stageName && rule.releaseNames.has(normStage(stageName))) {
+        return { verdict: "free", reason: "MOVED_TO_RELEASE_STAGE" };
+      }
+    }
+  }
+
+  try {
+    const { fetchUnitAssociationSets } = await import("./opportunities.server");
+    const sets = await fetchUnitAssociationSets(c, opportunityId);
+    if (!sets.lockedAssociationDefined) return { verdict: "unknown", detail: "no Locked/Reserved association defined" };
+    return new Set(sets.lockedUnitIds).has(unitCrmId)
+      ? { verdict: "held" }
+      : { verdict: "free", reason: "UNIT_ASSOCIATION_REMOVED" };
+  } catch (err) {
+    return { verdict: "unknown", detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /**
  * Self-healing reconcile: for every unit whose lock was placed by an
  * opportunity, verify against the LIVE CRM that the hold is still justified.
@@ -441,4 +484,57 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
   }
 
   return result;
+}
+
+/**
+ * Shared self-heal entry point. Called by BOTH the Dashboard and the Unit
+ * Report server functions on every view (both pages poll every 30s), and
+ * throttled here to one real run per 2 minutes via a marker row.
+ *
+ * Runs, in order:
+ *   1. prune local mappings for records deleted in the CRM
+ *   2. mirror every Unit's ACTUAL availability/stage from the CRM
+ *   3. the orphaned-lock reconcile sweep (releases anything unjustified)
+ */
+export async function selfHealCrmState(force: boolean): Promise<void> {
+  const supabaseAdmin = await admin();
+
+  if (!force) {
+    const { data: last } = await supabaseAdmin
+      .from("audit_events")
+      .select("created_at")
+      .eq("kind", "reconcile_run")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (last?.created_at && Date.now() - new Date(last.created_at).getTime() < 2 * 60 * 1000) {
+      return; // healed recently — skip
+    }
+  }
+
+  // Marker first, so concurrent page loads don't stampede the CRM.
+  await supabaseAdmin
+    .from("audit_events")
+    .insert({ kind: "reconcile_run", reason: force ? "manual sync" : "auto (page view)" })
+    .then(() => undefined, () => undefined);
+
+  try {
+    const { reconcileScopes, syncUnitStatesFromCrm } = await import("./live-records.server");
+    await reconcileScopes(["project", "building", "unit"]);
+    const res = await syncUnitStatesFromCrm();
+    if (res.skipped) console.warn("[heal] unit mirror skipped:", res.skipped);
+  } catch (err) {
+    console.warn("[heal] mirror failed:", err instanceof Error ? err.message : err);
+  }
+
+  try {
+    const rec = await reconcileHeldUnits();
+    if (rec.released.length > 0 || rec.skipped.length > 0) {
+      console.info(
+        `[heal] reconcile: checked ${rec.checked}, released ${rec.released.length}, kept ${rec.keptHeld}, skipped ${rec.skipped.length}`,
+      );
+    }
+  } catch (err) {
+    console.warn("[heal] held-unit reconcile failed:", err instanceof Error ? err.message : err);
+  }
 }

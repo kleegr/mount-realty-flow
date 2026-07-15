@@ -6,28 +6,23 @@ import { normalizeStagePayload } from "./webhook-payload.server";
  * Shared stage-change application logic.
  * Used by both the opportunity-stage webhook and the unit-associated replay webhook.
  *
- * Two application targets:
- *   1. Unit    — default. Applies availability/stage to the Unit + rolls up
- *                totals to parent Building & Project.
- *   2. Building — for "whole building" sales (villa/house sold as a single
- *                unit at the Building level). Applies status directly to the
- *                Building record; no rollup, since the Building IS the unit.
- *
  * Stage classification (see classifyStage):
  *   - reserved / under_contract / closed  → lock the unit to that state
  *   - release_stage_names[] (or legacy stage_release_name) → free the unit back
- *     to Available. This covers a deal moving BACKWARD (e.g. contract fell
- *     through → back to Meeting / Showing) as well as Lost / Not Interested.
- *   - anything else → stage_not_mapped, unit keeps its current state. This is
- *     deliberate: mid-contract stages such as Payment Tracking or Attorney /
- *     Title must HOLD Under Contract, not release it.
+ *     to Available. Covers a deal moving BACKWARD (contract fell through →
+ *     back to Meeting / Showing) as well as Lost / Not Interested.
+ *   - anything else → stage_not_mapped, unit keeps its current state (HOLD
+ *     stages like Payment Tracking must keep Under Contract).
  *
  * Ownership rules:
  *   - Closed/Sold is terminal. Only a human can undo it.
- *   - While a unit is locked, unit_state.held_by_opportunity_id records WHICH
- *     opportunity holds it. The holding opportunity may move freely in either
- *     direction (Reserved <-> Under Contract, or back out to Available).
- *     A DIFFERENT opportunity cannot touch the unit until it is released.
+ *   - unit_state.held_by_opportunity_id records WHICH opportunity holds a
+ *     locked unit. The holder moves freely in either direction. A DIFFERENT
+ *     opportunity is normally locked out — BUT a recorded holder can be STALE
+ *     (its deal deleted / lost / moved back). So before blocking, the holder
+ *     is verified against the live CRM; an unjustified hold is auto-released
+ *     and the incoming change proceeds. Without this, one stale holder
+ *     deadlocks a unit forever.
  */
 export interface StageChangeInput {
   pipelineId: string | null;
@@ -82,9 +77,7 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
   }
 
   // AUTO-FETCH: if we still have no unit/building reference but we do have an
-  // opportunity ID, ask GHL for the opportunity's associations. This lets the
-  // salesperson simply move the stage in GHL — the app figures out the linked
-  // unit itself, no custom field / no manual paste required.
+  // opportunity ID, ask GHL for the opportunity's associations.
   if (!unitCrmId && !buildingCrmId && params.opportunityId && params.autoFetchAssociations !== false) {
     try {
       const { createCrmClient } = await import("./client.server");
@@ -123,20 +116,21 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
   const isRelease = stage === "";
 
   // Cached state: who holds this unit, and its parents (for rollups).
-  // Read BEFORE any write so the ownership guards can use it.
   const { data: cachedState } = await supabaseAdmin
     .from("unit_state")
     .select("building_crm_id, project_crm_id, held_by_opportunity_id")
     .eq("unit_crm_id", unitId)
     .maybeSingle();
-  const heldBy = cachedState?.held_by_opportunity_id ?? null;
+  let heldBy = cachedState?.held_by_opportunity_id ?? null;
 
   const { createCrmClient } = await import("./client.server");
   const { readRecord } = await import("./objects.server");
+  const client = await createCrmClient();
+
   let currentStage = "";
   let currentAvailability = "";
   try {
-    const cur = await readRecord(await createCrmClient(), "unit", unitId);
+    const cur = await readRecord(client, "unit", unitId);
     const props = extractProps(cur);
     currentStage = normalizeUnitStage(props?.["stages"]);
     currentAvailability = normalizeAvailability(props?.[FIELDS.unit.availability]);
@@ -153,16 +147,42 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     };
   }
 
-  // ---- Guard 2: a DIFFERENT opportunity is holding this unit.
-  // The holder may move freely (forward, backward, or release). Anyone else is
-  // locked out until the holder gives it up.
+  // ---- Guard 2: a DIFFERENT opportunity is recorded as holding this unit.
+  // Verify that hold against the live CRM before blocking: recorded holders go
+  // stale when their deal is deleted, lost, or dragged back — blocking on a
+  // stale holder deadlocks the unit for every future deal.
+  let effectiveStage = currentStage;
+  let effectiveAvailability = currentAvailability;
   const isLocked = currentAvailability === "Not Available" && currentStage !== "";
   if (isLocked && heldBy && incomingOpportunityId && heldBy !== incomingOpportunityId) {
-    return {
-      outcome: "blocked_held_by_other_opportunity",
-      unitCrmId: unitId,
-      message: `Unit is ${currentStage} under opportunity ${heldBy}. Release it there first.`,
-    };
+    let verdict: "held" | "free" | "unknown" = "unknown";
+    let freeReason: "UNIT_ASSOCIATION_REMOVED" | "OPPORTUNITY_DELETED" | "OPPORTUNITY_LOST" | "MOVED_TO_RELEASE_STAGE" = "UNIT_ASSOCIATION_REMOVED";
+    try {
+      const { checkOpportunityHold, releaseUnit } = await import("./release.server");
+      const check = await checkOpportunityHold(client, heldBy, unitId);
+      verdict = check.verdict;
+      if (check.verdict === "free") {
+        freeReason = (check.reason ?? "UNIT_ASSOCIATION_REMOVED") as typeof freeReason;
+        await releaseUnit(client, unitId, freeReason, heldBy);
+        heldBy = null;
+        effectiveStage = "";
+        effectiveAvailability = "Available";
+      }
+    } catch (err) {
+      console.warn("[stage-apply] holder verification failed:", err instanceof Error ? err.message : err);
+    }
+    if (verdict !== "free") {
+      return {
+        outcome: "blocked_held_by_other_opportunity",
+        unitCrmId: unitId,
+        message: `Unit is ${currentStage} under opportunity ${heldBy}. Release it there first.`,
+      };
+    }
+    // Holder was stale and has been released — the incoming change proceeds.
+    if (isRelease) {
+      // Incoming change IS a release; the stale-holder release already did it.
+      return { outcome: "applied:available", unitCrmId: unitId };
+    }
   }
 
   // ---- Guard 3: legacy fallback. No holder on record (state came from an
@@ -172,18 +192,16 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
   if (
     !heldBy
     && stage === "Reserved/Locked"
-    && currentAvailability === "Not Available"
-    && currentStage
-    && currentStage !== "Reserved/Locked"
+    && effectiveAvailability === "Not Available"
+    && effectiveStage
+    && effectiveStage !== "Reserved/Locked"
   ) {
     return {
       outcome: "blocked_double_reservation",
       unitCrmId: unitId,
-      message: `Unit is currently ${currentStage}.`,
+      message: `Unit is currently ${effectiveStage}.`,
     };
   }
-
-  const client = await createCrmClient();
 
   // Only non-empty values survive normalizeRecordProperties() — its stripEmpty()
   // drops ""/null. So fields we need to CLEAR are appended afterwards as
@@ -195,7 +213,7 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     ...(stage === "Reserved/Locked"
       ? { [FIELDS.unit.locked_date]: new Date().toISOString().slice(0, 10) }
       : {}),
-  });
+  }, { forUpdate: true });
   const properties: Record<string, unknown> = isRelease
     ? { ...setProps, [FIELDS.unit.stage]: null, [FIELDS.unit.locked_date]: null }
     : setProps;
@@ -243,7 +261,7 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     kind: "opportunity_stage_change",
     entity_scope: "unit",
     entity_crm_id: unitId,
-    previous: { availability: currentAvailability, stage: currentStage, held_by: heldBy } as never,
+    previous: { availability: currentAvailability, stage: currentStage, held_by: cachedState?.held_by_opportunity_id ?? null } as never,
     next: { availability, stage, held_by: nextHeldBy } as never,
     reason: `Opportunity ${incomingOpportunityId ?? ""} moved to stage ${params.stageName ?? params.stageId ?? ""}`,
   });
@@ -266,9 +284,6 @@ interface StageMapping {
   stage_release_name?: string | null;
   /**
    * Every stage that should FREE the unit back to Available.
-   * Typically the early/browsing stages (New Inquiry … Meeting / Showing) plus
-   * any explicit Lost / Released stage. A deal moving backward into one of
-   * these means the hold is over.
    */
   release_stage_names?: string[] | null;
 }
@@ -380,7 +395,7 @@ async function applyBuildingStage(
   }
 
   await requestObject(client, "PUT", "building", `/records/${buildingCrmId}`, {
-    body: { properties: await normalizeRecordProperties(client, "building", { [FIELDS.building.status]: nextStatus }) },
+    body: { properties: await normalizeRecordProperties(client, "building", { [FIELDS.building.status]: nextStatus }, { forUpdate: true }) },
   });
 
   await supabaseAdmin.from("audit_events").insert({
