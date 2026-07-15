@@ -11,27 +11,53 @@ import {
   Search,
   BarChart3,
   ShieldCheck,
+  Menu as MenuIcon,
+  ChevronDown,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { getMyRoles } from "@/lib/crm-config.functions";
-import { KleegrLogo } from "./KleegrLogo";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 
-const NAV = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+/**
+ * Top-ribbon app shell, built for running INSIDE GoHighLevel as an embedded
+ * custom link. Customers see three simple tabs — Dashboard, Import Center,
+ * Import History. Everything operational lives in a single "Menu" dropdown,
+ * with the Admin Panel tucked under the settings group. Colors are the Kleegr
+ * palette (deep navy bar, amber accent) so it never clashes with the GHL
+ * chrome around it.
+ */
+
+const PRIMARY_NAV = [
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, match: (p: string) => p === "/dashboard" },
+  {
+    to: "/import",
+    label: "Import Center",
+    icon: Upload,
+    match: (p: string) => p === "/import" || (p.startsWith("/import/") && !p.startsWith("/import/history")),
+  },
+  { to: "/import/history", label: "Import History", icon: History, match: (p: string) => p.startsWith("/import/history") },
+] as const;
+
+const MENU_NAV = [
   { to: "/report", label: "Unit Report", icon: BarChart3 },
-  { to: "/import", label: "Import Center", icon: Upload },
-  { to: "/import/history", label: "Import History", icon: History },
   { to: "/inventory", label: "Inventory", icon: Building2 },
   { to: "/tools/id-lookup", label: "CRM ID Lookup", icon: Search },
   { to: "/settings/sync", label: "Sync from CRM", icon: RefreshCw },
   { to: "/settings/crm", label: "Settings", icon: Settings },
 ] as const;
 
-const ADMIN_NAV = [
+const ADMIN_MENU_NAV = [
   { to: "/settings/admin", label: "Admin Panel", icon: ShieldCheck },
 ] as const;
 
@@ -41,7 +67,8 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
   const rolesFn = useServerFn(getMyRoles);
   const { data: rolesData } = useQuery({ queryKey: ["my-roles"], queryFn: () => rolesFn(), staleTime: 60_000 });
   const isAdmin = (rolesData?.roles ?? []).includes("admin");
-  const navItems = isAdmin ? [...NAV, ...ADMIN_NAV] : NAV;
+  const menuItems = isAdmin ? [...MENU_NAV, ...ADMIN_MENU_NAV] : [...MENU_NAV];
+  const menuActive = menuItems.some((item) => currentPath.startsWith(item.to));
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -49,48 +76,90 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
   }
 
   return (
-    <div className="flex min-h-screen bg-background">
-      <aside className="hidden w-64 flex-col bg-sidebar text-sidebar-foreground md:flex">
-        <div className="p-5">
-          <div className="rounded-lg bg-sidebar-accent/40 px-3 py-2.5">
-            <KleegrLogo />
-          </div>
-        </div>
-        <nav className="flex-1 space-y-1 px-3">
-          {navItems.map((item) => {
-            const active = currentPath === item.to || (item.to !== "/dashboard" && currentPath.startsWith(item.to));
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.to}
-                to={item.to}
+    <div className="flex min-h-screen flex-col bg-background">
+      <header className="sticky top-0 z-40 bg-sidebar text-sidebar-foreground shadow-md">
+        <div className="mx-auto flex h-12 max-w-7xl items-center gap-2 px-3 sm:gap-4 sm:px-5">
+          {/* Brand — compact, light-on-navy */}
+          <Link to="/dashboard" className="flex shrink-0 items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
+              <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 10 12 3l8 7v10a1 1 0 0 1-1 1h-5v-7h-4v7H5a1 1 0 0 1-1-1V10Z" fill="currentColor" opacity="0.9" />
+              </svg>
+            </div>
+            <div className="hidden flex-col leading-none sm:flex">
+              <span className="text-sm font-bold tracking-tight text-sidebar-foreground">Kleegr</span>
+              <span className="text-[9px] font-medium uppercase tracking-wider text-sidebar-foreground/60">Mount Realty</span>
+            </div>
+          </Link>
+
+          {/* Primary tabs */}
+          <nav className="flex h-full flex-1 items-stretch gap-1 overflow-x-auto">
+            {PRIMARY_NAV.map((item) => {
+              const active = item.match(currentPath);
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  className={cn(
+                    "flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 text-sm font-medium transition-colors sm:px-3",
+                    active
+                      ? "border-sidebar-primary text-sidebar-foreground"
+                      : "border-transparent text-sidebar-foreground/70 hover:border-sidebar-primary/40 hover:text-sidebar-foreground",
+                  )}
+                >
+                  <Icon className={cn("h-4 w-4", active && "text-sidebar-primary")} />
+                  <span className="whitespace-nowrap">{item.label}</span>
+                </Link>
+              );
+            })}
+          </nav>
+
+          {/* Everything else lives in one Menu */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
                 className={cn(
-                  "relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                  active
-                    ? "bg-sidebar-accent text-sidebar-primary before:absolute before:left-0 before:top-1/2 before:h-5 before:w-1 before:-translate-y-1/2 before:rounded-r before:bg-sidebar-primary"
-                    : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
+                  "h-8 shrink-0 gap-1.5 px-2.5 text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
+                  menuActive && "bg-sidebar-accent text-sidebar-foreground",
                 )}
               >
-                <Icon className={cn("h-4 w-4", active && "text-sidebar-primary")} />
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="border-t border-sidebar-border p-4">
-          <div className="mb-2 truncate text-xs text-sidebar-foreground/60">{userEmail}</div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-            onClick={signOut}
-          >
-            <LogOut className="mr-2 h-4 w-4" /> Sign out
-          </Button>
+                <MenuIcon className="h-4 w-4" />
+                <span className="hidden sm:inline">Menu</span>
+                <ChevronDown className="h-3 w-3 opacity-70" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {menuItems.map((item) => {
+                const Icon = item.icon;
+                const active = currentPath.startsWith(item.to);
+                return (
+                  <DropdownMenuItem key={item.to} asChild>
+                    <Link to={item.to} className={cn("flex w-full cursor-pointer items-center gap-2", active && "font-semibold")}> 
+                      <Icon className="h-4 w-4" />
+                      {item.label}
+                    </Link>
+                  </DropdownMenuItem>
+                );
+              })}
+              <DropdownMenuSeparator />
+              {userEmail && (
+                <DropdownMenuLabel className="truncate text-xs font-normal text-muted-foreground">
+                  {userEmail}
+                </DropdownMenuLabel>
+              )}
+              <DropdownMenuItem onClick={signOut} className="cursor-pointer">
+                <LogOut className="mr-2 h-4 w-4" /> Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
-      </aside>
+      </header>
+
       <main className="flex-1 overflow-x-hidden">
-        <div className="mx-auto max-w-7xl px-6 py-8">{children}</div>
+        <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">{children}</div>
       </main>
     </div>
   );
