@@ -55,6 +55,10 @@ async function saveMapping(scope: Scope, externalId: string, crmId: string, jobI
  *  1. saved external_id mapping
  *  2. CRM search by external_import_id field
  *  3. CRM search by fallback (project/building code, or unit_number+building)
+ *
+ * NOTE: the CREATE and UPDATE payloads are normalized SEPARATELY, not shared.
+ * GHL's PUT rejects the MULTIPLE_OPTIONS array shape that its POST accepts —
+ * see needsArrayWrap() in object-config.server.ts.
  */
 export async function upsertRecord(params: {
   client: CrmClient;
@@ -70,7 +74,9 @@ export async function upsertRecord(params: {
 
   // Stamp external_import_id only for objects that expose that CRM field.
   const externalField = extIdField(scope);
-  const props = await normalizeRecordProperties(client, scope, stripEmpty(externalField ? { ...properties, [externalField]: externalImportId } : { ...properties }));
+  const rawProps = stripEmpty(
+    externalField ? { ...properties, [externalField]: externalImportId } : { ...properties },
+  );
 
   // 1) mapping
   let crmId = await lookupMapping(scope, externalImportId);
@@ -86,19 +92,21 @@ export async function upsertRecord(params: {
   }
 
   if (crmId) {
+    const updateProps = await normalizeRecordProperties(client, scope, rawProps, { forUpdate: true });
     const res = await requestObject(client, "PUT", scope, `/records/${crmId}`, {
-      body: { properties: props },
+      body: { properties: updateProps },
     });
     await saveMapping(scope, externalImportId, crmId, jobId);
     return { crmId, action: "updated", correlationId: res.correlationId };
   }
 
+  const createProps = await normalizeRecordProperties(client, scope, rawProps);
   const res = await requestObject<{ record?: { id?: string }; id?: string }>(
     client,
     "POST",
     scope,
     `/records`,
-    { body: { locationId, properties: props } },
+    { body: { locationId, properties: createProps } },
   );
   const created = extractRecordId(res.data);
   if (!created) throw new Error(`CRM did not return an id after creating ${scope}`);

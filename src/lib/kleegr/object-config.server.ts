@@ -172,11 +172,22 @@ function normalizeLabel(value: string | undefined): string {
   return String(value ?? "").trim().toLowerCase();
 }
 
+export interface NormalizeOptions {
+  /**
+   * True when the payload is destined for PUT /records/{id} rather than
+   * POST /records. See needsArrayWrap() — GHL's two endpoints disagree about
+   * the shape of MULTIPLE_OPTIONS values.
+   */
+  forUpdate?: boolean;
+}
+
 export async function normalizeRecordProperties(
   client: CrmClient,
   scope: CrmObjectScope,
   properties: Record<string, unknown>,
+  opts?: NormalizeOptions,
 ): Promise<Record<string, unknown>> {
+  const forUpdate = opts?.forUpdate === true;
   const clean = stripEmpty(properties);
   const schemaFields = await fetchSchemaFields(client, scope).catch(() => [] as SchemaField[]);
   if (schemaFields.length === 0) return normalizeWithFallbacks(clean);
@@ -203,7 +214,7 @@ export async function normalizeRecordProperties(
   for (const [prop, value] of Object.entries(clean)) {
     if (!schemaTypeMap.has(prop)) continue;
     const schemaType = schemaTypeMap.get(prop) ?? "";
-    const isMulti = prop !== "stages" && isMultiSelectType(schemaType);
+    const isMulti = prop !== "stages" && needsArrayWrap(schemaType, forUpdate);
 
     const map = optionMap.get(prop);
     if (!map) {
@@ -216,7 +227,10 @@ export async function normalizeRecordProperties(
       const mapped = value
         .map((v) => map.get(normalizeOption(v)) ?? fallbackOption(prop, v))
         .filter(Boolean);
-      if (mapped.length > 0) out[prop] = mapped;
+      if (mapped.length === 0) continue;
+      // On update a MULTIPLE_OPTIONS field cannot take an array at all, so an
+      // incoming array collapses to its first value.
+      out[prop] = isMulti ? mapped : mapped[0];
       continue;
     }
 
@@ -230,8 +244,29 @@ function isMultiSelectType(schemaType: string): boolean {
   return /checkbox|multi|list/.test(schemaType);
 }
 
-
-
+/**
+ * Should this value be wrapped in an array?
+ *
+ * GHL quirk, measured against the live API (2026-07-15) on a MULTIPLE_OPTIONS
+ * field (`property_type`, optionKeys condo|rental|mixed_use):
+ *
+ *   POST /objects/{key}/records        property_type: ["condo"]  -> OK
+ *   PUT  /objects/{key}/records/{id}   property_type: ["condo"]  -> 422
+ *        "We couldn't apply updates to Property Type due to an unexpected format."
+ *   PUT  /objects/{key}/records/{id}   property_type: "condo"    -> OK
+ *
+ * i.e. create accepts the array, update refuses it and wants a bare option key.
+ * CHECKBOX fields accept an array on both verbs, so this exception is scoped to
+ * MULTIPLE_OPTIONS on update only.
+ *
+ * Known limitation: because update takes a bare string, a MULTIPLE_OPTIONS
+ * field can only be updated to a SINGLE value through this path.
+ */
+function needsArrayWrap(schemaType: string, forUpdate: boolean): boolean {
+  if (!isMultiSelectType(schemaType)) return false;
+  if (forUpdate && /multiple[_\s-]?options/.test(schemaType)) return false;
+  return true;
+}
 
 async function fetchSchemaFields(client: CrmClient, scope: CrmObjectScope): Promise<SchemaField[]> {
   const locationId = client.config.location_id;
