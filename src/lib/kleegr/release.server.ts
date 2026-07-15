@@ -1,17 +1,25 @@
 /**
- * Unit release engine — the single place a locked/reserved unit returns to
- * Available — plus the shared self-heal entry point both pages call.
+ * Unit status engine — the single place a unit's state is written, plus the
+ * shared self-heal entry point both pages call.
  *
- * Every release updates BOTH sides (the GHL Unit record and the unit_state
- * mirror the pages read), clears the holder, recomputes parent rollups, and
- * writes an audit event carrying a machine-readable reason code.
+ * MODEL (confirmed by the owner): the pipeline card's CURRENT STAGE is the
+ * absolute truth for the unit's status. Direction of movement and history do
+ * not matter. Every stage in both pipelines maps to exactly one of four
+ * statuses — available / reserved / under_contract / sold — via the
+ * crm_pipelines stage lists:
+ *   reserved_stage_names[] → Reserved
+ *   under_contract_stage_names[] → Under Contract
+ *   sold_stage_names[] → Closed/Sold
+ *   release_stage_names[] → Available (includes Lost / Not Interested)
+ * Dragging a deal backward — even out of Closing — re-applies the mapped
+ * status, including un-selling.
  *
- * Safety rules, in order:
- *   1. Closed/Sold never auto-releases. Only MANUAL_UNIT_RELEASE may free it.
- *   2. Releasing an already-Available unit is a successful no-op (idempotent).
- *   3. Callers that decide WHETHER to release use strict CRM reads. A
- *      transient CRM outage must never look like "the association is gone" —
- *      on any read failure the unit is SKIPPED, never released.
+ * Sold guard: a Sold unit may only change via an explicit card POSITION
+ * (MOVED_TO_RELEASE_STAGE / position sync) or a MANUAL release. Deleting or
+ * losing a deal does NOT quietly un-sell a unit.
+ *
+ * Strict reads: a transient CRM outage must never look like "the association
+ * is gone" — on any read failure the unit is SKIPPED, never changed.
  */
 import type { CrmClient } from "./client.server";
 import { FIELDS } from "./field-map";
@@ -25,6 +33,15 @@ export type ReleaseReason =
   | "MOVED_TO_RELEASE_STAGE"     // the holding opportunity sits in a release stage
   | "MANUAL_UNIT_RELEASE";       // human-initiated force release
 
+export type CanonicalStatus = "available" | "reserved" | "under_contract" | "sold";
+
+const STATUS_TARGETS: Record<CanonicalStatus, { availability: string; stage: string; deducted: string }> = {
+  available: { availability: "Available", stage: "", deducted: "No" },
+  reserved: { availability: "Not Available", stage: "Reserved/Locked", deducted: "Yes" },
+  under_contract: { availability: "Not Available", stage: "Under Contract", deducted: "Yes" },
+  sold: { availability: "Not Available", stage: "Closed/Sold", deducted: "Yes" },
+};
+
 export interface ReleaseResult {
   unitCrmId: string;
   released: boolean;
@@ -35,6 +52,7 @@ export interface ReleaseResult {
 export interface ReconcileResult {
   checked: number;
   released: ReleaseResult[];
+  adjusted: Array<{ unitCrmId: string; to: CanonicalStatus; outcome: string }>;
   keptHeld: number;
   skipped: Array<{ opportunityId: string; reason: string }>;
 }
@@ -64,12 +82,16 @@ export async function releaseUnit(
   const currentStage = (row?.stage ?? "").trim();
   const currentAvailability = (row?.availability ?? "").trim();
 
-  // Rule 1: a sale is terminal for every automated path.
-  if (currentStage === "Closed/Sold" && reason !== "MANUAL_UNIT_RELEASE") {
+  // Sold guard: only an explicit card position or a human may free a sold unit.
+  if (
+    currentStage === "Closed/Sold"
+    && reason !== "MANUAL_UNIT_RELEASE"
+    && reason !== "MOVED_TO_RELEASE_STAGE"
+  ) {
     return { unitCrmId, released: false, outcome: "sold_protected", reason };
   }
 
-  // Rule 2: idempotent no-op.
+  // Idempotent no-op.
   if (row && currentAvailability === "Available" && !currentStage) {
     await clearHolder(unitCrmId);
     return { unitCrmId, released: false, outcome: "already_available", reason };
@@ -124,6 +146,84 @@ export async function releaseUnit(
   });
 
   return { unitCrmId, released: true, outcome: "released", reason };
+}
+
+/**
+ * Write a non-available canonical status to a unit — the "position is truth"
+ * apply path used by the reconcile sweep when a deal's card sits in a
+ * Reserved / Under Contract / Sold stage. Both directions are legal,
+ * including sold → under_contract when a card is dragged back from Closing.
+ */
+export async function applyUnitStatus(
+  client: CrmClient,
+  unitCrmId: string,
+  status: Exclude<CanonicalStatus, "available">,
+  opportunityId: string | null,
+): Promise<{ unitCrmId: string; outcome: string }> {
+  const supabaseAdmin = await admin();
+  const target = STATUS_TARGETS[status];
+
+  const { data: row } = await supabaseAdmin
+    .from("unit_state")
+    .select("availability, stage, building_crm_id, project_crm_id, held_by_opportunity_id")
+    .eq("unit_crm_id", unitCrmId)
+    .maybeSingle();
+
+  const currentStage = (row?.stage ?? "").trim();
+  const currentAvailability = (row?.availability ?? "").trim();
+
+  if (currentStage === target.stage && currentAvailability === target.availability) {
+    // Already correct — just make sure the holder is recorded.
+    if (opportunityId && row?.held_by_opportunity_id !== opportunityId) {
+      await supabaseAdmin
+        .from("unit_state")
+        .update({ held_by_opportunity_id: opportunityId })
+        .eq("unit_crm_id", unitCrmId)
+        .then(() => undefined, () => undefined);
+    }
+    return { unitCrmId, outcome: "already_in_state" };
+  }
+
+  const setProps = await normalizeRecordProperties(client, "unit", {
+    [FIELDS.unit.availability]: target.availability,
+    [FIELDS.unit.inventory_deducted]: target.deducted,
+    [FIELDS.unit.stage]: target.stage,
+    ...(status === "reserved"
+      ? { [FIELDS.unit.locked_date]: new Date().toISOString().slice(0, 10) }
+      : {}),
+  }, { forUpdate: true });
+
+  try {
+    await requestObject(client, "PUT", "unit", `/records/${unitCrmId}`, {
+      body: { properties: setProps },
+    });
+  } catch (err) {
+    return { unitCrmId, outcome: `ghl_failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  const { error: upErr } = await supabaseAdmin.from("unit_state").upsert(
+    {
+      unit_crm_id: unitCrmId,
+      availability: target.availability,
+      stage: target.stage,
+      held_by_opportunity_id: opportunityId,
+    },
+    { onConflict: "unit_crm_id" },
+  );
+  if (upErr) return { unitCrmId, outcome: `mirror_failed: ${upErr.message}` };
+
+  await recomputeParents(client, row?.building_crm_id ?? null, row?.project_crm_id ?? null);
+
+  await supabaseAdmin.from("audit_events").insert({
+    kind: "unit_status_sync",
+    entity_scope: "unit",
+    entity_crm_id: unitCrmId,
+    previous: { availability: currentAvailability || null, stage: currentStage || null } as never,
+    next: { availability: target.availability, stage: target.stage } as never,
+    reason: `POSITION_SYNC:${status}${opportunityId ? ` (opportunity ${opportunityId})` : ""}`,
+  });
+
+  return { unitCrmId, outcome: `applied:${target.stage}` };
 }
 
 async function clearHolder(unitCrmId: string): Promise<void> {
@@ -196,7 +296,7 @@ function normStage(value: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline catalog (stage id -> name) + release rules from crm_pipelines
+// Pipeline catalog (stage id -> name) + the full stage→status table
 // ---------------------------------------------------------------------------
 
 interface PipelineCatalog {
@@ -230,36 +330,47 @@ async function fetchPipelineCatalog(c: CrmClient): Promise<PipelineCatalog | nul
   }
 }
 
-interface ReleaseRule {
-  releaseNames: Set<string>; // normalized
+type StatusRuleMap = Map<string, CanonicalStatus>; // normalized stage name -> status
+
+interface StageRules {
+  byPipelineId: Map<string, StatusRuleMap>;
+  byPipelineName: Map<string, StatusRuleMap>;
 }
 
-interface ReleaseRules {
-  byPipelineId: Map<string, ReleaseRule>;
-  byPipelineName: Map<string, ReleaseRule>;
-}
-
-async function loadReleaseRules(): Promise<ReleaseRules> {
-  const rules: ReleaseRules = { byPipelineId: new Map(), byPipelineName: new Map() };
+async function loadStageRules(): Promise<StageRules> {
+  const rules: StageRules = { byPipelineId: new Map(), byPipelineName: new Map() };
   const supabaseAdmin = await admin();
   const { data, error } = await supabaseAdmin
     .from("crm_pipelines")
-    .select("pipeline_id, pipeline_name, stage_release_name, release_stage_names");
+    .select("pipeline_id, pipeline_name, stage_reserved_name, stage_under_contract_name, stage_closed_name, stage_release_name, release_stage_names, reserved_stage_names, under_contract_stage_names, sold_stage_names");
   if (error || !data) return rules;
   for (const row of data as Array<Record<string, unknown>>) {
-    const releaseNames = new Set<string>();
-    const single = row.stage_release_name;
-    if (typeof single === "string" && single.trim()) releaseNames.add(normStage(single));
-    const list = row.release_stage_names;
-    if (Array.isArray(list)) {
-      for (const n of list) if (typeof n === "string" && n.trim()) releaseNames.add(normStage(n));
-    }
-    if (releaseNames.size === 0) continue;
-    const rule: ReleaseRule = { releaseNames };
-    if (typeof row.pipeline_id === "string" && row.pipeline_id) rules.byPipelineId.set(row.pipeline_id, rule);
-    if (typeof row.pipeline_name === "string" && row.pipeline_name) rules.byPipelineName.set(normStage(row.pipeline_name), rule);
+    const map: StatusRuleMap = new Map();
+    const put = (name: unknown, status: CanonicalStatus) => {
+      if (typeof name === "string" && name.trim()) map.set(normStage(name), status);
+    };
+    const putAll = (list: unknown, status: CanonicalStatus) => {
+      if (Array.isArray(list)) for (const n of list) put(n, status);
+    };
+    // Broad lists first, explicit singles last so legacy singles win ties.
+    putAll(row.release_stage_names, "available");
+    putAll(row.reserved_stage_names, "reserved");
+    putAll(row.under_contract_stage_names, "under_contract");
+    putAll(row.sold_stage_names, "sold");
+    put(row.stage_release_name, "available");
+    put(row.stage_reserved_name, "reserved");
+    put(row.stage_under_contract_name, "under_contract");
+    put(row.stage_closed_name, "sold");
+    if (map.size === 0) continue;
+    if (typeof row.pipeline_id === "string" && row.pipeline_id) rules.byPipelineId.set(row.pipeline_id, map);
+    if (typeof row.pipeline_name === "string" && row.pipeline_name) rules.byPipelineName.set(normStage(row.pipeline_name), map);
   }
   return rules;
+}
+
+function ruleFor(rules: StageRules, pipelineId: string | null, pipelineName: string | null): StatusRuleMap | undefined {
+  return (pipelineId ? rules.byPipelineId.get(pipelineId) : undefined)
+    ?? (pipelineName ? rules.byPipelineName.get(normStage(pipelineName)) : undefined);
 }
 
 interface OppSnapshot {
@@ -311,15 +422,14 @@ export async function checkOpportunityHold(
   if (snap.status === "lost" || snap.status === "abandoned") return { verdict: "free", reason: "OPPORTUNITY_LOST" };
 
   if (snap.pipelineId && snap.stageId) {
-    const [catalog, rules] = await Promise.all([fetchPipelineCatalog(c), loadReleaseRules()]);
+    const [catalog, rules] = await Promise.all([fetchPipelineCatalog(c), loadStageRules()]);
     if (catalog) {
       const stageName = catalog.stageNameById.get(snap.stageId) ?? null;
       const pipelineName = catalog.pipelineNameById.get(snap.pipelineId) ?? null;
-      const rule = rules.byPipelineId.get(snap.pipelineId)
-        ?? (pipelineName ? rules.byPipelineName.get(normStage(pipelineName)) : undefined);
-      if (rule && stageName && rule.releaseNames.has(normStage(stageName))) {
-        return { verdict: "free", reason: "MOVED_TO_RELEASE_STAGE" };
-      }
+      const rule = ruleFor(rules, snap.pipelineId, pipelineName);
+      const mapped = rule && stageName ? rule.get(normStage(stageName)) : undefined;
+      if (mapped === "available") return { verdict: "free", reason: "MOVED_TO_RELEASE_STAGE" };
+      if (mapped) return { verdict: "held" }; // card sits in a locking stage — hold is real
     }
   }
 
@@ -336,24 +446,19 @@ export async function checkOpportunityHold(
 }
 
 /**
- * Self-healing reconcile: for every unit whose lock was placed by an
- * opportunity, verify against the LIVE CRM that the hold is still justified.
- * Release when:
- *   - the opportunity no longer exists / is deleted   -> OPPORTUNITY_DELETED
- *   - the opportunity is lost or abandoned            -> OPPORTUNITY_LOST
- *   - the opportunity sits in a configured release    -> MOVED_TO_RELEASE_STAGE
- *     stage (covers GHL workflows that never fired)
- *   - the Locked/Reserved association is gone         -> UNIT_ASSOCIATION_REMOVED
+ * Self-healing reconcile: for every unit tied to an opportunity, enforce the
+ * stage→status table against the LIVE CRM — in BOTH directions:
+ *   - opportunity deleted                    -> release (sold units stay sold)
+ *   - opportunity lost / abandoned           -> release (sold units stay sold)
+ *   - card in a release stage                -> Available (yes, even from Sold)
+ *   - card in a reserved / UC / sold stage   -> that exact status
+ *   - stage not in the table (typo/new)      -> fall back to association check
  *
- * Units locked BEFORE holder tracking existed have no recorded holder — for
- * those, the holder is recovered from webhook history (the "applied:*" event
- * that locked the unit names the opportunity). Units with no webhook history
- * (pure CSV imports) are never touched.
- *
- * Never touches: Closed/Sold units, or anything whose CRM read failed.
+ * Units with no recorded holder get one recovered from webhook history; units
+ * with no webhook history (pure CSV imports) are never touched.
  */
 export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileResult> {
-  const result: ReconcileResult = { checked: 0, released: [], keptHeld: 0, skipped: [] };
+  const result: ReconcileResult = { checked: 0, released: [], adjusted: [], keptHeld: 0, skipped: [] };
 
   let c: CrmClient;
   try {
@@ -381,7 +486,6 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
     const unitCrmId = typeof row.unit_crm_id === "string" ? row.unit_crm_id : null;
     if (!opp || !unitCrmId) continue;
     const stage = String(row.stage ?? "").trim();
-    if (stage === "Closed/Sold") continue; // terminal — rule 1
     const arr = byOpp.get(opp) ?? [];
     arr.push({ unitCrmId, stage });
     byOpp.set(opp, arr);
@@ -399,7 +503,7 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
     const unitCrmId = typeof row.unit_crm_id === "string" ? row.unit_crm_id : null;
     if (!unitCrmId) continue;
     const stage = String(row.stage ?? "").trim();
-    if (!stage || stage === "Closed/Sold") continue;
+    if (!stage) continue;
     const { data: ev } = await supabaseAdmin
       .from("webhook_events")
       .select("opportunity_id")
@@ -418,7 +522,7 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
 
   if (byOpp.size === 0) return result;
 
-  const [catalog, rules] = await Promise.all([fetchPipelineCatalog(c), loadReleaseRules()]);
+  const [catalog, rules] = await Promise.all([fetchPipelineCatalog(c), loadStageRules()]);
   const { fetchUnitAssociationSets } = await import("./opportunities.server");
 
   for (const [oppId, units] of byOpp) {
@@ -427,7 +531,7 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
     // 1) Does the opportunity still exist, and in what state?
     const snap = await fetchOpportunitySnapshot(c, oppId);
     if (snap === "error") {
-      result.skipped.push({ opportunityId: oppId, reason: "opportunity read failed (transient) — not releasing on a guess" });
+      result.skipped.push({ opportunityId: oppId, reason: "opportunity read failed (transient) — not changing on a guess" });
       continue;
     }
 
@@ -445,22 +549,30 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
       continue;
     }
 
-    // 2) Is the opportunity sitting in a release stage? (Covers GHL workflows
-    //    that never fired for backward moves.)
+    // 2) THE TABLE: the card's current stage decides the status, both
+    //    directions, no history.
     if (snap.pipelineId && snap.stageId && catalog) {
       const stageName = catalog.stageNameById.get(snap.stageId) ?? null;
       const pipelineName = catalog.pipelineNameById.get(snap.pipelineId) ?? null;
-      const rule = rules.byPipelineId.get(snap.pipelineId)
-        ?? (pipelineName ? rules.byPipelineName.get(normStage(pipelineName)) : undefined);
-      if (rule && stageName && rule.releaseNames.has(normStage(stageName))) {
+      const rule = ruleFor(rules, snap.pipelineId, pipelineName);
+      const mapped = rule && stageName ? rule.get(normStage(stageName)) : undefined;
+      if (mapped === "available") {
         for (const u of units) {
           result.released.push(await releaseUnit(c, u.unitCrmId, "MOVED_TO_RELEASE_STAGE", oppId));
         }
         continue;
       }
+      if (mapped) {
+        for (const u of units) {
+          const res = await applyUnitStatus(c, u.unitCrmId, mapped, oppId);
+          if (res.outcome === "already_in_state") result.keptHeld++;
+          else result.adjusted.push({ unitCrmId: u.unitCrmId, to: mapped, outcome: res.outcome });
+        }
+        continue;
+      }
     }
 
-    // 3) Does it still hold each unit via a Locked/Reserved association?
+    // 3) Stage not in the table — fall back to the association check.
     let lockedIds: Set<string>;
     try {
       const sets = await fetchUnitAssociationSets(c, oppId);
@@ -494,7 +606,7 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
  * Runs, in order:
  *   1. prune local mappings for records deleted in the CRM
  *   2. mirror every Unit's ACTUAL availability/stage from the CRM
- *   3. the orphaned-lock reconcile sweep (releases anything unjustified)
+ *   3. the stage→status reconcile sweep (enforces the table in both directions)
  */
 export async function selfHealCrmState(force: boolean): Promise<void> {
   const supabaseAdmin = await admin();
@@ -529,9 +641,9 @@ export async function selfHealCrmState(force: boolean): Promise<void> {
 
   try {
     const rec = await reconcileHeldUnits();
-    if (rec.released.length > 0 || rec.skipped.length > 0) {
+    if (rec.released.length > 0 || rec.adjusted.length > 0 || rec.skipped.length > 0) {
       console.info(
-        `[heal] reconcile: checked ${rec.checked}, released ${rec.released.length}, kept ${rec.keptHeld}, skipped ${rec.skipped.length}`,
+        `[heal] reconcile: checked ${rec.checked}, released ${rec.released.length}, adjusted ${rec.adjusted.length}, kept ${rec.keptHeld}, skipped ${rec.skipped.length}`,
       );
     }
   } catch (err) {
