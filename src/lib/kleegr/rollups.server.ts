@@ -65,36 +65,74 @@ export function coherent(s: UnitStateSummary): UnitStateSummary {
   return { total, available, reserved, underContract, sold, unclassified };
 }
 
+/**
+ * WHY recalc_requested IS NOT WRITTEN HERE.
+ *
+ * It used to ride along in this payload. On 2026-07-16 that took down every
+ * rollup write in the location:
+ *
+ *   PUT /objects/custom_objects.buildings/records/{id} -> 422
+ *   "We couldn't apply updates to Recalc Requested due to an unexpected format."
+ *
+ * — 71 buildings, all of them, so recalcAllRollups reported "0 buildings" while
+ * the counts it had correctly computed were thrown away.
+ *
+ * The cause is a documented-but-unmeasured assumption in needsArrayWrap():
+ * MULTIPLE_OPTIONS was measured to reject arrays on PUT, and CHECKBOX was
+ * assumed to accept them. recalc_requested is a checkbox, so it is sent as
+ * ["no"] and rejected the same way property_type: ["condo"] was.
+ *
+ * The fix is NOT to loosen needsArrayWrap on a hunch — the unit writes depend
+ * on it and demonstrably work. The fix is that a cosmetic "please recount me"
+ * flag must never share a payload with the numbers. Counts are load-bearing;
+ * the flag is not. They are now written separately, and only the counts can
+ * fail the operation.
+ */
+async function clearRecalcFlag(client: CrmClient, scope: "building" | "project", crmId: string): Promise<void> {
+  try {
+    const key = scope === "building" ? FIELDS.building.recalc_requested : FIELDS.project.recalc_requested;
+    const properties = await normalizeRecordProperties(client, scope, { [key]: "No" }, { forUpdate: true });
+    if (Object.keys(properties).length === 0) return;
+    await requestObject(client, "PUT", scope, `/records/${crmId}`, { body: { properties } });
+  } catch (err) {
+    // Never fatal. The counts are already saved by the time we get here.
+    console.warn(
+      `[rollup] could not clear recalc_requested on ${scope} ${crmId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 export async function writeBuildingRollup(
   client: CrmClient,
   buildingCrmId: string,
   summary: UnitStateSummary,
+  opts?: { clearFlag?: boolean },
 ) {
   const s = coherent(summary);
   // forUpdate: true — this is a PUT. GHL's update endpoint rejects the
-  // MULTIPLE_OPTIONS array shape its create endpoint accepts, so without this
-  // flag recalc_requested makes the whole rollup write fail with a 422 — and
-  // callers only console.error it, meaning counts would silently never
-  // recompute and any bad number would live forever.
+  // MULTIPLE_OPTIONS array shape its create endpoint accepts.
   const properties = await normalizeRecordProperties(client, "building", {
     [FIELDS.building.total_units]: s.total,
     [FIELDS.building.available_units]: s.available,
     [FIELDS.building.reserved_locked_units]: s.reserved,
     [FIELDS.building.under_contract_units]: s.underContract,
     [FIELDS.building.sold_units]: s.sold,
-    [FIELDS.building.recalc_requested]: "No",
   }, { forUpdate: true });
   await requestObject(client, "PUT", "building", `/records/${buildingCrmId}`, {
     body: {
       properties,
     },
   });
+  // Opt-in: doubles the write count, so the bulk recalc leaves it off.
+  if (opts?.clearFlag) await clearRecalcFlag(client, "building", buildingCrmId);
 }
 
 export async function writeProjectRollup(
   client: CrmClient,
   projectCrmId: string,
   summary: UnitStateSummary,
+  opts?: { clearFlag?: boolean },
 ) {
   const s = coherent(summary);
   const properties = await normalizeRecordProperties(client, "project", {
@@ -103,13 +141,13 @@ export async function writeProjectRollup(
     [FIELDS.project.reserved_locked_units]: s.reserved,
     [FIELDS.project.under_contract_units]: s.underContract,
     [FIELDS.project.sold_units]: s.sold,
-    [FIELDS.project.recalc_requested]: "No",
   }, { forUpdate: true });
   await requestObject(client, "PUT", "project", `/records/${projectCrmId}`, {
     body: {
       properties,
     },
   });
+  if (opts?.clearFlag) await clearRecalcFlag(client, "project", projectCrmId);
 }
 
 export interface RollupRecalcResult {
