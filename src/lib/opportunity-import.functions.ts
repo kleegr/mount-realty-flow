@@ -5,30 +5,30 @@ import { z } from "zod";
 /**
  * OPPORTUNITY IMPORT — context + preview. NOTHING HERE WRITES.
  *
- * The deal import is the first step that can actually corrupt inventory, so it
- * gets a resolution dry-run first. Two things must be true for a row to import,
- * and both are guesses until measured:
+ * FIRST DRY RUN RESOLVED 118 OF 183 UNITS. The cause was one pattern, not 65
+ * separate problems: the sheet's Building column carries the unit number glued
+ * on the end.
  *
- *   1. THE PERSON RESOLVES. contact_id_map keys on stable_id, which for this
- *      sheet is `name:<normalised>` — no C001 column was ever added. 110 of 143
- *      matched on email and are solid; 22 matched on name alone. Name drift is
- *      real here ("Friedman (Yoel Gluck)", "Efroyam" vs "efraim"), so the rate
- *      is reported rather than assumed.
+ *   sheet: "Diligent developers | 10 Chesnut Drive # 101 | 101"
+ *   GHL:   "Diligent developers - 10 Chesnut Drive"
  *
- *   2. THE UNIT RESOLVES. This is the part that was impossible before today.
- *      Unit display names are "{DEVELOPER} - {BUILDING} - {UNIT} {NUMBER}" and
- *      buildings are "{DEVELOPER} - {BUILDING}", so a naive string match is
- *      brittle. Now that parent_crm_id is populated, the reliable path is
- *      building-first: resolve "{DEVELOPER} - {BUILDING}" to a building, then
- *      look only at ITS units. That turns a global string match into a search of
- *      four candidates, and makes "47 Mangin Lot 1" vs "47 Mangin Lot 2"
- *      unambiguous.
+ * So the building key never matched, and a failed building means a failed unit —
+ * building resolution was 119/183 and unit resolution 118/183 for the same
+ * reason. stripUnitSuffix() below is the whole fix.
  *
- * THE STAGE MAPPING IS NOT GUESSED. Every distinct STATUS in the sheet is
- * reported with its row count, and the live pipeline stages are returned
- * alongside, so the mapping is chosen against reality rather than described in
- * prose. 177 rows say "Under Contract" in two different casings; where they land
- * is a business decision, not an inference I should be making.
+ * WHY BUILDING-FIRST AT ALL: unit names are
+ * "{DEVELOPER} - {BUILDING} - {UNIT} {NUMBER}" — matching "101" globally across
+ * 332 units would hit every building with a 101. Resolving the building first
+ * narrows it to that building's ~4 units, which is what makes "47 Mangin Lot 1"
+ * vs "Lot 2" decidable. This only became possible when parent_crm_id was
+ * repaired tonight.
+ *
+ * AMBIGUITY IS REPORTED, NEVER GUESSED. Two failure modes in this sheet are not
+ * resolvable by code and must not be silently picked:
+ *   - row 190: Building says "#201", UNIT column says "102". Which is the deal?
+ *   - rows 197 + 198: two different clients on "57 Fort worth #101".
+ * A wrong unit link doesn't make a bad card — it marks the wrong apartment Under
+ * Contract for the wrong family. These surface as conflicts and get excluded.
  */
 
 async function requireImporter(userId: string) {
@@ -52,13 +52,24 @@ function isJunk(v: unknown): boolean {
   return /^(#value!|#ref!|#n\/a|#div\/0!|#name\?|null|undefined|n\/a|-|none)$/i.test(s);
 }
 
-/** Find a header by loose name, so "CLIENT NAME" and "Client Name" both hit. */
+/**
+ * "10 Chesnut Drive # 101" -> { building: "10 Chesnut Drive", unit: "101" }
+ * "49 Fort worth #101"     -> { building: "49 Fort worth",    unit: "101" }
+ * "8 Unit Building C4"     -> { building: "8 Unit Building C4", unit: null }
+ *
+ * Anchored to the END so a building legitimately named "# 3" mid-string is safe.
+ */
+function stripUnitSuffix(raw: string): { building: string; unit: string | null } {
+  const m = /^(.*?)\s*#\s*(\S+)\s*$/.exec(raw);
+  if (!m) return { building: raw.trim(), unit: null };
+  return { building: m[1].trim(), unit: m[2].trim() };
+}
+
 function pickHeader(headers: string[], aliases: string[]): string | null {
   const wanted = aliases.map(norm);
   return headers.find((h) => wanted.includes(norm(h))) ?? null;
 }
 
-/** Live pipelines and their stages, plus how much of the sheet can resolve. */
 export const getOpportunityContext = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ confirm: z.literal("LOOK") }).parse(d))
@@ -75,8 +86,16 @@ export const getOpportunityContext = createServerFn({ method: "POST" })
       name: string;
       stages: Array<{ id: string; name: string }>;
       openDeals: number | null;
+      governed: boolean;
     }> = [];
     let crmError: string | null = null;
+
+    const { data: rules } = await supabaseAdmin
+      .from("crm_pipelines")
+      .select(
+        "pipeline_id, pipeline_name, release_stage_names, reserved_stage_names, under_contract_stage_names, sold_stage_names",
+      );
+    const governedIds = new Set((rules ?? []).map((r) => r.pipeline_id).filter(Boolean));
 
     try {
       const res = await client.request<{ pipelines?: Array<Record<string, unknown>> }>(
@@ -103,19 +122,11 @@ export const getOpportunityContext = createServerFn({ method: "POST" })
         } catch {
           openDeals = null;
         }
-        pipelines.push({ id, name: String(p.name ?? "(unnamed)"), stages, openDeals });
+        pipelines.push({ id, name: String(p.name ?? "(unnamed)"), stages, openDeals, governed: governedIds.has(id) });
       }
     } catch (err) {
       crmError = err instanceof Error ? err.message.slice(0, 400) : String(err);
     }
-
-    // What the engine treats each stage as. Stage ids are all null in this
-    // location — everything matches by NAME.
-    const { data: rules } = await supabaseAdmin
-      .from("crm_pipelines")
-      .select(
-        "pipeline_id, pipeline_name, release_stage_names, reserved_stage_names, under_contract_stage_names, sold_stage_names",
-      );
 
     const [{ count: contacts }, { count: units }] = await Promise.all([
       supabaseAdmin.from("contact_id_map").select("stable_id", { count: "exact", head: true }),
@@ -128,15 +139,13 @@ export const getOpportunityContext = createServerFn({ method: "POST" })
       stageRules: rules ?? [],
       contactsMapped: contacts ?? 0,
       unitsMapped: units ?? 0,
-      totalOpenDeals: pipelines.reduce((n, p) => n + (p.openDeals ?? 0), 0),
+      dealsInGovernedPipelines: pipelines.filter((p) => p.governed).reduce((n, p) => n + (p.openDeals ?? 0), 0),
+      dealsInUngovernedPipelines: pipelines.filter((p) => !p.governed).reduce((n, p) => n + (p.openDeals ?? 0), 0),
     };
   });
 
 const RowSchema = z.record(z.string(), z.unknown());
 
-/**
- * Dry run. Reports what WOULD happen, resolves nothing destructively.
- */
 export const previewOpportunityImport = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ rows: z.array(RowSchema).max(5000) }).parse(d))
@@ -147,18 +156,17 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
     const headers = Object.keys(data.rows[0] ?? {});
     const H = {
       developer: pickHeader(headers, ["developer", "project", "builder"]),
-      building: pickHeader(headers, ["building", "buildingname", "address"]),
+      building: pickHeader(headers, ["building", "buildingname"]),
       unit: pickHeader(headers, ["unit", "unitnumber", "unitno", "apt"]),
       status: pickHeader(headers, ["status", "unitstatus"]),
-      client: pickHeader(headers, ["clientname", "client", "buyer", "buyername", "name"]),
+      client: pickHeader(headers, ["clientname", "client", "buyer", "buyername"]),
       price: pickHeader(headers, ["saleprice", "price", "askingprice", "askingsaleprice"]),
     };
 
-    // ---- Load the maps once. 332 units + 71 buildings is nothing.
     const [unitsRes, buildingsRes, contactsRes] = await Promise.all([
-      supabaseAdmin.from("external_id_map").select("crm_record_id, display_name, code, parent_crm_id").eq("scope", "unit"),
-      supabaseAdmin.from("external_id_map").select("crm_record_id, display_name, code").eq("scope", "building"),
-      supabaseAdmin.from("contact_id_map").select("stable_id, crm_contact_id, display_name"),
+      supabaseAdmin.from("external_id_map").select("crm_record_id, display_name, parent_crm_id").eq("scope", "unit"),
+      supabaseAdmin.from("external_id_map").select("crm_record_id, display_name").eq("scope", "building"),
+      supabaseAdmin.from("contact_id_map").select("stable_id, crm_contact_id"),
     ]);
 
     const buildingByName = new Map<string, string>();
@@ -167,68 +175,112 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
     }
 
     const unitsByBuilding = new Map<string, Array<{ id: string; name: string }>>();
-    const unitByName = new Map<string, string>();
     for (const u of unitsRes.data ?? []) {
-      if (u.display_name) unitByName.set(norm(u.display_name), u.crm_record_id);
-      if (u.parent_crm_id) {
-        const arr = unitsByBuilding.get(u.parent_crm_id) ?? [];
-        arr.push({ id: u.crm_record_id, name: u.display_name ?? "" });
-        unitsByBuilding.set(u.parent_crm_id, arr);
-      }
+      if (!u.parent_crm_id) continue;
+      const arr = unitsByBuilding.get(u.parent_crm_id) ?? [];
+      arr.push({ id: u.crm_record_id, name: u.display_name ?? "" });
+      unitsByBuilding.set(u.parent_crm_id, arr);
     }
 
     const contactByStable = new Map<string, string>();
     for (const c of contactsRes.data ?? []) contactByStable.set(c.stable_id, c.crm_contact_id);
 
-    // ---- Walk the rows.
     const statusCounts: Record<string, number> = {};
     let withClient = 0;
     let contactHit = 0;
     let buildingHit = 0;
     let unitHit = 0;
-    const unresolvedUnits: Array<{ row: number; key: string }> = [];
+
+    const unresolvedUnits: Array<{ row: number; key: string; why: string }> = [];
     const unresolvedContacts: Array<{ row: number; name: string }> = [];
+    const conflicts: Array<{ row: number; key: string; detail: string }> = [];
+    const byDeveloper: Record<string, { rows: number; resolved: number }> = {};
+
+    // unit crm id -> rows claiming it
+    const claims = new Map<string, Array<{ row: number; client: string }>>();
 
     for (const [i, row] of data.rows.entries()) {
       const rowNo = i + 2;
       const status = clean(H.status ? row[H.status] : "");
-      const statusKey = status || "(blank)";
-      statusCounts[statusKey] = (statusCounts[statusKey] ?? 0) + 1;
+      statusCounts[status || "(blank)"] = (statusCounts[status || "(blank)"] ?? 0) + 1;
 
       const clientName = clean(H.client ? row[H.client] : "");
       if (!clientName || isJunk(clientName)) continue;
       withClient++;
 
-      // person
       const stable = `name:${norm(clientName)}`;
       if (contactByStable.has(stable)) contactHit++;
-      else if (unresolvedContacts.length < 25) unresolvedContacts.push({ row: rowNo, name: clientName });
+      else if (unresolvedContacts.length < 30) unresolvedContacts.push({ row: rowNo, name: clientName });
 
-      // building, then its units only
       const dev = clean(H.developer ? row[H.developer] : "");
-      const bld = clean(H.building ? row[H.building] : "");
-      const unitRef = clean(H.unit ? row[H.unit] : "");
-      const buildingKey = norm(`${dev} - ${bld}`);
-      const buildingId = buildingByName.get(buildingKey) ?? null;
+      const rawBuilding = clean(H.building ? row[H.building] : "");
+      const unitCol = clean(H.unit ? row[H.unit] : "");
+
+      const devKey = dev || "(none)";
+      byDeveloper[devKey] = byDeveloper[devKey] ?? { rows: 0, resolved: 0 };
+      byDeveloper[devKey].rows++;
+
+      // The building column may carry the unit: "10 Chesnut Drive # 101".
+      const { building: bldName, unit: bldUnit } = stripUnitSuffix(rawBuilding);
+
+      let buildingId =
+        buildingByName.get(norm(`${dev} - ${bldName}`)) ?? buildingByName.get(norm(`${dev} - ${rawBuilding}`)) ?? null;
       if (buildingId) buildingHit++;
 
-      let resolvedUnit: string | null = null;
-      if (buildingId && unitRef && !isJunk(unitRef)) {
-        const candidates = unitsByBuilding.get(buildingId) ?? [];
-        const want = norm(unitRef);
-        const exact = candidates.find((c) => norm(c.name) === norm(`${dev} - ${bld} - ${unitRef} ${unitRef}`));
-        const byTail = candidates.find((c) => norm(c.name).endsWith(want));
-        const byContains = candidates.filter((c) => norm(c.name).includes(want));
-        resolvedUnit = exact?.id ?? byTail?.id ?? (byContains.length === 1 ? byContains[0].id : null);
-      }
-      if (!resolvedUnit) {
-        const whole = unitByName.get(norm(`${dev} - ${bld} - ${unitRef} ${unitRef}`));
-        if (whole) resolvedUnit = whole;
+      // Which unit does this row mean? The UNIT column wins; the suffix is a
+      // fallback. When they disagree, that is a data conflict, not a tie to break.
+      let unitRef: string | null = null;
+      if (unitCol && !isJunk(unitCol)) {
+        unitRef = unitCol;
+        if (bldUnit && norm(bldUnit) !== norm(unitCol) && conflicts.length < 30) {
+          conflicts.push({
+            row: rowNo,
+            key: `${dev} | ${rawBuilding} | ${unitCol}`,
+            detail: `Building says unit "${bldUnit}" but the UNIT column says "${unitCol}".`,
+          });
+        }
+      } else if (bldUnit) {
+        unitRef = bldUnit;
       }
 
-      if (resolvedUnit) unitHit++;
-      else if (unresolvedUnits.length < 25) unresolvedUnits.push({ row: rowNo, key: `${dev} | ${bld} | ${unitRef}` });
+      let resolvedUnit: string | null = null;
+      let why = "";
+      if (!buildingId) {
+        why = `no building matching "${dev} - ${bldName}"`;
+      } else if (!unitRef) {
+        why = "no unit number in either the UNIT column or the building name";
+      } else {
+        const candidates = unitsByBuilding.get(buildingId) ?? [];
+        const want = norm(unitRef);
+        const exact = candidates.find((c) => norm(c.name) === norm(`${dev} - ${bldName} - ${unitRef} ${unitRef}`));
+        const tail = candidates.filter((c) => norm(c.name).endsWith(want));
+        const contains = candidates.filter((c) => norm(c.name).includes(want));
+        if (exact) resolvedUnit = exact.id;
+        else if (tail.length === 1) resolvedUnit = tail[0].id;
+        else if (contains.length === 1) resolvedUnit = contains[0].id;
+        else if (tail.length > 1 || contains.length > 1) why = `"${unitRef}" matches ${Math.max(tail.length, contains.length)} units in that building`;
+        else why = `no unit "${unitRef}" under that building (${candidates.length} units there)`;
+      }
+
+      if (resolvedUnit) {
+        unitHit++;
+        byDeveloper[devKey].resolved++;
+        const arr = claims.get(resolvedUnit) ?? [];
+        arr.push({ row: rowNo, client: clientName });
+        claims.set(resolvedUnit, arr);
+      } else if (unresolvedUnits.length < 30) {
+        unresolvedUnits.push({ row: rowNo, key: `${dev} | ${rawBuilding} | ${unitCol}`, why });
+      }
     }
+
+    // Two clients, one apartment. Never auto-resolve this.
+    const doubleClaimed = [...claims.entries()]
+      .filter(([, rows]) => rows.length > 1)
+      .map(([unitId, rows]) => ({
+        unitId,
+        rows: rows.map((r) => `row ${r.row}: ${r.client}`),
+      }))
+      .slice(0, 20);
 
     return {
       totalRows: data.rows.length,
@@ -238,9 +290,11 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
       contactHit,
       buildingHit,
       unitHit,
+      importable: Math.min(contactHit, unitHit),
+      byDeveloper,
       unresolvedContacts,
       unresolvedUnits,
-      sampleUnitNames: (unitsRes.data ?? []).slice(0, 5).map((u) => u.display_name),
-      sampleBuildingNames: (buildingsRes.data ?? []).slice(0, 5).map((b) => b.display_name),
+      conflicts,
+      doubleClaimed,
     };
   });
