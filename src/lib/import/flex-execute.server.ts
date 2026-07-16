@@ -45,6 +45,28 @@ type ScopeMap = Record<string, string>; // header -> field key
 type ColumnMap = Partial<Record<FlexScope, ScopeMap>>;
 type ItemInsert = Database["public"]["Tables"]["import_items"]["Insert"];
 
+/**
+ * Turn a raw CRM failure into something a human can act on.
+ * GHL returns e.g.
+ *   PUT /objects/custom_objects.projects/records/abc failed (422):
+ *   {"statusCode":422,"message":"We couldn't apply updates to Property Type
+ *    due to an unexpected format.","error":"Unprocessable Entity","traceId":"..."}
+ * The path and traceId are noise in a row-level report; the message is the point.
+ */
+function humanizeCrmError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const msg = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw)?.[1];
+  if (!msg) return raw;
+  const status = /failed \((\d{3})\)/.exec(raw)?.[1];
+  const clean = msg.replace(/\\"/g, '"');
+  return status ? `CRM rejected this row (${status}): ${clean}` : `CRM rejected this row: ${clean}`;
+}
+
+/** Stable key for "have we already written exactly this?" (key order independent). */
+function stableStringify(obj: Record<string, unknown>): string {
+  return JSON.stringify(Object.keys(obj).sort().map((k) => [k, obj[k]]));
+}
+
 export async function executeFlexImport(params: {
   jobId: string;
   scopes: FlexScope[];
@@ -85,6 +107,13 @@ export async function executeFlexImport(params: {
     unit: { byExternalId: new Map(), byName: new Map(), byCode: new Map() },
   };
 
+  // "identity + exact same properties" -> crmId, for this run only.
+  // A typical sheet repeats its Project on every Unit row; without this the
+  // same Project record is PUT once per row (N identical API calls, and N
+  // copies of any error). Writing identical properties twice is a no-op, so
+  // repeat writes are skipped and the known crmId is reused.
+  const writeCache = new Map<string, string>();
+
   // Process scopes in parent-first order
   const scopeOrder: FlexScope[] = ["project", "building", "unit"].filter((s) => scopes.includes(s as FlexScope)) as FlexScope[];
 
@@ -95,8 +124,10 @@ export async function executeFlexImport(params: {
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const rowNumber = i + 2;
+      let rowRef = `row ${rowNumber}`;
       try {
         const { properties, ids, parentRefs } = extractRow(scope, row, scopeMap);
+        rowRef = ids.name ?? ids.code ?? ids.external_id ?? ids.record_id ?? `row ${rowNumber}`;
 
         // Skip rows that have no meaningful data for this scope
         if (!ids.record_id && !ids.external_id && !ids.name && !ids.code && Object.keys(properties).length === 0) continue;
@@ -158,6 +189,29 @@ export async function executeFlexImport(params: {
           }
         }
 
+        // ---- Identical-write dedupe (this file only).
+        // Not applied when the user explicitly asked for duplicate records.
+        const identityKey = (ids.record_id ?? ids.external_id ?? ids.code ?? ids.name ?? "").toLowerCase();
+        const writeKey = identityKey && options.duplicateStrategy !== "create_duplicate"
+          ? `${scope}|${identityKey}|${stableStringify(properties)}`
+          : null;
+        const alreadyWritten = writeKey ? writeCache.get(writeKey) : undefined;
+        if (alreadyWritten) {
+          report.skipped++;
+          report.per_scope[scope].skipped++;
+          items.push(makeItem(jobId, scope, ids, "skip", "duplicate_row_same_file", parentResolution, properties, alreadyWritten,
+            [{ level: "info", message: `Identical ${scope} already written by an earlier row in this file \u2014 CRM write skipped.` }],
+            alreadyWritten, null, null));
+          // Parent links still matter even when the record write is skipped.
+          if (scope === "building" && parentCrm.project) {
+            assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "building", childId: alreadyWritten });
+          }
+          if (scope === "unit" && parentCrm.building) {
+            assocPairs.push({ parent: "building", parentId: parentCrm.building, child: "unit", childId: alreadyWritten });
+          }
+          continue;
+        }
+
         // Duplicate detection
         const existing = await resolveIdentity(supabaseAdmin, scope, ids, options.duplicateKey);
         let resolution: "create" | "update" | "skip" | "create_duplicate";
@@ -210,12 +264,13 @@ export async function executeFlexImport(params: {
 
         // Store mapping so later rows / undo can find it
         if (crmId) {
+          if (writeKey) writeCache.set(writeKey, crmId);
           await saveMap(supabaseAdmin, scope, crmId, ids, jobId);
           if (ids.external_id) cache[scope].byExternalId.set(ids.external_id, crmId);
           if (ids.name) cache[scope].byName.set(ids.name.toLowerCase(), crmId);
           if (ids.code) cache[scope].byCode.set(ids.code.toLowerCase(), crmId);
 
-          // Queue associations Project→Building and Building→Unit for this row.
+          // Queue associations Project\u2192Building and Building\u2192Unit for this row.
           if (scope === "building" && parentCrm.project) {
             assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "building", childId: crmId });
           }
@@ -226,10 +281,10 @@ export async function executeFlexImport(params: {
 
         items.push(makeItem(jobId, scope, ids, action, resolution, parentResolution, properties, crmId, [], null, undoOp, null));
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = humanizeCrmError(err);
         report.failed++;
         report.per_scope[scope].failed++;
-        report.errors.push({ scope, ref: JSON.stringify(row).slice(0, 80), message, rowNumber });
+        report.errors.push({ scope, ref: rowRef, message, rowNumber });
         items.push(makeItem(jobId, scope, {}, "error", "error", null, {}, null, [{ level: "error", message }], null, null, message));
         failedRows.push({ ...row, _error: message, _scope: scope, _row: rowNumber });
       }
@@ -237,7 +292,7 @@ export async function executeFlexImport(params: {
   }
 
   // ---------- Associations pass ----------
-  // Dedupe, then create Project↔Building and Building↔Unit relations in the CRM.
+  // Dedupe, then create Project<->Building and Building<->Unit relations in the CRM.
   const assocSeen = new Set<string>();
   const uniquePairs = assocPairs.filter((p) => {
     const key = `${p.parent}:${p.parentId}->${p.child}:${p.childId}`;
@@ -252,11 +307,11 @@ export async function executeFlexImport(params: {
         report.associations_ok++;
       } else {
         report.associations_failed++;
-        report.warnings.push(`${p.parent}→${p.child} association failed: ${r.message ?? "unknown error"}`);
+        report.warnings.push(`${p.parent} -> ${p.child} association failed: ${r.message ?? "unknown error"}`);
       }
     } catch (err) {
       report.associations_failed++;
-      report.warnings.push(`${p.parent}→${p.child} association error: ${err instanceof Error ? err.message : String(err)}`);
+      report.warnings.push(`${p.parent} -> ${p.child} association error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -464,7 +519,12 @@ async function createRecord(client: CrmClient, scope: FlexScope, properties: Rec
 }
 
 async function updateRecord(client: CrmClient, scope: FlexScope, crmId: string, properties: Record<string, unknown>) {
-  const normalized = await normalizeRecordProperties(client, scope, stripEmpty(properties));
+  // forUpdate: true is REQUIRED here. GHL's PUT rejects the MULTIPLE_OPTIONS
+  // array shape that its own POST accepts:
+  //   PUT  property_type: ["condo"] -> 422 "unexpected format"
+  //   PUT  property_type: "condo"   -> OK
+  // Without the flag, every row carrying Property Type fails on update.
+  const normalized = await normalizeRecordProperties(client, scope, stripEmpty(properties), { forUpdate: true });
   if (Object.keys(normalized).length === 0) return;
   await requestObject(client, "PUT", scope, `/records/${crmId}`, { body: { properties: normalized } });
 }
