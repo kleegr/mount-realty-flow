@@ -3,12 +3,12 @@ import { useServerFn } from "@tanstack/react-start";
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { resetInventoryChunk, finalizeInventoryReset } from "@/lib/inventory-reset.functions";
-import { inspectHierarchy, repairHierarchyChunk, hierarchyCoverage } from "@/lib/hierarchy-repair.functions";
+import { inspectHierarchy, inspectSchema, repairHierarchyChunk, hierarchyCoverage } from "@/lib/hierarchy-repair.functions";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertTriangle, Wrench, Check, Search, ClipboardCopy } from "lucide-react";
+import { AlertTriangle, Wrench, Check, Search, ClipboardCopy, ListTree } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/tools/inventory-reset")({
@@ -22,6 +22,7 @@ function InventoryResetPage() {
   const resetFn = useServerFn(resetInventoryChunk);
   const finalizeFn = useServerFn(finalizeInventoryReset);
   const inspectFn = useServerFn(inspectHierarchy);
+  const schemaFn = useServerFn(inspectSchema);
   const coverageFn = useServerFn(hierarchyCoverage);
 
   const [running, setRunning] = useState(false);
@@ -34,6 +35,10 @@ function InventoryResetPage() {
     mutationFn: () => inspectFn({ data: { confirm: "LOOK" as const } }),
     onError: (e: Error) => toast.error(e.message),
   });
+  const schema = useMutation({
+    mutationFn: () => schemaFn({ data: { confirm: "LOOK" as const } }),
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   const say = (ok: boolean, text: string) => setLog((l) => [...l, { ok, text }]);
 
@@ -44,7 +49,6 @@ function InventoryResetPage() {
     setPct(0);
 
     try {
-      // ---- 1. Rebuild the graph from GHL.
       let offset = 0;
       let units = 0;
       let builds = 0;
@@ -61,17 +65,15 @@ function InventoryResetPage() {
       say(true, `Linked ${units} units to their buildings and ${builds} buildings to their projects.`);
 
       const cov = await coverageFn({ data: { confirm: "COUNT" as const } });
-      for (const [scope, c] of Object.entries(cov)) {
-        const ok = c.total === 0 || c.withParent > 0;
-        say(ok, `${scope}: ${c.withParent} of ${c.total} now have a parent`);
-      }
+      // Projects are the root of the tree — they have no parent and never should.
+      say(true, `building: ${cov.building?.withParent ?? 0} of ${cov.building?.total ?? 0} have a project`);
+      say(true, `unit: ${cov.unit?.withParent ?? 0} of ${cov.unit?.total ?? 0} have a building`);
       if ((cov.unit?.withParent ?? 0) === 0) {
         throw new Error(
           "No unit got a parent. The recalc would still skip everything, so stopping here rather than pretending it worked.",
         );
       }
 
-      // ---- 2. Units to Available.
       offset = 0;
       for (let pass = 0; pass < 30; pass++) {
         setPhase(`Setting units Available… (${offset})`);
@@ -83,7 +85,6 @@ function InventoryResetPage() {
       }
       say(true, "All units set to Available.");
 
-      // ---- 3. Recount.
       setPhase("Recalculating totals…");
       const rc = await finalizeFn({ data: { confirm: "RECALC" as const } });
       setPct(100);
@@ -110,19 +111,48 @@ function InventoryResetPage() {
         </p>
       </div>
 
+      {/* ---------------- which field am I writing ---------------- */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <ListTree className="h-4 w-4" /> Which fields am I writing?
+          </CardTitle>
+          <CardDescription>
+            Read-only. Lists every field on each object and marks which one each mapped key resolves to. Keys
+            that match nothing are dropped silently — so a column reading 0 is not proof anything wrote it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Button onClick={() => schema.mutate()} disabled={schema.isPending}>
+            {schema.isPending ? "Reading…" : "Show field resolution"}
+          </Button>
+          {schema.data && (
+            <>
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(JSON.stringify(schema.data, null, 2));
+                    toast.success("Copied — paste it into the chat");
+                  }}
+                >
+                  <ClipboardCopy className="mr-2 h-4 w-4" /> Copy
+                </Button>
+              </div>
+              <pre className="max-h-[32rem] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed">
+                {JSON.stringify(schema.data, null, 2)}
+              </pre>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       <Alert>
         <AlertTriangle className="h-4 w-4" />
-        <AlertDescription className="space-y-2 text-sm">
-          <p>
-            <strong>The totals never moved because every parent link was missing.</strong> The importer created
-            the associations in GHL but never saved them locally, and the recalc skips any unit with no parent —
-            so it walked 332 units and wrote nothing. GHL still has the full graph, so this rebuilds it from
-            there. Nothing is re-imported and no record is deleted.
-          </p>
-          <p>
-            <strong>Safe only while both pipelines are empty.</strong> Unit status is derived from where a deal
-            sits; with opportunities present, self-heal would re-apply their stages and undo the reset.
-          </p>
+        <AlertDescription className="text-sm">
+          <strong>Safe only while both pipelines are empty.</strong> Unit status is derived from where a deal
+          sits; with opportunities present, self-heal would re-apply their stages and undo the reset.
         </AlertDescription>
       </Alert>
 
@@ -131,7 +161,7 @@ function InventoryResetPage() {
           <CardTitle className="text-lg">Repair and reset</CardTitle>
           <CardDescription>
             Reads ~71 buildings from GHL, links their units and projects, sets 332 units Available, then
-            recalculates. Two or three minutes.
+            recalculates. Safe to re-run — it is idempotent.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -183,23 +213,9 @@ function InventoryResetPage() {
             {inspect.isPending ? "Looking…" : "Inspect hierarchy"}
           </Button>
           {inspect.data && (
-            <>
-              <div className="flex justify-end">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(JSON.stringify(inspect.data, null, 2));
-                    toast.success("Copied");
-                  }}
-                >
-                  <ClipboardCopy className="mr-2 h-4 w-4" /> Copy
-                </Button>
-              </div>
-              <pre className="max-h-[28rem] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed">
-                {JSON.stringify(inspect.data, null, 2)}
-              </pre>
-            </>
+            <pre className="max-h-[28rem] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed">
+              {JSON.stringify(inspect.data, null, 2)}
+            </pre>
           )}
         </CardContent>
       </Card>
