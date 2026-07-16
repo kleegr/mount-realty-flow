@@ -3,27 +3,30 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 /**
- * WALL MONITOR — pass 6.
+ * WALL MONITOR — pass 7.
  *
  * Editorial, not a card grid: one cinematic ground, hairline rules, controlled
- * asymmetry. Three columns — the dominant figure, a live unit roll, and a
- * stats rail.
+ * asymmetry. Three columns — the dominant figure, a live unit roll, a stats
+ * rail — then the activity line and the chartreuse banner.
  *
- * WHY THE UNIT ROLL EXISTS: the centre used to be dead space holding a Yiddish
- * line. A wall monitor's job is to answer "what's actually moving" from across
- * the room, so the middle now carries the inventory itself, rolling bottom-to-
- * top with a status flag per unit. It's the only element that earns continuous
- * motion.
+ * ACTIVITY: state answers "what do we have"; the period row answers "is it
+ * moving", which is the question a wall monitor actually exists for. Today /
+ * week / month, each against its previous period.
  *
- * THE BANNER: this screen is not an advertisement — the team already knows the
- * phone number. So the chartreuse panel carries an hourly broker saying instead
- * of a contact block. Keyed to the clock hour, so it changes on its own and the
- * room isn't staring at the same line all day. Deliberately unattributed —
- * putting a real person's name on a sales aphorism invents a quote.
+ * NOTE FOR WIRING (concept stage): these come from audit_events, which today
+ * only reaches back about a day. THIS MONTH will read near-zero until history
+ * accumulates, and wiping inventory for the Lazers import resets it again.
+ * The block is correct; it needs time, not code.
  *
- * TYPOGRAPHY NOTE: the hero figure runs line-height .74 at up to 300px, so its
- * glyph box overflows upward and collided with the label above it. Fixed by
- * reserving the overflow with padding rather than nudging margins.
+ * THE BANNER: this screen is not an advertisement — the team knows its own
+ * phone number — so the chartreuse panel carries broker sayings instead. Three
+ * per hour, one every 3 seconds; the hour picks the set of three. Deliberately
+ * unattributed: putting a real person's name on a sales aphorism invents a
+ * quote they never said.
+ *
+ * TYPOGRAPHY NOTE: the hero figure runs line-height .74, so its glyph box
+ * overflows upward and collided with the label above. Fixed by reserving the
+ * overflow with padding rather than nudging margins.
  *
  * PALETTE (per brief): chartreuse, deep olive, black, warm ivory; gold for
  * warm-light accents. No blue — the navy in the Diligent ad is Diligent's logo
@@ -70,20 +73,43 @@ const STATUS_TONE: Record<Status, string> = {
   SOLD: IVORY,
 };
 
-/** Unattributed on purpose — naming a real broker would invent a quote. */
+/**
+ * 24 lines = 8 sets of three. The clock hour picks the set; the set cycles one
+ * line every 3 seconds. Unattributed on purpose — naming a real broker under a
+ * sales aphorism would be inventing a quote.
+ */
 const SAYINGS = [
   "The fortune is in the follow-up.",
   "Speed to lead wins the deal.",
   "You don't find time to prospect. You make it.",
+
   "Every no is one call closer to a yes.",
   "Know your inventory better than your buyer does.",
   "The listing you don't ask for is the listing you don't get.",
+
   "Objections are questions wearing a disguise.",
   "Consistency beats intensity.",
   "Sell the neighborhood, not just the house.",
+
   "The market rewards the prepared, not the lucky.",
   "A deal isn't done until the keys change hands.",
   "Talk to more people today than you did yesterday.",
+
+  "Listen twice as long as you pitch.",
+  "The second call is where the trust starts.",
+  "Price tells them what. You tell them why.",
+
+  "Nobody ever regretted one more call.",
+  "Answer fast. Answer honest. Answer again.",
+  "A buyer remembers how you made the hard part easy.",
+
+  "Know the street before you sell the address.",
+  "Momentum is built, not found.",
+  "The best negotiator in the room prepared the most.",
+
+  "Show up before you're needed.",
+  "Your pipeline today is your paycheck in ninety days.",
+  "Small promises, kept, close big deals.",
 ];
 
 const SAMPLE = {
@@ -92,7 +118,11 @@ const SAMPLE = {
   underContract: 177,
   sold: 1,
   contractedVolume: 147_180_000,
-  week: { sold: 4, prevSold: 2 },
+  activity: {
+    today: { moves: 3, sold: 1, res: 0, uc: 2, prev: 2 },
+    week: { moves: 21, sold: 4, res: 6, uc: 11, prev: 15 },
+    month: { moves: 64, sold: 9, res: 14, uc: 41, prev: 67 },
+  },
   projects: [
     { name: "MANGIN ROAD", total: 42, sold: 0, uc: 28, res: 2 },
     { name: "DILIGENT GARDENS", total: 75, sold: 1, uc: 41, res: 3 },
@@ -119,9 +149,18 @@ const SAMPLE = {
     { unit: "UNIT 101", building: "8 UNIT BUILDING C5", status: "AVAILABLE" as Status },
     { unit: "UNIT 102", building: "8 UNIT BUILDING CC", status: "UNDER CONTRACT" as Status },
   ],
+  ticker: [
+    "UNDER CONTRACT — 8 UNIT BUILDING C4 · UNIT 102",
+    "RESERVED — 51 FORT WORTH · UNIT 102",
+    "UNDER CONTRACT — DILIGENT GARDENS · UNIT 205",
+    "SOLD — 28 DUELK · UNIT 102",
+    "UNDER CONTRACT — 1 SAN MARCOS · UNIT 202",
+    "RESERVED — MANGIN ROAD · UNIT 101",
+  ],
 };
 
 const TOTAL = SAMPLE.available + SAMPLE.reserved + SAMPLE.underContract + SAMPLE.sold;
+const SET_COUNT = Math.floor(SAYINGS.length / 3);
 
 function money(n: number): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -142,6 +181,7 @@ function useAsset(src: string) {
 function WallMonitor() {
   const [now, setNow] = useState(() => new Date());
   const [spot, setSpot] = useState(0);
+  const [sayIdx, setSayIdx] = useState(0);
   const hasLogo = useAsset("/mount-logo.svg");
   const hasHero = useAsset("/mount-hero.jpg");
 
@@ -155,9 +195,15 @@ function WallMonitor() {
     return () => clearInterval(t);
   }, []);
 
+  // three sayings an hour, one every three seconds
+  useEffect(() => {
+    const t = setInterval(() => setSayIdx((i) => (i + 1) % 3), 3000);
+    return () => clearInterval(t);
+  }, []);
+
   const p = SAMPLE.projects[spot];
   const pAvail = p.total - p.sold - p.uc - p.res;
-  const saying = SAYINGS[now.getHours() % SAYINGS.length];
+  const saying = SAYINGS[(now.getHours() % SET_COUNT) * 3 + sayIdx];
 
   const ground = hasHero
     ? "linear-gradient(90deg, rgba(14,17,8,.95) 0%, rgba(14,17,8,.88) 46%, rgba(14,17,8,.58) 100%), url(/mount-hero.jpg)"
@@ -180,7 +226,9 @@ function WallMonitor() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;500;600;700&display=swap');
         @keyframes wRoll { from { transform: translateY(0) } to { transform: translateY(-50%) } }
+        @keyframes wTick { from { transform: translateX(0) } to { transform: translateX(-50%) } }
         @keyframes wIn { from { opacity: 0; transform: translateY(12px) } to { opacity: 1; transform: none } }
+        @keyframes wSay { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
         @keyframes wDot { 0%,100% { opacity: 1 } 50% { opacity: .18 } }
         .grow { transition: width 1.1s cubic-bezier(.22,1,.36,1) }
         .roll { animation: wRoll 52s linear infinite }
@@ -197,7 +245,7 @@ function WallMonitor() {
           alignItems: "center",
           justifyContent: "space-between",
           padding: "0 56px",
-          height: 78,
+          height: 74,
           flexShrink: 0,
         }}
       >
@@ -230,26 +278,24 @@ function WallMonitor() {
           flex: 1,
           minHeight: 0,
           display: "grid",
-          gridTemplateColumns: "1.25fr 0.92fr 1fr",
-          gap: 44,
-          padding: "0 56px 18px",
+          gridTemplateColumns: "1.28fr 0.9fr 1fr",
+          gap: 40,
+          padding: "0 56px 14px",
         }}
       >
         {/* --- the figure --- */}
         <section style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", animation: "wIn .6s both" }}>
-          <div style={{ fontSize: 11, letterSpacing: "0.52em", fontWeight: 700, color: LIME }}>
-            AVAILABLE NOW
-          </div>
-          <div style={{ fontSize: 10, letterSpacing: "0.34em", fontWeight: 600, color: SAGE, marginTop: 6 }}>
+          <div style={{ fontSize: 11, letterSpacing: "0.52em", fontWeight: 700, color: LIME }}>AVAILABLE NOW</div>
+          <div style={{ fontSize: 10, letterSpacing: "0.34em", fontWeight: 600, color: SAGE, marginTop: 5 }}>
             BLOOMING GROVE · KIRYAS YOEL
           </div>
 
           {/* paddingTop reserves the space the .74 line-height glyph overflows into */}
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 26, paddingTop: 26 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 24, paddingTop: 22 }}>
             <span
               style={{
                 fontFamily: DISPLAY,
-                fontSize: "clamp(110px, 24vh, 260px)",
+                fontSize: "clamp(96px, 20vh, 216px)",
                 lineHeight: 0.74,
                 letterSpacing: "-0.045em",
                 color: IVORY,
@@ -258,26 +304,43 @@ function WallMonitor() {
             >
               {SAMPLE.available}
             </span>
-            <div style={{ paddingTop: 6 }}>
-              <div style={{ fontFamily: DISPLAY, fontSize: 30, color: LIME, lineHeight: 1 }}>{TOTAL}</div>
-              <div style={{ fontSize: 9, letterSpacing: "0.34em", fontWeight: 700, color: SAGE, marginTop: 4 }}>
+            <div style={{ paddingTop: 4 }}>
+              <div style={{ fontFamily: DISPLAY, fontSize: 27, color: LIME, lineHeight: 1 }}>{TOTAL}</div>
+              <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, marginTop: 4 }}>
                 TOTAL UNITS
               </div>
-              <div style={{ width: 30, height: 1, background: "rgba(244,241,228,.28)", margin: "12px 0" }} />
-              <div style={{ fontFamily: DISPLAY, fontSize: 30, color: IVORY, lineHeight: 1 }}>
+              <div style={{ width: 28, height: 1, background: "rgba(244,241,228,.28)", margin: "11px 0" }} />
+              <div style={{ fontFamily: DISPLAY, fontSize: 27, color: IVORY, lineHeight: 1 }}>
                 {Math.round((SAMPLE.available / TOTAL) * 100)}%
               </div>
-              <div style={{ fontSize: 9, letterSpacing: "0.34em", fontWeight: 700, color: SAGE, marginTop: 4 }}>
+              <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, marginTop: 4 }}>
                 OF PORTFOLIO
               </div>
             </div>
           </div>
 
-          <div style={{ display: "flex", height: 6, marginTop: 26, borderRadius: 999, overflow: "hidden", background: "rgba(244,241,228,.14)" }}>
+          <div style={{ display: "flex", height: 6, marginTop: 20, borderRadius: 999, overflow: "hidden", background: "rgba(244,241,228,.14)" }}>
             <div className="grow" style={{ width: `${(SAMPLE.available / TOTAL) * 100}%`, background: LIME }} />
             <div className="grow" style={{ width: `${(SAMPLE.reserved / TOTAL) * 100}%`, background: GOLD }} />
             <div className="grow" style={{ width: `${(SAMPLE.underContract / TOTAL) * 100}%`, background: SAGE }} />
             <div className="grow" style={{ width: `${(SAMPLE.sold / TOTAL) * 100}%`, background: IVORY }} />
+          </div>
+
+          {/* --- movement --- */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "stretch",
+              marginTop: 22,
+              paddingTop: 16,
+              borderTop: "1px solid rgba(244,241,228,.16)",
+            }}
+          >
+            <Period label="TODAY" a={SAMPLE.activity.today} against="YESTERDAY" />
+            <Rule />
+            <Period label="THIS WEEK" a={SAMPLE.activity.week} against="LAST WEEK" />
+            <Rule />
+            <Period label="THIS MONTH" a={SAMPLE.activity.month} against="LAST MONTH" />
           </div>
         </section>
 
@@ -289,7 +352,7 @@ function WallMonitor() {
             flexDirection: "column",
             borderLeft: "1px solid rgba(244,241,228,.16)",
             borderRight: "1px solid rgba(244,241,228,.16)",
-            padding: "22px 30px 0",
+            padding: "20px 28px 0",
             minHeight: 0,
           }}
         >
@@ -297,7 +360,7 @@ function WallMonitor() {
             THE BOARD
           </div>
 
-          <div className="rollMask" style={{ flex: 1, overflow: "hidden", marginTop: 14, minHeight: 0 }}>
+          <div className="rollMask" style={{ flex: 1, overflow: "hidden", marginTop: 12, minHeight: 0 }}>
             <div className="roll">
               {[0, 1].map((dup) => (
                 <div key={dup}>
@@ -314,16 +377,16 @@ function WallMonitor() {
         <section style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center" }}>
           <Line label="RESERVED" value={SAMPLE.reserved} tone={GOLD} />
           <Line label="UNDER CONTRACT" value={SAMPLE.underContract} tone={SAGE} />
-          <Line label="SOLD" value={SAMPLE.sold} tone={IVORY} note={`${SAMPLE.week.sold} this week · ${SAMPLE.week.prevSold} last`} />
+          <Line label="SOLD" value={SAMPLE.sold} tone={IVORY} />
 
-          <div style={{ height: 1, background: "rgba(244,241,228,.16)", margin: "20px 0" }} />
+          <div style={{ height: 1, background: "rgba(244,241,228,.16)", margin: "18px 0" }} />
 
           <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: SAGE }}>CONTRACTED VOLUME</div>
-          <div style={{ fontFamily: DISPLAY, fontSize: "clamp(40px, 6.4vh, 68px)", color: LIME, lineHeight: 0.95, letterSpacing: "-0.02em", marginTop: 6 }}>
+          <div style={{ fontFamily: DISPLAY, fontSize: "clamp(38px, 5.8vh, 62px)", color: LIME, lineHeight: 0.95, letterSpacing: "-0.02em", marginTop: 5 }}>
             {money(SAMPLE.contractedVolume)}
           </div>
 
-          <div style={{ height: 1, background: "rgba(244,241,228,.16)", margin: "20px 0" }} />
+          <div style={{ height: 1, background: "rgba(244,241,228,.16)", margin: "18px 0" }} />
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: SAGE }}>SPOTLIGHT</span>
@@ -343,18 +406,18 @@ function WallMonitor() {
             </div>
           </div>
 
-          <div key={spot} style={{ animation: "wIn .6s both", marginTop: 12 }}>
-            <div style={{ display: "inline-flex", flexDirection: "column", background: INK, padding: "8px 16px", borderRadius: 4 }}>
+          <div key={spot} style={{ animation: "wIn .6s both", marginTop: 11 }}>
+            <div style={{ display: "inline-flex", flexDirection: "column", background: INK, padding: "7px 15px", borderRadius: 4 }}>
               <span style={{ fontSize: 8, letterSpacing: "0.38em", color: SAGE, fontWeight: 700 }}>PROJECT</span>
-              <span style={{ fontFamily: DISPLAY, fontSize: 23, color: IVORY, lineHeight: 1.15 }}>{p.name}</span>
+              <span style={{ fontFamily: DISPLAY, fontSize: 22, color: IVORY, lineHeight: 1.15 }}>{p.name}</span>
             </div>
-            <div style={{ display: "flex", height: 6, marginTop: 12, borderRadius: 999, overflow: "hidden", background: "rgba(244,241,228,.14)" }}>
+            <div style={{ display: "flex", height: 6, marginTop: 11, borderRadius: 999, overflow: "hidden", background: "rgba(244,241,228,.14)" }}>
               <div className="grow" style={{ width: `${(pAvail / p.total) * 100}%`, background: LIME }} />
               <div className="grow" style={{ width: `${(p.res / p.total) * 100}%`, background: GOLD }} />
               <div className="grow" style={{ width: `${(p.uc / p.total) * 100}%`, background: SAGE }} />
               <div className="grow" style={{ width: `${(p.sold / p.total) * 100}%`, background: IVORY }} />
             </div>
-            <div style={{ display: "flex", gap: 16, marginTop: 10 }}>
+            <div style={{ display: "flex", gap: 15, marginTop: 9 }}>
               <Legend swatch={LIME} label="AVAIL" n={pAvail} />
               <Legend swatch={GOLD} label="RES" n={p.res} />
               <Legend swatch={SAGE} label="CONTRACT" n={p.uc} />
@@ -363,33 +426,102 @@ function WallMonitor() {
         </section>
       </main>
 
-      {/* ---------------- chartreuse banner: the hour's saying ---------------- */}
+      {/* ---------------- the tiny banner: live activity ---------------- */}
+      <div style={{ overflow: "hidden", padding: "9px 0", flexShrink: 0, borderTop: "1px solid rgba(244,241,228,.12)" }}>
+        <div style={{ display: "flex", width: "max-content", animation: "wTick 48s linear infinite" }}>
+          {[0, 1].map((dup) => (
+            <div key={dup} style={{ display: "flex" }}>
+              {SAMPLE.ticker.map((t, i) => (
+                <span
+                  key={`${dup}-${i}`}
+                  style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.24em", color: SAGE, padding: "0 38px", whiteSpace: "nowrap" }}
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ---------------- chartreuse banner: three sayings an hour ---------------- */}
       <footer
         style={{
           background: LIME,
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          gap: 28,
-          padding: "18px 56px",
+          gap: 26,
+          padding: "16px 56px",
+          minHeight: 68,
         }}
       >
         <span style={{ fontSize: 9, letterSpacing: "0.46em", fontWeight: 700, color: ON_LIME, whiteSpace: "nowrap" }}>
           THIS HOUR
         </span>
-        <span style={{ width: 1, height: 26, background: "rgba(46,54,11,.30)", flexShrink: 0 }} />
+        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              style={{
+                width: i === sayIdx ? 14 : 5,
+                height: 3,
+                borderRadius: 999,
+                background: i === sayIdx ? INK : "rgba(46,54,11,.32)",
+                transition: "width .4s",
+              }}
+            />
+          ))}
+        </div>
+        <span style={{ width: 1, height: 24, background: "rgba(46,54,11,.30)", flexShrink: 0 }} />
         <span
+          key={saying}
           style={{
             fontFamily: DISPLAY,
-            fontSize: "clamp(20px, 3.2vh, 34px)",
+            fontSize: "clamp(19px, 2.9vh, 31px)",
             color: INK,
             letterSpacing: "0.01em",
             lineHeight: 1.1,
+            animation: "wSay .45s both",
           }}
         >
           {saying}
         </span>
       </footer>
+    </div>
+  );
+}
+
+function Rule() {
+  return <div style={{ width: 1, background: "rgba(244,241,228,.16)", margin: "0 22px", flexShrink: 0 }} />;
+}
+
+function Period({
+  label, a, against,
+}: {
+  label: string;
+  a: { moves: number; sold: number; res: number; uc: number; prev: number };
+  against: string;
+}) {
+  const delta = a.moves - a.prev;
+  const up = delta >= 0;
+  return (
+    <div style={{ minWidth: 0, flex: 1 }}>
+      <div style={{ fontSize: 9, letterSpacing: "0.36em", fontWeight: 700, color: SAGE }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 5 }}>
+        <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 3.8vh, 40px)", color: IVORY, lineHeight: 1, letterSpacing: "-0.02em" }}>
+          {a.moves}
+        </span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: up ? LIME : GOLD, whiteSpace: "nowrap" }}>
+          {up ? "▲" : "▼"}{Math.abs(delta)}
+        </span>
+      </div>
+      <div style={{ fontSize: 8, letterSpacing: "0.16em", color: "rgba(140,154,115,.75)", fontWeight: 600, marginTop: 4, whiteSpace: "nowrap" }}>
+        {a.sold} SOLD · {a.res} RES · {a.uc} CONTRACT
+      </div>
+      <div style={{ fontSize: 8, letterSpacing: "0.16em", color: "rgba(140,154,115,.5)", fontWeight: 600, marginTop: 2, whiteSpace: "nowrap" }}>
+        VS {against} {a.prev}
+      </div>
     </div>
   );
 }
@@ -403,12 +535,12 @@ function UnitRow({ unit, building, status }: { unit: string; building: string; s
         alignItems: "center",
         justifyContent: "space-between",
         gap: 12,
-        padding: "11px 0",
+        padding: "10px 0",
         borderBottom: "1px solid rgba(244,241,228,.08)",
       }}
     >
       <div style={{ minWidth: 0 }}>
-        <div style={{ fontFamily: DISPLAY, fontSize: 17, color: IVORY, lineHeight: 1.1, letterSpacing: "0.01em" }}>
+        <div style={{ fontFamily: DISPLAY, fontSize: 16, color: IVORY, lineHeight: 1.1, letterSpacing: "0.01em" }}>
           {unit}
         </div>
         <div
@@ -426,7 +558,7 @@ function UnitRow({ unit, building, status }: { unit: string; building: string; s
           {building}
         </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
         <span style={{ width: 7, height: 7, borderRadius: 2, background: tone }} />
         <span style={{ fontSize: 8, letterSpacing: "0.2em", fontWeight: 700, color: tone, whiteSpace: "nowrap" }}>
           {status}
@@ -436,21 +568,16 @@ function UnitRow({ unit, building, status }: { unit: string; building: string; s
   );
 }
 
-function Line({ label, value, tone, note }: { label: string; value: number; tone: string; note?: string }) {
+function Line({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
-    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, padding: "8px 0" }}>
+    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, padding: "7px 0" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
         <span style={{ width: 8, height: 8, borderRadius: 2, background: tone, flexShrink: 0 }} />
         <span style={{ fontSize: 10, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, whiteSpace: "nowrap" }}>
           {label}
         </span>
-        {note && (
-          <span style={{ fontSize: 9, letterSpacing: "0.1em", color: "rgba(140,154,115,.7)", whiteSpace: "nowrap" }}>
-            {note}
-          </span>
-        )}
       </div>
-      <span style={{ fontFamily: DISPLAY, fontSize: "clamp(28px, 4.4vh, 46px)", color: tone, lineHeight: 1, letterSpacing: "-0.02em" }}>
+      <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 4vh, 42px)", color: tone, lineHeight: 1, letterSpacing: "-0.02em" }}>
         {value}
       </span>
     </div>
@@ -462,7 +589,7 @@ function Legend({ swatch, label, n }: { swatch: string; label: string; n: number
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
       <span style={{ width: 8, height: 8, borderRadius: 2, background: swatch }} />
       <span style={{ fontSize: 8, letterSpacing: "0.26em", fontWeight: 700, color: SAGE }}>{label}</span>
-      <span style={{ fontFamily: DISPLAY, fontSize: 15, color: IVORY }}>{n}</span>
+      <span style={{ fontFamily: DISPLAY, fontSize: 14, color: IVORY }}>{n}</span>
     </div>
   );
 }
