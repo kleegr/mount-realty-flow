@@ -6,21 +6,29 @@ import { normalizeStagePayload } from "./webhook-payload.server";
  * Shared stage-change application logic.
  * Used by both the opportunity-stage webhook and the unit-associated replay webhook.
  *
- * MODEL: the pipeline card's CURRENT STAGE is absolute truth. Every stage in
- * both pipelines maps to exactly one status via the crm_pipelines lists:
- *   reserved_stage_names[]        → Reserved/Locked
- *   under_contract_stage_names[]  → Under Contract   (incl. Payment Tracking,
- *                                    Attorney/Title stages — "quoting the
- *                                    numbers on the contract")
- *   sold_stage_names[]            → Closed/Sold      (Closing, Closing Gift)
- *   release_stage_names[]         → Available        (everything early + Lost)
+ * RULE 1 — THE LOCKED/RESERVED LABEL IS THE ON SWITCH.
+ * Only a unit associated to the opportunity via "Locked/Reserved Units" is
+ * driven by stage changes. "Suggested Units" is browsing: a suggested unit is
+ * never reserved, never released, never touched — whatever stage the deal is
+ * in. When an opportunity's only units are Suggested, a stage change is not an
+ * inventory event at all (outcome `ignored_suggested_only`) — it must NOT sit
+ * in Pending Stage Events waiting for a human, because there is nothing to fix.
+ *
+ * RULE 2 — THE CARD'S CURRENT STAGE IS ABSOLUTE TRUTH.
+ * Every stage in both pipelines maps to exactly one status via the
+ * crm_pipelines lists:
+ *   reserved_stage_names[]        -> Reserved/Locked
+ *   under_contract_stage_names[]  -> Under Contract   (incl. Payment Tracking,
+ *                                    Attorney/Title stages)
+ *   sold_stage_names[]            -> Closed/Sold      (Closing, Closing Gift)
+ *   release_stage_names[]         -> Available        (everything early + Lost)
  * Direction of movement does not matter — dragging a card back out of Closing
  * un-sells the unit. There is no terminal state.
  *
- * Ownership: unit_state.held_by_opportunity_id records WHICH opportunity
- * holds a locked unit. The holder moves freely in either direction. A
- * DIFFERENT opportunity is normally locked out — BUT a recorded holder can be
- * STALE (its deal deleted / lost / moved back). So before blocking, the
+ * Ownership: unit_state.held_by_opportunity_id records WHICH opportunity holds
+ * a locked unit. The holder moves freely in either direction. A DIFFERENT
+ * opportunity is normally locked out — BUT a recorded holder can be STALE (its
+ * deal deleted / lost / moved back / label removed). So before blocking, the
  * holder is verified against the live CRM; an unjustified hold is
  * auto-released and the incoming change proceeds.
  */
@@ -36,6 +44,14 @@ export interface StageChangeInput {
   buildingExternalId?: string | null;
   /** When true and no unit/building reference is provided, look them up via the GHL API using opportunityId. */
   autoFetchAssociations?: boolean;
+  /**
+   * True for units named by an UNTRUSTED source (a GHL workflow payload): the
+   * unit is checked against the live CRM and ignored unless it carries the
+   * Locked/Reserved label. Left false for units chosen by a human in Pending
+   * Stage Events, or already verified by the unit-associated webhook —
+   * re-deriving those would defeat the manual override.
+   */
+  verifyUnitHint?: boolean;
 }
 
 export interface StageChangeOutcome {
@@ -76,21 +92,61 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
     buildingCrmId = map.data?.crm_record_id ?? null;
   }
 
-  // AUTO-FETCH: if we still have no unit/building reference but we do have an
-  // opportunity ID, ask GHL for the opportunity's associations.
-  if (!unitCrmId && !buildingCrmId && params.opportunityId && params.autoFetchAssociations !== false) {
+  // ---- Association lookup / verification.
+  // Runs when we have nothing to work with (auto-fetch), and also whenever a
+  // payload-named unit must be proven Locked/Reserved before it can move
+  // inventory.
+  const verifyHint = params.verifyUnitHint === true;
+  let suggestedOnly = false;
+  if (
+    params.opportunityId
+    && params.autoFetchAssociations !== false
+    && (verifyHint || (!unitCrmId && !buildingCrmId))
+  ) {
     try {
       const { createCrmClient } = await import("./client.server");
       const { fetchOpportunityAssociations } = await import("./opportunities.server");
       const found = await fetchOpportunityAssociations(await createCrmClient(), params.opportunityId);
-      unitCrmId = found.unitCrmId;
-      buildingCrmId = found.buildingCrmId;
+
+      // RULE 1 gate for untrusted, payload-named units.
+      if (
+        verifyHint
+        && unitCrmId
+        && found.lockedAssociationDefined
+        && !found.lockedUnitCrmIds.includes(unitCrmId)
+      ) {
+        if (found.suggestedUnitCrmIds.includes(unitCrmId)) {
+          return {
+            outcome: "ignored_suggested_unit",
+            unitCrmId,
+            message: "Unit is only Suggested on this opportunity. Suggested Units never affect inventory.",
+          };
+        }
+        // Named unit isn't the locked one — defer to the actual locked unit.
+        unitCrmId = found.unitCrmId;
+      }
+
+      if (!unitCrmId && !buildingCrmId) {
+        unitCrmId = found.unitCrmId;
+        buildingCrmId = found.buildingCrmId;
+      }
+
+      // Nothing locked, but units ARE shortlisted: deliberate no-op, not a gap.
+      suggestedOnly = !unitCrmId && !buildingCrmId && found.suggestedUnitCrmIds.length > 0;
     } catch (err) {
       console.warn("Auto-fetch of opportunity associations failed:", err instanceof Error ? err.message : err);
     }
   }
 
-  if (!unitCrmId && !buildingCrmId) return { outcome: "no_unit_reference" };
+  if (!unitCrmId && !buildingCrmId) {
+    if (suggestedOnly) {
+      return {
+        outcome: "ignored_suggested_only",
+        message: "This opportunity has Suggested Units only. Suggested Units are browsing-only, so no inventory change applies.",
+      };
+    }
+    return { outcome: "no_unit_reference" };
+  }
 
   // Resolve stage mapping (shared between Unit and Building paths)
   const stageMapping = await resolveStageMapping(supabaseAdmin, params.pipelineId, params.pipelineName ?? null, cfg.data);
@@ -144,8 +200,9 @@ export async function processStageChange(params: StageChangeInput): Promise<Stag
 
   // ---- Guard: a DIFFERENT opportunity is recorded as holding this unit.
   // Verify that hold against the live CRM before blocking: recorded holders go
-  // stale when their deal is deleted, lost, or dragged back — blocking on a
-  // stale holder deadlocks the unit for every future deal.
+  // stale when their deal is deleted, lost, dragged back, or when the
+  // Locked/Reserved label is removed — blocking on a stale holder deadlocks
+  // the unit for every future deal.
   let effectiveStage = currentStage;
   let effectiveAvailability = currentAvailability;
   const isLocked = currentAvailability === "Not Available" && currentStage !== "";
@@ -277,7 +334,7 @@ interface StageMapping {
   stage_under_contract_name?: string | null;
   stage_closed_name?: string | null;
   stage_release_name?: string | null;
-  /** Full stage→status table — every stage lands in exactly one list. */
+  /** Full stage->status table — every stage lands in exactly one list. */
   reserved_stage_names?: string[] | null;
   under_contract_stage_names?: string[] | null;
   sold_stage_names?: string[] | null;
@@ -414,7 +471,10 @@ async function importAdmin() {
 
 /**
  * Replay pending stage-change events for a given opportunity, now that a unit is known.
- * Called by the unit-associated webhook and the reprocess endpoint.
+ * Called by the unit-associated webhook (unit already verified as
+ * Locked/Reserved) and by the manual "Apply" tool in Pending Stage Events
+ * (a human explicitly chose the unit). Both are trusted, so the unit is used
+ * as given rather than re-derived from associations.
  */
 export async function replayPendingForOpportunity(
   opportunityId: string,
