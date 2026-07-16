@@ -6,19 +6,16 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Check, X, FlaskConical, ListTree, Copy, AlertTriangle } from "lucide-react";
+import { Check, X, FlaskConical, ListTree, Copy, AlertTriangle, ClipboardCopy } from "lucide-react";
 import { toast } from "sonner";
 
 /**
  * Groundwork for the Lazers contact + opportunity import.
  *
- * Two things have to be true before 750 API calls get written:
- *   1. we know the exact contact/opportunity field keys and picklist values
- *   2. the token actually holds contacts.write, opportunities.write and
- *      associations/relation.write
- *
- * Discovering either at row 400 of a live import is the expensive way. This
- * page discovers both in about ten seconds.
+ * The schema card exists because picklist values must be EXACT. Screenshots of
+ * this page proved unreadable at chat resolution, and the whole point is the
+ * option chips — "Buyer" vs "buyer" is the difference between a clean run and
+ * 183 rows of 422s. Hence "Copy schema JSON": lossless, pasteable, no squinting.
  */
 
 export const Route = createFileRoute("/_authenticated/tools/crm-probe")({
@@ -39,9 +36,27 @@ function CrmProbePage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const copy = async (v: string) => {
+  const copy = async (v: string, label = "Copied") => {
     await navigator.clipboard.writeText(v);
-    toast.success("Copied");
+    toast.success(label);
+  };
+
+  const copyAll = async () => {
+    if (!schema.data?.ok) return;
+    const compact = (fs: CrmField[]) =>
+      fs.map((f) => ({
+        name: f.name,
+        key: f.fieldKey,
+        id: f.id,
+        type: f.dataType,
+        ...(f.options.length ? { options: f.options } : {}),
+      }));
+    const payload = {
+      contact: compact(schema.data.contact),
+      opportunity: compact(schema.data.opportunity),
+      other: compact(schema.data.other),
+    };
+    await copy(JSON.stringify(payload, null, 2), "Schema copied — paste it into the chat");
   };
 
   return (
@@ -61,14 +76,22 @@ function CrmProbePage() {
             <ListTree className="h-4 w-4" /> Field schema
           </CardTitle>
           <CardDescription>
-            Read-only. Nothing is written. This settles the exact picklist values &mdash; “Buyer” vs
-            “buyer” is the difference between a clean run and 183 rows of 422s.
+            Read-only. Nothing is written. Load it, then hit <strong>Copy schema JSON</strong> and paste
+            that into the chat &mdash; the exact picklist values are what the importer gets written
+            against, and they have to be character-perfect.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Button onClick={() => schema.mutate()} disabled={schema.isPending}>
-            {schema.isPending ? "Reading…" : "Load field schema"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => schema.mutate()} disabled={schema.isPending}>
+              {schema.isPending ? "Reading…" : "Load field schema"}
+            </Button>
+            {schema.data?.ok && (
+              <Button variant="secondary" onClick={copyAll}>
+                <ClipboardCopy className="mr-2 h-4 w-4" /> Copy schema JSON
+              </Button>
+            )}
+          </div>
 
           {schema.data && !schema.data.ok && (
             <Alert variant="destructive">
@@ -116,23 +139,43 @@ function CrmProbePage() {
           </Button>
 
           {probe.data && (
-            <div className="space-y-1.5">
-              {probe.data.steps.map((s, i) => (
-                <div key={i} className="flex items-start gap-3 rounded-md border p-2.5">
-                  {s.ok ? (
-                    <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                  ) : (
-                    <X className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium">{s.step}</div>
-                    <div className="mt-0.5 break-words font-mono text-xs text-muted-foreground">
-                      {s.detail}
+            <>
+              <div className="space-y-1.5">
+                {probe.data.steps.map((s, i) => (
+                  <div key={i} className="flex items-start gap-3 rounded-md border p-2.5">
+                    {s.ok ? (
+                      <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                    ) : (
+                      <X className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium">{s.step}</div>
+                      <div className="mt-0.5 break-words font-mono text-xs text-muted-foreground">
+                        {s.detail}
+                      </div>
                     </div>
                   </div>
+                ))}
+              </div>
+
+              {probe.data.relationSample != null && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">Real relation — raw shape</h3>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => copy(JSON.stringify(probe.data.relationSample, null, 2))}
+                    >
+                      <Copy className="mr-2 h-3.5 w-3.5" /> Copy
+                    </Button>
+                  </div>
+                  <pre className="max-h-80 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed">
+                    {JSON.stringify(probe.data.relationSample, null, 2)}
+                  </pre>
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
