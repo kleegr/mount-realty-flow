@@ -1,20 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
+import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { resetInventoryChunk, finalizeInventoryReset } from "@/lib/inventory-reset.functions";
+import { inspectHierarchy } from "@/lib/hierarchy-repair.functions";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertTriangle, RotateCcw, Check } from "lucide-react";
-
-/**
- * Inventory reset UI.
- *
- * Chunked at 25 for the same reason the contact import is: ~332 sequential CRM
- * writes will outlive a serverless invocation. Resumable by offset — a stall
- * costs a click, not a restart.
- */
+import { AlertTriangle, RotateCcw, Check, Search, ClipboardCopy } from "lucide-react";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/tools/inventory-reset")({
   component: InventoryResetPage,
@@ -25,6 +20,7 @@ type Failure = { unitCrmId: string; detail: string };
 function InventoryResetPage() {
   const resetFn = useServerFn(resetInventoryChunk);
   const finalizeFn = useServerFn(finalizeInventoryReset);
+  const inspectFn = useServerFn(inspectHierarchy);
 
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState<string>("");
@@ -33,6 +29,11 @@ function InventoryResetPage() {
   const [failures, setFailures] = useState<Failure[]>([]);
   const [fatal, setFatal] = useState<string | null>(null);
   const [finished, setFinished] = useState<string | null>(null);
+
+  const inspect = useMutation({
+    mutationFn: () => inspectFn({ data: { confirm: "LOOK" as const } }),
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   async function run() {
     setRunning(true);
@@ -44,18 +45,15 @@ function InventoryResetPage() {
 
     try {
       let offset = 0;
-      // 332 units / 25 per pass = ~14. 30 is headroom, not an expectation.
       for (let pass = 0; pass < 30; pass++) {
         setPhase(`Releasing units… pass ${pass + 1}`);
         const res = await resetFn({ data: { confirm: "RESET" as const, offset, limit: 25 } });
-
         setTotal(res.totalUnits);
         setDone(res.nextOffset);
         if (res.failed.length) {
           fails.push(...res.failed);
           setFailures([...fails]);
         }
-
         offset = res.nextOffset;
         if (res.remaining === 0 || res.processed === 0) break;
       }
@@ -77,6 +75,7 @@ function InventoryResetPage() {
   }
 
   const pct = total ? Math.round((done / total) * 100) : 0;
+  const zeroRecalc = finished?.includes("Recalculated 0 buildings");
 
   return (
     <div className="space-y-6">
@@ -88,13 +87,52 @@ function InventoryResetPage() {
         </p>
       </div>
 
+      {/* ---------------- the actual blocker ---------------- */}
+      <Card className="border-destructive/40">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <Search className="h-4 w-4" /> Hierarchy check
+          </CardTitle>
+          <CardDescription>
+            Read-only. Every unit, building and project has a NULL parent in the mapping table, which is why
+            the recalc touched nothing — it skips any unit with no parent. This shows whether the links still
+            exist in GHL and can be rebuilt from there.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Button onClick={() => inspect.mutate()} disabled={inspect.isPending}>
+            {inspect.isPending ? "Looking…" : "Inspect hierarchy"}
+          </Button>
+
+          {inspect.data && (
+            <>
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(JSON.stringify(inspect.data, null, 2));
+                    toast.success("Copied — paste it into the chat");
+                  }}
+                >
+                  <ClipboardCopy className="mr-2 h-4 w-4" /> Copy result
+                </Button>
+              </div>
+              <pre className="max-h-[32rem] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed">
+                {JSON.stringify(inspect.data, null, 2)}
+              </pre>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       <Alert>
         <AlertTriangle className="h-4 w-4" />
         <AlertDescription className="space-y-2 text-sm">
           <p>
             <strong>This is only safe while both pipelines are empty.</strong> Unit status is derived from
             where a deal sits. With opportunities present, self-heal would re-apply their stages within about
-            two minutes and quietly undo this. The reset refuses to run if any unit is still recorded as held.
+            two minutes and quietly undo this.
           </p>
           <p>
             No records are deleted. Units keep their identity — only availability, stage and lock date are
@@ -107,7 +145,7 @@ function InventoryResetPage() {
         <CardHeader>
           <CardTitle className="text-lg">Run the reset</CardTitle>
           <CardDescription>
-            Roughly 332 units in batches of 25, then one rollup pass. A minute or two.
+            Sets every unit to Available. The totals will not move until parentage is repaired.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -133,9 +171,18 @@ function InventoryResetPage() {
           )}
 
           {finished && (
-            <Alert>
-              <Check className="h-4 w-4" />
-              <AlertDescription className="text-sm">{finished}</AlertDescription>
+            <Alert variant={zeroRecalc ? "destructive" : "default"}>
+              {zeroRecalc ? <AlertTriangle className="h-4 w-4" /> : <Check className="h-4 w-4" />}
+              <AlertDescription className="space-y-1 text-sm">
+                <p>{finished}</p>
+                {zeroRecalc && (
+                  <p>
+                    Zero means every unit was skipped for having no parent building. The units are Available;
+                    the totals cannot be computed until the hierarchy is repaired. Run the hierarchy check
+                    above.
+                  </p>
+                )}
+              </AlertDescription>
             </Alert>
           )}
 
