@@ -16,8 +16,8 @@ import { z } from "zod";
  *
  * SAFE ONLY BECAUSE THE PIPELINES ARE EMPTY. Unit status is derived from
  * opportunity position — with deals present, selfHealCrmState() would re-apply
- * their stages within ~2 minutes and quietly undo this. With zero opportunities
- * there is nothing to re-apply, so Available is a stable resting state.
+ * their stages within ~2 minutes and quietly undo this. Hence the hold guard
+ * below.
  *
  * WHY NOT JUST CALL releaseUnit() 332 TIMES: it calls recomputeParents() per
  * unit, which is right for one webhook and catastrophic for a bulk pass — 332
@@ -44,6 +44,89 @@ async function requireAdmin(userId: string) {
   if (!r.includes("admin")) throw new Error("Forbidden: admin only.");
 }
 
+function isGone(err: unknown): boolean {
+  const status = (err as { status?: unknown })?.status;
+  return status === 404 || status === 400;
+}
+
+/**
+ * The hold guard, resolved against the LIVE CRM rather than the mirror.
+ *
+ * A held_by_opportunity_id only matters if that opportunity actually exists —
+ * a live deal would have its stage re-applied by self-heal and undo the reset.
+ * A reference to a DELETED deal is just debris, and refusing to reset because
+ * of debris is guarding against a lie: the mirror is the very thing we already
+ * know is stale (8 rows for 332 units).
+ *
+ * So: ask GHL. Gone -> clear the holder, exactly as releaseUnit would on an
+ * OPPORTUNITY_DELETED. Alive -> refuse loudly. Unreadable -> refuse, because a
+ * transient outage must never be mistaken for "the deal is gone".
+ */
+async function resolveStaleHolds(client: {
+  request: <T>(m: "GET", p: string, o?: Record<string, unknown>) => Promise<{ data: T }>;
+}): Promise<{ cleared: number; live: string[] }> {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+  const { data: heldRows } = await supabaseAdmin
+    .from("unit_state")
+    .select("unit_crm_id, held_by_opportunity_id")
+    .not("held_by_opportunity_id", "is", null);
+
+  if (!heldRows?.length) return { cleared: 0, live: [] };
+
+  const live: string[] = [];
+  const stale: Array<{ unitCrmId: string; oppId: string }> = [];
+
+  const checked = new Map<string, boolean>(); // oppId -> exists
+  for (const row of heldRows as Array<Record<string, unknown>>) {
+    const oppId = typeof row.held_by_opportunity_id === "string" ? row.held_by_opportunity_id : null;
+    const unitCrmId = typeof row.unit_crm_id === "string" ? row.unit_crm_id : null;
+    if (!oppId || !unitCrmId) continue;
+
+    if (!checked.has(oppId)) {
+      try {
+        const res = await client.request<Record<string, unknown>>("GET", `/opportunities/${oppId}`, {});
+        const d = (res.data ?? {}) as Record<string, unknown>;
+        const opp = (d.opportunity && typeof d.opportunity === "object" ? d.opportunity : d) as Record<string, unknown>;
+        const status = String(opp.status ?? "").toLowerCase();
+        // A deleted/lost card holds nothing, same as the engine's own rules.
+        checked.set(oppId, status !== "deleted" && status !== "lost" && status !== "abandoned");
+      } catch (err) {
+        if (isGone(err)) checked.set(oppId, false);
+        else {
+          throw new Error(
+            `Could not verify opportunity ${oppId}: ${err instanceof Error ? err.message : String(err)}. ` +
+              `Refusing to reset on a guess — a CRM outage must not look like "the deal is gone".`,
+          );
+        }
+      }
+    }
+
+    if (checked.get(oppId)) live.push(oppId);
+    else stale.push({ unitCrmId, oppId });
+  }
+
+  if (live.length > 0) return { cleared: 0, live: [...new Set(live)] };
+
+  for (const s of stale) {
+    await supabaseAdmin
+      .from("unit_state")
+      .update({ held_by_opportunity_id: null })
+      .eq("unit_crm_id", s.unitCrmId)
+      .then(() => undefined, () => undefined);
+  }
+
+  await supabaseAdmin
+    .from("audit_events")
+    .insert({
+      kind: "stale_hold_cleared",
+      reason: `inventory reset: ${stale.length} units held by opportunities that no longer exist`,
+    })
+    .then(() => undefined, () => undefined);
+
+  return { cleared: stale.length, live: [] };
+}
+
 export const resetInventoryChunk = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>
@@ -65,14 +148,11 @@ export const resetInventoryChunk = createServerFn({ method: "POST" })
 
     const client = await createCrmClient();
 
-    // Guard: this is only safe while no deal can re-apply a stage.
-    const { count: heldCount } = await supabaseAdmin
-      .from("unit_state")
-      .select("unit_crm_id", { count: "exact", head: true })
-      .not("held_by_opportunity_id", "is", null);
-    if ((heldCount ?? 0) > 0) {
+    const holds = await resolveStaleHolds(client as never);
+    if (holds.live.length > 0) {
       throw new Error(
-        `${heldCount} units are still recorded as held by an opportunity. Self-heal would undo this reset within ~2 minutes. Resolve those first.`,
+        `${holds.live.length} opportunities still exist and hold units (${holds.live.slice(0, 3).join(", ")}). ` +
+          `Self-heal would re-apply their stages and undo this reset within ~2 minutes. Delete or move them first.`,
       );
     }
 
@@ -143,6 +223,7 @@ export const resetInventoryChunk = createServerFn({ method: "POST" })
       processed: slice.length,
       succeeded: results.filter((r) => r.ok).length,
       failed: results.filter((r) => !r.ok),
+      staleHoldsCleared: holds.cleared,
       totalUnits: all.length,
       nextOffset,
       remaining: Math.max(0, all.length - nextOffset),
