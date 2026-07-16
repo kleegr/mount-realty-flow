@@ -3,36 +3,21 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
 /**
- * CONTACT IMPORT — Lazers Realty.
+ * CONTACT IMPORT — Lazers Realty. Contacts only; opportunities untouched.
  *
- * Scope: contacts only. Opportunities are deliberately NOT touched here.
+ * 1. SCHEMA-DRIVEN, NOT HARDCODED. Field keys and picklist values are read live
+ *    from GHL at run time and matched case/punctuation-insensitively, so a sheet
+ *    saying "buyer" resolves to whatever the option literally is ("Buyer") and we
+ *    send that exact string back. The property_type bug class, designed out.
  *
- * THREE DESIGN DECISIONS, each answering a specific way this could go wrong:
+ * 2. THE ID MAP IS THE RESUME STATE. A stable_id in contact_id_map means that
+ *    person is done. No cursor. ~150 sequential CRM calls will outlive a
+ *    serverless invocation, so the job must be re-runnable by construction.
  *
- * 1. SCHEMA-DRIVEN, NOT HARDCODED.
- *    Field keys and picklist values are read live from GHL at run time and
- *    matched case/punctuation-insensitively. So a sheet saying "buyer" resolves
- *    to whatever the option literally is ("Buyer"), and we send that exact
- *    string back. This is the property_type bug class — which cost four rounds
- *    on the inventory import — designed out rather than dodged again.
- *
- * 2. THE ID MAP IS THE RESUME STATE.
- *    contact_id_map.stable_id present => that person is done. No cursor, no
- *    offset bookkeeping. The job can die at row 60 of 149 and re-running picks
- *    up at 61, because completed work is a database fact, not a variable. This
- *    matters: ~150 sequential API calls will outlive a serverless invocation.
- *
- * 3. THE FIRST WRITE IS VERIFIED, THEN THE RUN COMMITS.
- *    After the first contact is created we read it back and confirm the custom
- *    fields actually persisted. GHL accepts unknown custom-field payloads with
- *    a 200 and silently drops them — so without this check the happy path is
- *    "149 contacts imported successfully", every one of them missing the father
- *    and father-in-law names, discovered a week later. If verification fails the
- *    run aborts after one row, not 149.
- *
- * STABLE IDS: if the sheet has no stable person ID column, one is derived from
- * the normalised name. 183 rows describe 149 people (Friedman appears 6 times);
- * the stable id is what collapses them to one contact.
+ * 3. THE FIRST WRITE IS VERIFIED, THEN THE RUN COMMITS. GHL 200s an unknown
+ *    custom-field payload and silently drops it. Without a read-back the happy
+ *    path is "149 contacts imported", every one missing the father names,
+ *    discovered a week later. Verification failure aborts after ONE row.
  */
 
 const CHUNK_MAX = 25;
@@ -137,17 +122,13 @@ async function loadContactFields(client: {
     });
 }
 
-/**
- * Resolve a sheet value against a picklist's REAL options.
- * Returns the option exactly as GHL spells it, or null if there's no match.
- */
+/** Resolve a sheet value against a picklist's REAL options, exactly as spelled. */
 function resolveOption(field: ContactField, value: unknown): string | null {
   const n = norm(value);
   if (!n) return null;
   return field.options.find((o) => norm(o) === n) ?? null;
 }
 
-// Built-in (non-custom) contact targets the sheet may map onto.
 const BUILTINS = [
   { key: "name", aliases: ["clientname", "name", "fullname", "buyer", "buyername", "client"] },
   { key: "email", aliases: ["email", "emailaddress", "mail"] },
@@ -155,9 +136,46 @@ const BUILTINS = [
   { key: "stable_id", aliases: ["id", "clientid", "personid", "contactid", "stableid", "cid"] },
 ] as const;
 
+/**
+ * Headers that describe a DEAL, not a person.
+ *
+ * The sheet is one row per unit, so these values DIFFER across the six rows
+ * belonging to one buyer. Collapsing them onto a contact keeps the first and
+ * silently discards the rest — the same "two writers, one field" fault that
+ * produced Total 4 / Available 7 on the inventory import.
+ *
+ * Skipped EVEN WHEN a same-named contact field exists. GHL ships a contact
+ * field called "Notes", which is exactly the trap: the mapper matched it
+ * happily, and Friedman would have kept one of his six notes with no error to
+ * show for the other five. These belong on the Opportunity.
+ */
+const DEAL_LEVEL = new Set([
+  "notes",
+  "datesigned",
+  "executed",
+  "downpayment",
+  "paidamount",
+  "remaningd",
+  "remainingd",
+  "remaining",
+  "remainingpayment",
+  "receipt",
+  "receiptnumber",
+  "paymenttype",
+  "gavetoowner",
+  "followup",
+  "commtobillpaid",
+  "commission",
+  "paid",
+  "saleprice",
+  "duedate",
+  "invoicesent",
+  "invoicelink",
+]);
+
 export interface MappedColumn {
   header: string;
-  target: string; // builtin key, or custom field id
+  target: string;
   targetLabel: string;
   kind: "builtin" | "custom" | "ignored";
   dataType?: string;
@@ -168,19 +186,22 @@ function buildMapping(headers: string[], fields: ContactField[]): MappedColumn[]
   return headers.map((h) => {
     const n = norm(h);
     const b = BUILTINS.find((x) => x.aliases.includes(n));
-    if (b) {
-      return { header: h, target: b.key, targetLabel: b.key, kind: "builtin" as const };
-    }
-    const f = fields.find((x) => norm(x.name) === n || norm(x.fieldKey.replace(/^contact\./, "")) === n);
-    if (f) {
+    if (b) return { header: h, target: b.key, targetLabel: b.key, kind: "builtin" as const };
+
+    // Checked BEFORE the custom-field lookup, on purpose: a matching contact
+    // field is not evidence that the column is person-level.
+    if (DEAL_LEVEL.has(n)) {
       return {
         header: h,
-        target: f.id,
-        targetLabel: f.name,
-        kind: "custom" as const,
-        dataType: f.dataType,
-        options: f.options,
+        target: "",
+        targetLabel: "— deal-level · belongs on the opportunity —",
+        kind: "ignored" as const,
       };
+    }
+
+    const f = fields.find((x) => norm(x.name) === n || norm(x.fieldKey.replace(/^contact\./, "")) === n);
+    if (f) {
+      return { header: h, target: f.id, targetLabel: f.name, kind: "custom" as const, dataType: f.dataType, options: f.options };
     }
     return { header: h, target: "", targetLabel: "— not imported —", kind: "ignored" as const };
   });
@@ -210,7 +231,7 @@ export const previewContactImport = createServerFn({ method: "POST" })
 
     const people = new Map<string, { name: string; email: string; phone: string; rows: number }>();
     let noName = 0;
-    for (const [i, row] of data.rows.entries()) {
+    for (const row of data.rows) {
       const name = cleanName(nameCol ? row[nameCol] : "");
       if (!name || isJunk(name)) {
         noName++;
@@ -226,7 +247,6 @@ export const previewContactImport = createServerFn({ method: "POST" })
         phone: prev?.phone || phone,
         rows: (prev?.rows ?? 0) + 1,
       });
-      void i;
     }
 
     const stableIds = [...people.keys()];
@@ -236,8 +256,6 @@ export const previewContactImport = createServerFn({ method: "POST" })
       .in("stable_id", stableIds.slice(0, 1000));
     const alreadyDone = new Set((done ?? []).map((d) => d.stable_id));
 
-    const noContactInfo = [...people.values()].filter((p) => !p.email && !p.phone).length;
-
     return {
       ok: true as const,
       totalRows: data.rows.length,
@@ -245,7 +263,7 @@ export const previewContactImport = createServerFn({ method: "POST" })
       distinctPeople: people.size,
       alreadyImported: [...alreadyDone].length,
       toImport: stableIds.filter((s) => !alreadyDone.has(s)).length,
-      noContactInfo,
+      noContactInfo: [...people.values()].filter((p) => !p.email && !p.phone).length,
       usingDerivedIds: !idCol,
       mapping,
       availableFields: fields.map((f) => ({ id: f.id, name: f.name, dataType: f.dataType, options: f.options })),
@@ -297,8 +315,10 @@ export const runContactImportChunk = createServerFn({ method: "POST" })
     const idCol = col("stable_id");
     if (!nameCol) throw new Error("No column is mapped to the contact name. Nothing can be imported.");
 
-    // Collapse rows -> people. First non-empty value per field wins; later rows
-    // only fill gaps, so Friedman's six rows become one contact.
+    // Collapse rows -> people. First non-empty value wins; later rows only fill
+    // gaps, so Friedman's six rows become one contact. This is exactly why
+    // DEAL_LEVEL columns are excluded above — for those, "first wins" is silent
+    // data loss rather than deduplication.
     interface Person {
       stableId: string;
       name: string;
@@ -323,7 +343,6 @@ export const runContactImportChunk = createServerFn({ method: "POST" })
       people.set(stableId, p);
     }
 
-    // Resume: anything already in the map is finished.
     const allIds = [...people.keys()];
     const { data: done } = await supabaseAdmin.from("contact_id_map").select("stable_id").in("stable_id", allIds.slice(0, 1000));
     const doneSet = new Set((done ?? []).map((d) => d.stable_id));
@@ -335,7 +354,6 @@ export const runContactImportChunk = createServerFn({ method: "POST" })
     for (const stableId of queue) {
       const p = people.get(stableId)!;
       try {
-        // ---- find an existing human: email > phone > exact name
         let existingId: string | null = null;
         let matchedBy = "created";
         for (const [q, how] of [
@@ -364,7 +382,6 @@ export const runContactImportChunk = createServerFn({ method: "POST" })
           }
         }
 
-        // ---- build custom field payload against the REAL schema
         const customFields: Array<{ id: string; value: unknown }> = [];
         const warnings: string[] = [];
         for (const [fieldId, raw] of Object.entries(p.custom)) {
@@ -385,14 +402,13 @@ export const runContactImportChunk = createServerFn({ method: "POST" })
         // Contact Type only on NEW contacts — never silently flip an existing
         // Seller to Buyer just because they appear in this sheet.
         if (!existingId && data.contactType) {
-          const ctField = fields.find((f) => norm(f.fieldKey) === norm("contact.contact_type") || norm(f.name) === norm("Contact Type"));
+          const ctField = fields.find(
+            (f) => norm(f.fieldKey) === norm("contact.contact_type") || norm(f.name) === norm("Contact Type"),
+          );
           if (ctField) {
             const exact = resolveOption(ctField, data.contactType);
-            if (exact) {
-              customFields.push({ id: ctField.id, value: ctField.dataType === "MULTIPLE_OPTIONS" ? [exact] : exact });
-            } else {
-              warnings.push(`Contact Type: "${data.contactType}" is not one of [${ctField.options.join(", ")}]`);
-            }
+            if (exact) customFields.push({ id: ctField.id, value: ctField.dataType === "MULTIPLE_OPTIONS" ? [exact] : exact });
+            else warnings.push(`Contact Type: "${data.contactType}" is not one of [${ctField.options.join(", ")}]`);
           }
         }
 
@@ -420,9 +436,7 @@ export const runContactImportChunk = createServerFn({ method: "POST" })
         }
         if (!contactId) throw new Error("CRM did not return a contact id.");
 
-        // ---- VERIFY THE FIRST WRITE, then trust the rest.
-        // GHL will 200 an unknown custom-field payload and silently drop it.
-        // Without this, the happy path is 149 contacts with no father names.
+        // VERIFY THE FIRST WRITE, then trust the rest.
         if (!verified && customFields.length > 0) {
           const back = await client.request<Record<string, unknown>>("GET", `/contacts/${contactId}`);
           const d = (back.data ?? {}) as Record<string, unknown>;
