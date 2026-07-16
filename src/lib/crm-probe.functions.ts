@@ -3,31 +3,35 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
 /**
- * CRM PROBE — the groundwork for the Lazers contact + opportunity import.
+ * CRM PROBE — groundwork for the Lazers contact + opportunity import.
  *
- * Two unknowns have to be settled BEFORE 750 API calls get written, not after
- * one dies at row 400:
+ * PROVEN SO FAR (run of Jul 16):
+ *   contacts.write        ✓ created + deleted a real contact
+ *   opportunities.write   ✓ created + deleted a real opportunity
+ *   pipelines read        ✓ Local Market → "New Inquiry / Initial Call"
+ *   associations read     ✓ Suggested Units = 6a4a98259699f69d13bfcaea
  *
- *   1. FIELD SCHEMA. Contact custom fields live on a different API than the
- *      custom objects (Projects/Buildings/Units) this app already drives. The
- *      import needs the exact field ids/keys and — critically — the exact
- *      picklist option values. "Buyer" vs "buyer" is the difference between a
- *      clean run and 183 rows of 422s, which is precisely the bug class that
- *      broke the inventory import (property_type).
+ * OPEN: associations/relation.write returned
+ *   "Invalid record id : '<oppId>' for association : suggested_units"
+ * That is NOT a scope error — GHL accepted the call and rejected the payload.
+ * The opportunity was passed as firstRecordId; the association is almost
+ * certainly unit-first / opportunity-second. This version reads the definition
+ * and orders the ids accordingly instead of guessing, then retries swapped if
+ * the definition is ambiguous.
  *
- *   2. TOKEN SCOPES. Everything done in GHL so far is: read opportunities,
- *      read/write custom objects. The import needs contacts.write,
- *      opportunities.write and associations/relation.write — three permissions
- *      KLEEGR_CRM_TOKEN has never been asked for. If they're missing, the token
- *      must be regenerated, and that's a 30-minute discovery, not a 400-row one.
+ * CORRECTED: the earlier "relation carries no timestamp" result was a FALSE
+ * NEGATIVE of my own making — it inspected the relations of an opportunity
+ * whose relation had just failed to create, so it found an empty array and
+ * reported "no timestamp". Zero evidence. This version answers the question
+ * properly by reading a REAL relation off a unit that is genuinely locked right
+ * now (via unit_state.held_by_opportunity_id) — real shape, no writes.
  *
  * WHY THE WRITE PROBE IS SAFE:
  *   - the test contact is deleted immediately
- *   - the test opportunity is created in a RELEASE stage (New Inquiry-type),
- *     which maps to Available — it cannot reserve anything — and is deleted
- *   - the association is created with the SUGGESTED label, which the engine now
- *     provably ignores end to end (see release.server.ts rule 1). A suggested
- *     unit is never locked, released, or touched.
+ *   - the test opportunity is created in a RELEASE stage (maps to Available, so
+ *     it cannot reserve anything) and is deleted
+ *   - the association uses the SUGGESTED label, which the engine provably
+ *     ignores end to end (release.server.ts rule 1)
  *   Nothing here can move real inventory even if every cleanup step failed.
  */
 
@@ -73,11 +77,6 @@ function normOptions(f: RawField): string[] {
     .filter((v): v is string => Boolean(v));
 }
 
-/**
- * Read-only. Dumps every Contact + Opportunity custom field with its exact
- * key and picklist values, so the importer can be mapped against reality
- * instead of against a screenshot.
- */
 export const getCrmFieldSchema = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
@@ -132,10 +131,6 @@ interface Step {
   detail: string;
 }
 
-/**
- * Exercises the three write scopes the import depends on, then cleans up.
- * Admin only, and deliberately explicit — never runs on page load.
- */
 export const probeCrmWriteScopes = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ confirm: z.literal("RUN") }).parse(d))
@@ -160,6 +155,51 @@ export const probeCrmWriteScopes = createServerFn({ method: "POST" })
       return /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw)?.[1] ?? raw;
     };
 
+    // =====================================================================
+    // 0. READ A REAL RELATION — no writes. This is the honest answer to
+    //    "does a relation carry a date?", using a unit that is locked NOW.
+    // =====================================================================
+    let realRelationSample: unknown = null;
+    try {
+      const { data: held } = await supabaseAdmin
+        .from("unit_state")
+        .select("held_by_opportunity_id")
+        .not("held_by_opportunity_id", "is", null)
+        .limit(1)
+        .maybeSingle();
+      const realOppId = held?.held_by_opportunity_id ?? null;
+
+      if (!realOppId) {
+        steps.push({
+          step: "relation shape — real sample",
+          ok: false,
+          detail: "no unit is currently locked, so there is no real relation to read. Inconclusive.",
+        });
+      } else {
+        const res = await client.request<{ relations?: unknown[] }>(
+          "GET",
+          `/associations/relations/${realOppId}`,
+          { query: { locationId, skip: 0, limit: 10 } },
+        );
+        const rels = res.data?.relations ?? [];
+        realRelationSample = rels;
+        const asText = JSON.stringify(rels);
+        const hasDate = /createdAt|dateAdded|created_at|updatedAt/i.test(asText);
+        steps.push({
+          step: "relation shape — real sample",
+          ok: rels.length > 0,
+          detail:
+            rels.length === 0
+              ? `opportunity ${realOppId} returned no relations. Inconclusive.`
+              : hasDate
+                ? "YES — a timestamp IS present on real relations. Real association dates are possible, including history."
+                : "NO timestamp on real relations. Association dates can only be tracked from the day we start watching.",
+        });
+      }
+    } catch (err) {
+      steps.push({ step: "relation shape — real sample", ok: false, detail: msg(err) });
+    }
+
     // ---- 1. contacts.write
     try {
       const res = await client.request<Record<string, unknown>>("POST", "/contacts/", {
@@ -179,7 +219,7 @@ export const probeCrmWriteScopes = createServerFn({ method: "POST" })
       steps.push({ step: "contacts.write — create", ok: false, detail: msg(err) });
     }
 
-    // ---- 2. opportunities.write (release stage only — cannot reserve anything)
+    // ---- 2. pipelines read → release stage only
     let pipelineId: string | null = null;
     let stageId: string | null = null;
     let stageName: string | null = null;
@@ -195,14 +235,12 @@ export const probeCrmWriteScopes = createServerFn({ method: "POST" })
         .select("pipeline_id, pipeline_name, release_stage_names")
         .limit(20);
       const preferred = (known ?? []).find((k) => /local/i.test(String(k.pipeline_name ?? "")));
-      const pipe =
-        pipes.find((p) => typeof p.id === "string" && p.id === preferred?.pipeline_id) ?? pipes[0];
+      const pipe = pipes.find((p) => typeof p.id === "string" && p.id === preferred?.pipeline_id) ?? pipes[0];
       pipelineId = typeof pipe?.id === "string" ? pipe.id : null;
       const stages = Array.isArray(pipe?.stages) ? (pipe.stages as Array<Record<string, unknown>>) : [];
       const releaseNames = (preferred?.release_stage_names ?? []) as string[];
       const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
-      const releaseStage =
-        stages.find((s) => releaseNames.some((n) => norm(n) === norm(s.name))) ?? stages[0];
+      const releaseStage = stages.find((s) => releaseNames.some((n) => norm(n) === norm(s.name))) ?? stages[0];
       stageId = typeof releaseStage?.id === "string" ? releaseStage.id : null;
       stageName = typeof releaseStage?.name === "string" ? releaseStage.name : null;
       steps.push({
@@ -214,26 +252,16 @@ export const probeCrmWriteScopes = createServerFn({ method: "POST" })
       steps.push({ step: "pipelines — read", ok: false, detail: msg(err) });
     }
 
+    // ---- 3. opportunities.write
     if (contactId && pipelineId && stageId) {
       try {
         const res = await client.request<Record<string, unknown>>("POST", "/opportunities/", {
-          body: {
-            locationId,
-            pipelineId,
-            pipelineStageId: stageId,
-            contactId,
-            name: `Kleegr Probe ${stamp}`,
-            status: "open",
-          },
+          body: { locationId, pipelineId, pipelineStageId: stageId, contactId, name: `Kleegr Probe ${stamp}`, status: "open" },
         });
         const d = (res.data ?? {}) as Record<string, unknown>;
         const o = (d.opportunity && typeof d.opportunity === "object" ? d.opportunity : d) as Record<string, unknown>;
         opportunityId = typeof o.id === "string" ? o.id : null;
-        steps.push({
-          step: "opportunities.write — create",
-          ok: Boolean(opportunityId),
-          detail: opportunityId ?? JSON.stringify(d).slice(0, 240),
-        });
+        steps.push({ step: "opportunities.write — create", ok: Boolean(opportunityId), detail: opportunityId ?? JSON.stringify(d).slice(0, 240) });
       } catch (err) {
         steps.push({ step: "opportunities.write — create", ok: false, detail: msg(err) });
       }
@@ -241,9 +269,10 @@ export const probeCrmWriteScopes = createServerFn({ method: "POST" })
       steps.push({ step: "opportunities.write — create", ok: false, detail: "skipped — no contact or pipeline" });
     }
 
-    // ---- 3. associations/relation.write, via the SUGGESTED label (inert by design)
+    // ---- 4. association DEFINITION — which side is which?
     let suggestedAssocId: string | null = null;
-    let unitId: string | null = null;
+    let firstKey = "";
+    let secondKey = "";
     try {
       const res = await client.request<{ associations?: Array<Record<string, unknown>> }>("GET", "/associations/", {
         query: { locationId, skip: 0, limit: 100 },
@@ -251,13 +280,17 @@ export const probeCrmWriteScopes = createServerFn({ method: "POST" })
       const defs = res.data?.associations ?? [];
       const suggested = defs.find((d) => /suggest/i.test(String(d.key ?? "")));
       suggestedAssocId = typeof suggested?.id === "string" ? suggested.id : null;
+      firstKey = String(suggested?.firstObjectKey ?? "");
+      secondKey = String(suggested?.secondObjectKey ?? "");
       steps.push({
-        step: "associations — read defs",
+        step: "association definition — which side is which?",
         ok: Boolean(suggestedAssocId),
-        detail: suggestedAssocId ? `Suggested Units = ${suggestedAssocId}` : "Suggested association not found",
+        detail: suggestedAssocId
+          ? `first = "${firstKey || "?"}"  ·  second = "${secondKey || "?"}"   (the previous run passed these backwards)`
+          : "Suggested association not found",
       });
     } catch (err) {
-      steps.push({ step: "associations — read defs", ok: false, detail: msg(err) });
+      steps.push({ step: "association definition — which side is which?", ok: false, detail: msg(err) });
     }
 
     const { data: anyUnit } = await supabaseAdmin
@@ -266,62 +299,47 @@ export const probeCrmWriteScopes = createServerFn({ method: "POST" })
       .eq("scope", "unit")
       .limit(1)
       .maybeSingle();
-    unitId = anyUnit?.crm_record_id ?? null;
+    const unitId = anyUnit?.crm_record_id ?? null;
 
+    // ---- 5. relation.write, ordered by the definition (retry swapped if needed)
     if (opportunityId && suggestedAssocId && unitId) {
-      try {
-        const res = await client.request<Record<string, unknown>>("POST", "/associations/relations", {
-          body: {
-            locationId,
-            associationId: suggestedAssocId,
-            firstRecordId: opportunityId,
-            secondRecordId: unitId,
-          },
-        });
-        const d = (res.data ?? {}) as Record<string, unknown>;
-        const rel = (d.relation && typeof d.relation === "object" ? d.relation : d) as Record<string, unknown>;
-        relationId = typeof rel.id === "string" ? rel.id : null;
-        steps.push({
-          step: "associations/relation.write — create (Suggested, inert)",
-          ok: Boolean(relationId),
-          detail: relationId ? `${relationId} — unit ${unitId}` : JSON.stringify(d).slice(0, 300),
-        });
-      } catch (err) {
-        steps.push({
-          step: "associations/relation.write — create (Suggested, inert)",
-          ok: false,
-          detail: msg(err),
-        });
+      const unitFirst = /unit/i.test(firstKey) || /opportunit/i.test(secondKey);
+      const attempts: Array<{ label: string; first: string; second: string }> = unitFirst
+        ? [
+            { label: "unit-first (per definition)", first: unitId, second: opportunityId },
+            { label: "opportunity-first (fallback)", first: opportunityId, second: unitId },
+          ]
+        : [
+            { label: "opportunity-first (per definition)", first: opportunityId, second: unitId },
+            { label: "unit-first (fallback)", first: unitId, second: opportunityId },
+          ];
+
+      for (const a of attempts) {
+        if (relationId) break;
+        try {
+          const res = await client.request<Record<string, unknown>>("POST", "/associations/relations", {
+            body: { locationId, associationId: suggestedAssocId, firstRecordId: a.first, secondRecordId: a.second },
+          });
+          const d = (res.data ?? {}) as Record<string, unknown>;
+          const rel = (d.relation && typeof d.relation === "object" ? d.relation : d) as Record<string, unknown>;
+          relationId = typeof rel.id === "string" ? rel.id : null;
+          steps.push({
+            step: `associations/relation.write — ${a.label}`,
+            ok: Boolean(relationId),
+            detail: relationId
+              ? `${relationId} — THIS IS THE CORRECT ORDER. Raw: ${JSON.stringify(d).slice(0, 260)}`
+              : JSON.stringify(d).slice(0, 300),
+          });
+        } catch (err) {
+          steps.push({ step: `associations/relation.write — ${a.label}`, ok: false, detail: msg(err) });
+        }
       }
     } else {
       steps.push({
-        step: "associations/relation.write — create (Suggested, inert)",
+        step: "associations/relation.write",
         ok: false,
         detail: "skipped — need an opportunity, the Suggested association, and at least one mapped unit",
       });
-    }
-
-    // ---- 4. does a relation carry a timestamp? (blocks the "date label added" feature)
-    let relationSample: unknown = null;
-    if (opportunityId) {
-      try {
-        const res = await client.request<{ relations?: unknown[] }>(
-          "GET",
-          `/associations/relations/${opportunityId}`,
-          { query: { locationId, skip: 0, limit: 10 } },
-        );
-        relationSample = res.data?.relations ?? null;
-        const asText = JSON.stringify(relationSample ?? {});
-        steps.push({
-          step: "relation shape — does it carry a date?",
-          ok: true,
-          detail: /createdAt|dateAdded|created_at/i.test(asText)
-            ? "YES — a timestamp is present. Real association dates are possible, including history."
-            : "NO timestamp field found. Association dates could only be tracked from the day we start watching.",
-        });
-      } catch (err) {
-        steps.push({ step: "relation shape — does it carry a date?", ok: false, detail: msg(err) });
-      }
     }
 
     // ---- cleanup, in reverse
@@ -355,5 +373,5 @@ export const probeCrmWriteScopes = createServerFn({ method: "POST" })
       .insert({ kind: "crm_scope_probe", reason: `probe ${stamp}: ${steps.filter((s) => s.ok).length}/${steps.length} ok` })
       .then(() => undefined, () => undefined);
 
-    return { steps, relationSample };
+    return { steps, relationSample: realRelationSample };
   });
