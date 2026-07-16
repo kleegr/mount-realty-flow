@@ -34,24 +34,6 @@ async function requireAdmin(userId: string) {
   if (!roles.includes("admin")) throw new Error("Forbidden: admin only.");
 }
 
-/**
- * Read whatever GHL returns for a record's relations, without assuming a shape.
- * Tries the documented path and reports verbatim on failure.
- */
-async function readRelations(
-  client: { config: { location_id: string | null }; request: <T>(m: "GET", p: string, o?: unknown) => Promise<{ data: T }> },
-  recordId: string,
-): Promise<{ ok: boolean; raw: unknown; error?: string }> {
-  try {
-    const res = await client.request<unknown>("GET", `/associations/relations/${recordId}`, {
-      query: { locationId: String(client.config.location_id), skip: 0, limit: 100 },
-    });
-    return { ok: true, raw: res.data };
-  } catch (err) {
-    return { ok: false, raw: null, error: err instanceof Error ? err.message.slice(0, 400) : String(err) };
-  }
-}
-
 export const inspectHierarchy = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ confirm: z.literal("LOOK") }).parse(d))
@@ -60,6 +42,7 @@ export const inspectHierarchy = createServerFn({ method: "POST" })
 
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { createCrmClient } = await import("./kleegr/client.server");
+    const { objectKeyCandidates } = await import("./kleegr/object-config.server");
     const client = await createCrmClient();
     const locationId = client.config.location_id;
 
@@ -76,8 +59,20 @@ export const inspectHierarchy = createServerFn({ method: "POST" })
     }
 
     // ---- 2. One real record per scope, and whatever relations it carries.
-    const samples: Record<string, { crmId: string | null; displayName: string | null; relations: unknown; error?: string }> = {};
+    //         No assumption about the response shape — it is returned verbatim.
+    const samples: Record<
+      string,
+      { crmId: string | null; displayName: string | null; objectKeys: string[]; relations: unknown; error?: string }
+    > = {};
+
     for (const scope of ["project", "building", "unit"] as const) {
+      let keys: string[] = [];
+      try {
+        keys = objectKeyCandidates(client, scope);
+      } catch {
+        keys = [];
+      }
+
       const { data: row } = await supabaseAdmin
         .from("external_id_map")
         .select("crm_record_id, display_name")
@@ -86,25 +81,33 @@ export const inspectHierarchy = createServerFn({ method: "POST" })
         .maybeSingle();
 
       if (!row?.crm_record_id) {
-        samples[scope] = { crmId: null, displayName: null, relations: null, error: "no record mapped" };
+        samples[scope] = { crmId: null, displayName: null, objectKeys: keys, relations: null, error: "no record mapped" };
         continue;
       }
-      const rel = await readRelations(client as never, row.crm_record_id);
-      samples[scope] = {
-        crmId: row.crm_record_id,
-        displayName: row.display_name,
-        relations: rel.raw,
-        ...(rel.error ? { error: rel.error } : {}),
-      };
+
+      try {
+        const res = await client.request<unknown>("GET", `/associations/relations/${row.crm_record_id}`, {
+          query: { locationId: String(locationId), skip: 0, limit: 100 },
+        });
+        samples[scope] = {
+          crmId: row.crm_record_id,
+          displayName: row.display_name,
+          objectKeys: keys,
+          relations: res.data,
+        };
+      } catch (err) {
+        samples[scope] = {
+          crmId: row.crm_record_id,
+          displayName: row.display_name,
+          objectKeys: keys,
+          relations: null,
+          error: err instanceof Error ? err.message.slice(0, 400) : String(err),
+        };
+      }
     }
 
     return {
       locationId,
-      objectKeys: {
-        project: client.config.project_object_key ?? null,
-        building: client.config.building_object_key ?? null,
-        unit: client.config.unit_object_key ?? null,
-      },
       associationDefinitions: defs,
       associationDefinitionsError: defsError,
       samples,
