@@ -3,34 +3,37 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 /**
- * WALL MONITOR — concept, pass 4.
+ * WALL MONITOR — campaign direction (pass 5).
  *
- * PALETTE. Mount's system is entirely WARM — read the four pieces together:
- *   Mega ad      sage mountains, sand rock, cream mist, lime band
- *   Spencer St   olive ground, lime floor, gold lettering
- *   Listing      deep olive, lime cards, stone wordmark
- *   Diligent     stone canvas, lime band, black chips
- * There is no blue in Mount's identity. The navy in the Diligent ad belongs to
- * DILIGENT DEVELOPERS' logo, sits on light, and never touches the lime — an
- * earlier pass pulled it in here and that is exactly why nothing harmonised.
+ * Built to the Mount campaign brief rather than to dashboard convention:
  *
- *   LIME    #C6D92E   the signature band
- *   GOLD    #C9A961   Spencer St metallic lettering
- *   SAGE    #7C8B5E   Mega ad mountains
- *   FOREST  #2C3A1E   Spencer St / listing ground
- *   SAND    #E6E2D5   Mega ad rock, Diligent canvas
- *   CREAM   #F7F5EE   Mega ad mist
- *   INK     #12140C   project chips, wordmark
+ *   "Do not place every piece of information inside separate boxes.
+ *    The design should feel editorial and intentional."
  *
- * Statuses run DOWN that one warm family rather than across it:
- *   Available  LIME  (brightest — what we want to sell)
- *   Reserved   GOLD
- *   Contract   SAGE
- *   Sold       FOREST (deepest — done)
+ * So: no card grid. One cinematic ground, one dominant figure, hairline rules
+ * instead of borders, controlled asymmetry, and a single chartreuse brand panel
+ * carrying the contact block — exactly as the printed pieces do.
  *
- * ASSETS — both optional, and swap in the moment the file exists:
+ * THE ONE ADAPTATION: the brief describes a static advertisement, but this is a
+ * live board. Rather than bolt a campaign headline above changing numbers, the
+ * NUMBER IS THE HEADLINE — set at campaign scale. It earns the oversized
+ * treatment because it is the thing that actually moves.
+ *
+ * PALETTE (per brief): signature chartreuse, deep olive, black, warm ivory,
+ * with gold for warm-light accents. No blue — the navy in the Diligent ad is
+ * Diligent's logo colour, not Mount's.
+ *
+ * YIDDISH: real copy from Mount's own Mega ad — "יעדע סארט אפציע אין
+ * בלומינגראוו" (every kind of option in Blooming Grove), which is precisely
+ * what an inventory board says. Set in Heebo 800 at display weight with
+ * dir="rtl" — a headline, not a caption.
+ *
+ * ASSETS — optional; swap in the moment the file exists:
  *   /public/mount-logo.svg  the wordmark (custom lettering; no font has that M)
- *   /public/mount-hero.jpg  a house render, washed back behind the whole wall
+ *   /public/mount-hero.jpg  the architectural hero. Without it the ground falls
+ *                           back to deep olive with a warm key light — handsome,
+ *                           but NOT the cinematic concept. The photograph is the
+ *                           concept.
  *
  * Top-level route on purpose — _authenticated wraps every page in the AppShell
  * ribbon, and a wall monitor with a nav bar is not a wall monitor. The PIN
@@ -49,17 +52,16 @@ export const Route = createFileRoute("/wall")({
 });
 
 const LIME = "#C6D92E";
-const ON_LIME = "#39430F";
+const ON_LIME = "#2E360B";
 const GOLD = "#C9A961";
-const SAGE = "#7C8B5E";
-const SAGE_DEEP = "#5E6B45";
-const FOREST = "#2C3A1E";
-const SAND = "#E6E2D5";
-const CREAM = "#F7F5EE";
-const INK = "#12140C";
+const SAGE = "#8C9A73";
+const OLIVE = "#222B15";
+const INK = "#0E1108";
+const IVORY = "#F4F1E4";
 
 const DISPLAY = "'Anton','Arial Narrow',Impact,sans-serif";
 const BODY = "'Archivo',Inter,system-ui,sans-serif";
+const YID = "'Heebo','Noto Sans Hebrew',sans-serif";
 
 const SAMPLE = {
   available: 181,
@@ -67,9 +69,7 @@ const SAMPLE = {
   underContract: 177,
   sold: 1,
   contractedVolume: 147_180_000,
-  soldVolume: 830_780,
-  week: { sold: 4, reserved: 6, contracted: 11 },
-  lastWeek: { sold: 2, reserved: 9, contracted: 7 },
+  week: { sold: 4, prevSold: 2 },
   projects: [
     { name: "MANGIN ROAD", total: 42, sold: 0, uc: 28, res: 2 },
     { name: "DILIGENT GARDENS", total: 75, sold: 1, uc: 41, res: 3 },
@@ -125,343 +125,275 @@ function WallMonitor() {
   const p = SAMPLE.projects[spot];
   const pAvail = p.total - p.sold - p.uc - p.res;
 
+  const ground = hasHero
+    ? "linear-gradient(90deg, rgba(14,17,8,.95) 0%, rgba(14,17,8,.86) 42%, rgba(14,17,8,.52) 100%), url(/mount-hero.jpg)"
+    : `radial-gradient(120% 90% at 82% 28%, rgba(201,169,97,.20) 0%, rgba(34,43,21,0) 58%), linear-gradient(180deg, ${OLIVE} 0%, ${INK} 100%)`;
+
   return (
     <div
       style={{
         height: "100vh",
-        background: SAND,
-        color: INK,
+        background: ground,
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        color: IVORY,
         fontFamily: BODY,
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        position: "relative",
       }}
     >
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;500;600;700&family=Heebo:wght@400;700;800;900&display=swap');
         @keyframes wTick { from { transform: translateX(0) } to { transform: translateX(-50%) } }
-        @keyframes wIn { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: none } }
-        @keyframes wDot { 0%,100% { opacity: 1 } 50% { opacity: .2 } }
-        .grow { transition: width 1s cubic-bezier(.22,1,.36,1) }
+        @keyframes wIn { from { opacity: 0; transform: translateY(12px) } to { opacity: 1; transform: none } }
+        @keyframes wDot { 0%,100% { opacity: 1 } 50% { opacity: .18 } }
+        .grow { transition: width 1.1s cubic-bezier(.22,1,.36,1) }
       `}</style>
 
-      {hasHero && (
-        <div
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: 0,
-            backgroundImage: "url(/mount-hero.jpg)",
-            backgroundSize: "cover",
-            backgroundPosition: "center",
-            opacity: 0.14,
-            filter: "saturate(.7)",
-            pointerEvents: "none",
-          }}
-        />
-      )}
-
-      <div style={{ position: "relative", display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-        <header
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "0 44px",
-            height: 84,
-            flexShrink: 0,
-            background: CREAM,
-            borderBottom: "1px solid rgba(18,20,12,.10)",
-          }}
-        >
-          {hasLogo ? (
-            <img src="/mount-logo.svg" alt="Mount Realty Group" style={{ height: 38 }} />
-          ) : (
-            <div style={{ display: "flex", alignItems: "baseline", gap: 16 }}>
-              <span style={{ fontFamily: DISPLAY, fontSize: 38, letterSpacing: "-0.02em", color: INK, lineHeight: 1 }}>
-                MOUNT
-              </span>
-              <span style={{ fontSize: 10, letterSpacing: "0.52em", color: SAGE_DEEP, fontWeight: 700 }}>
-                REALTY GROUP
-              </span>
-            </div>
-          )}
-
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 999, background: LIME, animation: "wDot 2s infinite" }} />
-            <span style={{ fontSize: 11, letterSpacing: "0.38em", fontWeight: 700, color: FOREST }}>
-              LIVE INVENTORY
+      {/* ---------------- masthead ---------------- */}
+      <header
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 60px",
+          height: 82,
+          flexShrink: 0,
+        }}
+      >
+        {hasLogo ? (
+          <img src="/mount-logo.svg" alt="Mount Realty Group" style={{ height: 34 }} />
+        ) : (
+          <div style={{ display: "flex", alignItems: "baseline", gap: 15 }}>
+            <span style={{ fontFamily: DISPLAY, fontSize: 34, letterSpacing: "-0.02em", color: IVORY, lineHeight: 1 }}>
+              MOUNT
             </span>
-            <span style={{ width: 1, height: 18, background: "rgba(18,20,12,.14)", margin: "0 4px" }} />
-            <span style={{ fontSize: 12, letterSpacing: "0.16em", color: SAGE_DEEP, fontWeight: 600 }}>
-              {now.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }).toUpperCase()}
-              {"  ·  "}
-              {now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
-            </span>
+            <span style={{ fontSize: 9, letterSpacing: "0.56em", color: GOLD, fontWeight: 700 }}>REALTY GROUP</span>
           </div>
-        </header>
+        )}
 
-        <main
-          style={{
-            flex: 1,
-            minHeight: 0,
-            display: "grid",
-            gridTemplateColumns: "1.42fr 1fr",
-            gap: 16,
-            padding: "16px 44px 18px",
-          }}
-        >
-          <section style={{ display: "grid", gridTemplateRows: "1.55fr 1fr", gap: 16, minHeight: 0 }}>
-            <div
+        <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
+          <span style={{ width: 7, height: 7, borderRadius: 999, background: LIME, animation: "wDot 2s infinite" }} />
+          <span style={{ fontSize: 10, letterSpacing: "0.42em", fontWeight: 700, color: LIME }}>LIVE INVENTORY</span>
+          <span style={{ width: 1, height: 16, background: "rgba(244,241,228,.22)", margin: "0 5px" }} />
+          <span style={{ fontSize: 11, letterSpacing: "0.2em", color: SAGE, fontWeight: 600 }}>
+            {now.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }).toUpperCase()}
+            {"   "}
+            {now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+          </span>
+        </div>
+      </header>
+
+      {/* ---------------- editorial body ---------------- */}
+      <main
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "grid",
+          gridTemplateColumns: "1.5fr 1fr",
+          gap: 56,
+          padding: "0 60px",
+          alignItems: "center",
+        }}
+      >
+        <section style={{ minWidth: 0, animation: "wIn .6s both" }}>
+          <div style={{ fontSize: 11, letterSpacing: "0.52em", fontWeight: 700, color: LIME, marginBottom: 4 }}>
+            AVAILABLE NOW · BLOOMING GROVE
+          </div>
+
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 30 }}>
+            <span
               style={{
-                background: LIME,
-                borderRadius: 18,
-                padding: "24px 32px",
-                display: "flex",
-                flexDirection: "column",
-                gap: 12,
-                minHeight: 0,
-                animation: "wIn .5s both",
+                fontFamily: DISPLAY,
+                fontSize: "clamp(120px, 27vh, 300px)",
+                lineHeight: 0.74,
+                letterSpacing: "-0.045em",
+                color: IVORY,
+                textShadow: hasHero ? "0 8px 60px rgba(0,0,0,.55)" : "none",
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 12, letterSpacing: "0.42em", fontWeight: 700, color: ON_LIME }}>
-                  AVAILABLE NOW
-                </span>
-                <span style={{ fontSize: 12, letterSpacing: "0.2em", fontWeight: 700, color: ON_LIME, opacity: 0.7 }}>
-                  {Math.round((SAMPLE.available / TOTAL) * 100)}% OF PORTFOLIO
-                </span>
+              {SAMPLE.available}
+            </span>
+            <div style={{ paddingTop: 12 }}>
+              <div style={{ fontFamily: DISPLAY, fontSize: 34, color: LIME, lineHeight: 1 }}>{TOTAL}</div>
+              <div style={{ fontSize: 9, letterSpacing: "0.34em", fontWeight: 700, color: SAGE, marginTop: 5 }}>
+                TOTAL UNITS
               </div>
+              <div style={{ width: 34, height: 1, background: "rgba(244,241,228,.28)", margin: "14px 0" }} />
+              <div style={{ fontFamily: DISPLAY, fontSize: 34, color: IVORY, lineHeight: 1 }}>
+                {Math.round((SAMPLE.available / TOTAL) * 100)}%
+              </div>
+              <div style={{ fontSize: 9, letterSpacing: "0.34em", fontWeight: 700, color: SAGE, marginTop: 5 }}>
+                OF PORTFOLIO
+              </div>
+            </div>
+          </div>
 
-              <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 24, minHeight: 0 }}>
+          <div
+            dir="rtl"
+            style={{
+              fontFamily: YID,
+              fontWeight: 800,
+              fontSize: "clamp(26px, 4.2vh, 46px)",
+              color: IVORY,
+              lineHeight: 1.25,
+              marginTop: 18,
+              textAlign: "right",
+              maxWidth: "88%",
+            }}
+          >
+            יעדע סארט אפציע אין בלומינגראוו
+          </div>
+
+          <div style={{ display: "flex", height: 6, marginTop: 22, borderRadius: 999, overflow: "hidden", background: "rgba(244,241,228,.14)" }}>
+            <div className="grow" style={{ width: `${(SAMPLE.available / TOTAL) * 100}%`, background: LIME }} />
+            <div className="grow" style={{ width: `${(SAMPLE.reserved / TOTAL) * 100}%`, background: GOLD }} />
+            <div className="grow" style={{ width: `${(SAMPLE.underContract / TOTAL) * 100}%`, background: SAGE }} />
+            <div className="grow" style={{ width: `${(SAMPLE.sold / TOTAL) * 100}%`, background: IVORY }} />
+          </div>
+        </section>
+
+        <section style={{ minWidth: 0, borderLeft: "1px solid rgba(244,241,228,.16)", paddingLeft: 44 }}>
+          <Line label="RESERVED" value={SAMPLE.reserved} tone={GOLD} />
+          <Line label="UNDER CONTRACT" value={SAMPLE.underContract} tone={SAGE} />
+          <Line label="SOLD" value={SAMPLE.sold} tone={IVORY} note={`${SAMPLE.week.sold} this week · ${SAMPLE.week.prevSold} last`} />
+
+          <div style={{ height: 1, background: "rgba(244,241,228,.16)", margin: "22px 0" }} />
+
+          <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: SAGE }}>CONTRACTED VOLUME</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: "clamp(44px, 7vh, 74px)", color: LIME, lineHeight: 0.95, letterSpacing: "-0.02em", marginTop: 6 }}>
+            {money(SAMPLE.contractedVolume)}
+          </div>
+
+          <div style={{ height: 1, background: "rgba(244,241,228,.16)", margin: "22px 0" }} />
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: SAGE }}>SPOTLIGHT</span>
+            <div style={{ display: "flex", gap: 4 }}>
+              {SAMPLE.projects.map((_, i) => (
                 <span
+                  key={i}
                   style={{
-                    fontFamily: DISPLAY,
-                    fontSize: "clamp(88px, 14.5vh, 184px)",
-                    lineHeight: 0.76,
-                    letterSpacing: "-0.03em",
-                    color: INK,
+                    width: i === spot ? 16 : 6,
+                    height: 2,
+                    borderRadius: 999,
+                    background: i === spot ? LIME : "rgba(244,241,228,.24)",
+                    transition: "width .4s",
                   }}
-                >
-                  {SAMPLE.available}
-                </span>
-                <div style={{ borderLeft: `2px solid ${ON_LIME}`, paddingLeft: 20 }}>
-                  <div style={{ fontFamily: DISPLAY, fontSize: 28, color: ON_LIME, lineHeight: 1 }}>{TOTAL}</div>
-                  <div style={{ fontSize: 10, letterSpacing: "0.28em", fontWeight: 700, color: ON_LIME, marginTop: 4 }}>
-                    TOTAL UNITS
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: "flex", height: 10, borderRadius: 999, overflow: "hidden", background: "rgba(57,67,15,.18)" }}>
-                <div className="grow" style={{ width: `${(SAMPLE.available / TOTAL) * 100}%`, background: "rgba(57,67,15,.14)" }} />
-                <div className="grow" style={{ width: `${(SAMPLE.underContract / TOTAL) * 100}%`, background: SAGE_DEEP }} />
-                <div className="grow" style={{ width: `${(SAMPLE.reserved / TOTAL) * 100}%`, background: GOLD }} />
-                <div className="grow" style={{ width: `${(SAMPLE.sold / TOTAL) * 100}%`, background: FOREST }} />
-              </div>
+                />
+              ))}
             </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16, minHeight: 0 }}>
-              <Stat label="RESERVED" value={SAMPLE.reserved} bg={GOLD} fg={INK} sub="rgba(18,20,12,.60)" />
-              <Stat label="UNDER CONTRACT" value={SAMPLE.underContract} bg={SAGE} fg={CREAM} sub="rgba(247,245,238,.72)" />
-              <Stat label="SOLD" value={SAMPLE.sold} bg={FOREST} fg={LIME} sub="rgba(198,217,46,.62)" />
-            </div>
-          </section>
-
-          <section style={{ display: "grid", gridTemplateRows: "auto auto 1fr", gap: 16, minHeight: 0 }}>
-            <div style={{ background: INK, borderRadius: 18, padding: "18px 24px" }}>
-              <span style={{ fontSize: 10, letterSpacing: "0.4em", fontWeight: 700, color: SAGE }}>
-                CONTRACTED VOLUME
-              </span>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 8 }}>
-                <span style={{ fontFamily: DISPLAY, fontSize: 58, letterSpacing: "-0.02em", color: LIME, lineHeight: 0.9 }}>
-                  {money(SAMPLE.contractedVolume)}
-                </span>
-                <span style={{ fontSize: 12, color: GOLD, fontWeight: 700, letterSpacing: "0.1em" }}>
-                  {money(SAMPLE.soldVolume)} CLOSED
-                </span>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
-              <Week label="SOLD" now={SAMPLE.week.sold} prev={SAMPLE.lastWeek.sold} accent={FOREST} />
-              <Week label="RESERVED" now={SAMPLE.week.reserved} prev={SAMPLE.lastWeek.reserved} accent={GOLD} />
-              <Week label="CONTRACTED" now={SAMPLE.week.contracted} prev={SAMPLE.lastWeek.contracted} accent={SAGE} />
-            </div>
-
-            <div
-              style={{
-                background: CREAM,
-                border: "1px solid rgba(18,20,12,.10)",
-                borderRadius: 18,
-                padding: "18px 24px",
-                display: "flex",
-                flexDirection: "column",
-                gap: 14,
-                minHeight: 0,
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 10, letterSpacing: "0.4em", fontWeight: 700, color: SAGE_DEEP }}>
-                  PROJECT SPOTLIGHT
-                </span>
-                <div style={{ display: "flex", gap: 5 }}>
-                  {SAMPLE.projects.map((_, i) => (
-                    <span
-                      key={i}
-                      style={{
-                        width: i === spot ? 20 : 8,
-                        height: 3,
-                        borderRadius: 999,
-                        background: i === spot ? FOREST : "rgba(18,20,12,.18)",
-                        transition: "width .4s",
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div
-                key={spot}
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "center",
-                  gap: 14,
-                  animation: "wIn .6s both",
-                  minHeight: 0,
-                }}
-              >
-                <div
-                  style={{
-                    display: "inline-flex",
-                    flexDirection: "column",
-                    background: INK,
-                    padding: "9px 18px",
-                    borderRadius: 5,
-                    alignSelf: "flex-start",
-                  }}
-                >
-                  <span style={{ fontSize: 9, letterSpacing: "0.34em", color: SAGE, fontWeight: 700 }}>PROJECT</span>
-                  <span style={{ fontFamily: DISPLAY, fontSize: 25, color: CREAM, lineHeight: 1.15 }}>{p.name}</span>
-                </div>
-
-                <div style={{ display: "flex", height: 14, borderRadius: 999, overflow: "hidden", background: "rgba(18,20,12,.08)" }}>
-                  <div className="grow" style={{ width: `${(pAvail / p.total) * 100}%`, background: LIME }} />
-                  <div className="grow" style={{ width: `${(p.res / p.total) * 100}%`, background: GOLD }} />
-                  <div className="grow" style={{ width: `${(p.uc / p.total) * 100}%`, background: SAGE }} />
-                  <div className="grow" style={{ width: `${(p.sold / p.total) * 100}%`, background: FOREST }} />
-                </div>
-
-                <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-                  <Legend swatch={LIME} label="AVAILABLE" n={pAvail} />
-                  <Legend swatch={GOLD} label="RESERVED" n={p.res} />
-                  <Legend swatch={SAGE} label="CONTRACT" n={p.uc} />
-                </div>
-              </div>
-            </div>
-          </section>
-        </main>
-
-        <footer style={{ background: LIME, overflow: "hidden", padding: "12px 0", flexShrink: 0 }}>
-          <div style={{ display: "flex", width: "max-content", animation: "wTick 46s linear infinite" }}>
-            {[0, 1].map((dup) => (
-              <div key={dup} style={{ display: "flex" }}>
-                {SAMPLE.ticker.map((t, i) => (
-                  <span
-                    key={`${dup}-${i}`}
-                    style={{
-                      fontSize: 15,
-                      fontWeight: 700,
-                      letterSpacing: "0.18em",
-                      color: ON_LIME,
-                      padding: "0 42px",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {t}
-                  </span>
-                ))}
-              </div>
-            ))}
           </div>
-        </footer>
+
+          <div key={spot} style={{ animation: "wIn .6s both", marginTop: 12 }}>
+            <div style={{ display: "inline-flex", flexDirection: "column", background: INK, padding: "8px 16px", borderRadius: 4 }}>
+              <span style={{ fontSize: 8, letterSpacing: "0.38em", color: SAGE, fontWeight: 700 }}>PROJECT</span>
+              <span style={{ fontFamily: DISPLAY, fontSize: 24, color: IVORY, lineHeight: 1.15 }}>{p.name}</span>
+            </div>
+            <div style={{ display: "flex", height: 6, marginTop: 12, borderRadius: 999, overflow: "hidden", background: "rgba(244,241,228,.14)" }}>
+              <div className="grow" style={{ width: `${(pAvail / p.total) * 100}%`, background: LIME }} />
+              <div className="grow" style={{ width: `${(p.res / p.total) * 100}%`, background: GOLD }} />
+              <div className="grow" style={{ width: `${(p.uc / p.total) * 100}%`, background: SAGE }} />
+              <div className="grow" style={{ width: `${(p.sold / p.total) * 100}%`, background: IVORY }} />
+            </div>
+            <div style={{ display: "flex", gap: 18, marginTop: 10 }}>
+              <Legend swatch={LIME} label="AVAIL" n={pAvail} />
+              <Legend swatch={GOLD} label="RES" n={p.res} />
+              <Legend swatch={SAGE} label="CONTRACT" n={p.uc} />
+            </div>
+          </div>
+        </section>
+      </main>
+
+      {/* ---------------- activity line ---------------- */}
+      <div style={{ overflow: "hidden", padding: "10px 0", flexShrink: 0, borderTop: "1px solid rgba(244,241,228,.12)" }}>
+        <div style={{ display: "flex", width: "max-content", animation: "wTick 48s linear infinite" }}>
+          {[0, 1].map((dup) => (
+            <div key={dup} style={{ display: "flex" }}>
+              {SAMPLE.ticker.map((t, i) => (
+                <span
+                  key={`${dup}-${i}`}
+                  style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.24em", color: SAGE, padding: "0 38px", whiteSpace: "nowrap" }}
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
+
+      {/* ---------------- chartreuse brand panel ---------------- */}
+      <footer
+        style={{
+          background: LIME,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 40,
+          padding: "16px 60px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          <span style={{ fontFamily: DISPLAY, fontSize: 30, color: INK, lineHeight: 1, letterSpacing: "-0.02em" }}>
+            MOUNT
+          </span>
+          <span style={{ fontSize: 8, letterSpacing: "0.5em", color: ON_LIME, fontWeight: 700 }}>REALTY GROUP</span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <span dir="rtl" style={{ fontFamily: YID, fontWeight: 700, fontSize: 15, color: INK }}>
+            אליעזר יחזקאל שווימער
+          </span>
+          <span dir="rtl" style={{ fontFamily: YID, fontWeight: 400, fontSize: 12, color: ON_LIME }}>
+            אברהם חיים לעווי · יואל לעווי · אברהם קויפמאן
+          </span>
+
+          <span style={{ width: 1, height: 26, background: "rgba(46,54,11,.28)" }} />
+
+          <div style={{ textAlign: "right", lineHeight: 1.5 }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: INK, letterSpacing: "0.02em" }}>
+              845-45-MOUNT &nbsp; sales@mountrealty.com
+            </div>
+            <div style={{ fontSize: 10, color: ON_LIME, fontWeight: 600 }}>
+              BLOOMING GROVE: 28 MERRIEWOLD LN S, MONROE NY 10950 &nbsp;·&nbsp; WILLIAMSBURG: 146 SPENCER ST, BROOKLYN NY 11205
+            </div>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
 
-function Stat({
-  label, value, bg, fg, sub,
-}: { label: string; value: number; bg: string; fg: string; sub: string }) {
+function Line({ label, value, tone, note }: { label: string; value: number; tone: string; note?: string }) {
   return (
-    <div
-      style={{
-        background: bg,
-        borderRadius: 18,
-        padding: "16px 22px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        minHeight: 0,
-        justifyContent: "center",
-      }}
-    >
-      <span style={{ fontSize: 10, letterSpacing: "0.32em", fontWeight: 700, color: sub }}>{label}</span>
-      <span
-        style={{
-          fontFamily: DISPLAY,
-          fontSize: "clamp(46px, 7.6vh, 78px)",
-          lineHeight: 0.86,
-          letterSpacing: "-0.02em",
-          color: fg,
-        }}
-      >
+    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, padding: "9px 0" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        <span style={{ width: 8, height: 8, borderRadius: 2, background: tone, flexShrink: 0 }} />
+        <span style={{ fontSize: 10, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, whiteSpace: "nowrap" }}>
+          {label}
+        </span>
+        {note && (
+          <span style={{ fontSize: 9, letterSpacing: "0.1em", color: "rgba(140,154,115,.7)", whiteSpace: "nowrap" }}>
+            {note}
+          </span>
+        )}
+      </div>
+      <span style={{ fontFamily: DISPLAY, fontSize: "clamp(30px, 4.6vh, 48px)", color: tone, lineHeight: 1, letterSpacing: "-0.02em" }}>
         {value}
       </span>
     </div>
   );
 }
 
-function Week({
-  label, now, prev, accent,
-}: { label: string; now: number; prev: number; accent: string }) {
-  const up = now >= prev;
-  const delta = Math.abs(now - prev);
-  return (
-    <div
-      style={{
-        background: CREAM,
-        border: "1px solid rgba(18,20,12,.10)",
-        borderTop: `3px solid ${accent}`,
-        borderRadius: 14,
-        padding: "12px 16px",
-      }}
-    >
-      <div style={{ fontSize: 9, letterSpacing: "0.3em", fontWeight: 700, color: SAGE_DEEP }}>{label} · WK</div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 7, marginTop: 3 }}>
-        <span style={{ fontFamily: DISPLAY, fontSize: 38, color: INK, lineHeight: 1, letterSpacing: "-0.02em" }}>
-          {now}
-        </span>
-        <span style={{ fontSize: 12, fontWeight: 700, color: up ? "#6E8A1E" : GOLD }}>
-          {up ? "▲" : "▼"}{delta}
-        </span>
-      </div>
-      <div style={{ fontSize: 9, color: SAGE_DEEP, marginTop: 2, letterSpacing: "0.14em", fontWeight: 600 }}>
-        LAST WK {prev}
-      </div>
-    </div>
-  );
-}
-
 function Legend({ swatch, label, n }: { swatch: string; label: string; n: number }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-      <span style={{ width: 10, height: 10, borderRadius: 2, background: swatch }} />
-      <span style={{ fontSize: 9, letterSpacing: "0.22em", fontWeight: 700, color: SAGE_DEEP }}>{label}</span>
-      <span style={{ fontFamily: DISPLAY, fontSize: 16, color: INK }}>{n}</span>
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span style={{ width: 8, height: 8, borderRadius: 2, background: swatch }} />
+      <span style={{ fontSize: 8, letterSpacing: "0.26em", fontWeight: 700, color: SAGE }}>{label}</span>
+      <span style={{ fontFamily: DISPLAY, fontSize: 15, color: IVORY }}>{n}</span>
     </div>
   );
 }
