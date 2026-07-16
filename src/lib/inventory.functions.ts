@@ -20,13 +20,37 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
 
     // Self-heal on every view (throttled inside; forced on explicit Sync now).
     // Prunes deleted CRM records, mirrors every unit's actual availability from
-    // the CRM, and releases any unit whose holding opportunity is deleted /
-    // lost / moved to a release stage / no longer holds the Locked association.
+    // the CRM, and releases/re-applies any unit whose holding opportunity is
+    // deleted / lost / moved / no longer holds the Locked/Reserved label.
     try {
       const { selfHealCrmState } = await import("@/lib/kleegr/release.server");
       await selfHealCrmState(refresh);
     } catch (err) {
       console.warn("[dashboard] self-heal failed:", err instanceof Error ? err.message : err);
+    }
+
+    // Explicit Sync now also rebuilds every Building/Project count from the
+    // units themselves. This is the repair path for records whose numbers came
+    // from somewhere other than the rollup engine (an old spreadsheet column, a
+    // hand edit in GHL) — e.g. a building left showing Total 4 / Available 7.
+    // One PUT per building + project, so it stays on the manual path only.
+    let rollups: { buildings: number; projects: number; failed: number; skipped: string | null } | null = null;
+    if (refresh) {
+      try {
+        const { recalcAllRollups } = await import("@/lib/kleegr/rollups.server");
+        const res = await recalcAllRollups();
+        rollups = {
+          buildings: res.buildings,
+          projects: res.projects,
+          failed: res.failed.length,
+          skipped: res.skipped,
+        };
+        if (res.failed.length > 0) {
+          console.warn("[dashboard] rollup recalc failures:", res.failed.slice(0, 5));
+        }
+      } catch (err) {
+        console.warn("[dashboard] rollup recalc failed:", err instanceof Error ? err.message : err);
+      }
     }
 
 
@@ -66,6 +90,7 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" })
         under_contract: byAvail.under_contract,
         sold: byAvail.sold,
       },
+      rollups,
       recentJobs: recentJobs.data ?? [],
       recentAudit: recentAudit.data ?? [],
       recentWebhooks: recentWebhooks.data ?? [],
