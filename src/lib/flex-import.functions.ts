@@ -132,12 +132,20 @@ export const flexUndo = createServerFn({ method: "POST" })
         if (op.kind === "delete") {
           await requestObject(client, "DELETE", scope, `/records/${op.crmId}`);
         } else if (op.kind === "patch" && op.properties) {
-          await requestObject(client, "PUT", scope, `/records/${op.crmId}`, { body: { properties: await normalizeRecordProperties(client, scope, op.properties) } });
+          // forUpdate: true — this is a PUT, and GHL's PUT refuses the
+          // MULTIPLE_OPTIONS array shape it hands back on read. Without the
+          // flag, undoing any record with a Property Type dies with 422.
+          const restored = await normalizeRecordProperties(client, scope, op.properties, { forUpdate: true });
+          if (Object.keys(restored).length > 0) {
+            await requestObject(client, "PUT", scope, `/records/${op.crmId}`, { body: { properties: restored } });
+          }
         }
         reversed++;
       } catch (err) {
         failed++;
-        errors.push(err instanceof Error ? err.message : String(err));
+        const raw = err instanceof Error ? err.message : String(err);
+        const msg = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw)?.[1];
+        errors.push(msg ? `${op.scope}: ${msg}` : raw);
       }
     }
 
