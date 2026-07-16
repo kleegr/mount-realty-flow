@@ -3,26 +3,31 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 /**
- * WALL MONITOR — concept, pass 2.
+ * WALL MONITOR — concept, pass 3.
  *
- * Mount Realty's identity, not Kleegr's. Rules taken from the ads:
- *   - Lime is the LOUD surface, not an accent. Cards are bright; the canvas is
- *     dark only so the lime and cream can shout (see the Listing sheet).
- *   - Headlines are heavy condensed caps, tight leading, negative tracking.
- *   - Metadata is tiny, tracked-out, all caps.
- *   - Black chips carry project names.
+ * PALETTE, taken directly from the Mount / Diligent ads rather than invented:
+ *   LIME    #C6D92E  the signature band (every piece)
+ *   NAVY    #23365E  the Diligent headline + logo
+ *   GOLD    #C9A961  the Spencer St metallic lettering
+ *   FOREST  #2C3A1E  the Spencer St / listing-sheet ground
+ *   SAGE    #7C8B5E  the Mega ad mountains
+ *   STONE   #EDE9DC  the Mega ad rock + the Diligent canvas
+ *   INK     #12140C  the project chips, the wordmark
+ *
+ * The canvas is LIGHT because the brand's two loudest pieces are light: the
+ * Diligent ad is stone with a lime band, the Mega ad is sand and mist. Dark is
+ * used the way the listing sheet uses it — in blocks, so colour can shout
+ * against it. Black chips carry project names, exactly as in the ads.
  *
  * Top-level route on purpose — _authenticated wraps every page in the AppShell
- * ribbon, and a wall monitor with a nav bar on it is not a wall monitor. The
- * PIN still gates it via beforeLoad.
+ * ribbon, and a wall monitor with a nav bar is not a wall monitor. The PIN
+ * still gates it via beforeLoad.
  *
  * LOGO: the MOUNT wordmark is custom lettering — no typeface reproduces that M.
- * Drop the real asset at /public/mount-logo.svg and it renders automatically;
- * until then the type lockup below stands in.
+ * Drop the real asset at /public/mount-logo.svg and it renders automatically.
  *
- * CONCEPT STAGE: numbers are sample data using the real Lazers totals
- * (181 / 8 / 177 / 1) so the layout is judged at true scale. Nothing reads the
- * database yet.
+ * CONCEPT STAGE: sample data using the real Lazers totals (181/8/177/1) so the
+ * layout is judged at true scale. Nothing reads the database yet.
  */
 
 export const Route = createFileRoute("/wall")({
@@ -36,11 +41,13 @@ export const Route = createFileRoute("/wall")({
 
 const LIME = "#C6D92E";
 const ON_LIME = "#39430F";
-const INK = "#161B0E";
-const OLIVE = "#26301A";
-const CREAM = "#F4F2E8";
-const BRONZE = "#C2A264";
-const MUTED = "#93A07E";
+const NAVY = "#23365E";
+const GOLD = "#C9A961";
+const FOREST = "#2C3A1E";
+const SAGE = "#7C8B5E";
+const STONE = "#EDE9DC";
+const CREAM = "#F7F5EE";
+const INK = "#12140C";
 
 const DISPLAY = "'Anton','Arial Narrow',Impact,sans-serif";
 const BODY = "'Archivo',Inter,system-ui,sans-serif";
@@ -95,7 +102,6 @@ function WallMonitor() {
     return () => clearInterval(t);
   }, []);
 
-  // Swap the type lockup for the real wordmark the moment the asset exists.
   useEffect(() => {
     const img = new Image();
     img.onload = () => setHasLogo(true);
@@ -109,8 +115,8 @@ function WallMonitor() {
     <div
       style={{
         height: "100vh",
-        background: INK,
-        color: CREAM,
+        background: STONE,
+        color: INK,
         fontFamily: BODY,
         display: "flex",
         flexDirection: "column",
@@ -121,7 +127,7 @@ function WallMonitor() {
         @import url('https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;500;600;700&display=swap');
         @keyframes wTick { from { transform: translateX(0) } to { transform: translateX(-50%) } }
         @keyframes wIn { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: none } }
-        @keyframes wDot { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+        @keyframes wDot { 0%,100% { opacity: 1 } 50% { opacity: .2 } }
         .grow { transition: width 1s cubic-bezier(.22,1,.36,1) }
       `}</style>
 
@@ -132,39 +138,30 @@ function WallMonitor() {
           alignItems: "center",
           justifyContent: "space-between",
           padding: "0 44px",
-          height: 86,
+          height: 84,
           flexShrink: 0,
-          borderBottom: `1px solid ${OLIVE}`,
+          background: CREAM,
+          borderBottom: `1px solid rgba(18,20,12,.10)`,
         }}
       >
         {hasLogo ? (
-          <img src="/mount-logo.svg" alt="Mount Realty Group" style={{ height: 40 }} />
+          <img src="/mount-logo.svg" alt="Mount Realty Group" style={{ height: 38 }} />
         ) : (
           <div style={{ display: "flex", alignItems: "baseline", gap: 16 }}>
-            <span
-              style={{
-                fontFamily: DISPLAY,
-                fontSize: 40,
-                letterSpacing: "-0.02em",
-                color: CREAM,
-                lineHeight: 1,
-              }}
-            >
+            <span style={{ fontFamily: DISPLAY, fontSize: 38, letterSpacing: "-0.02em", color: INK, lineHeight: 1 }}>
               MOUNT
             </span>
-            <span style={{ fontSize: 11, letterSpacing: "0.5em", color: BRONZE, fontWeight: 600 }}>
+            <span style={{ fontSize: 10, letterSpacing: "0.52em", color: SAGE, fontWeight: 700 }}>
               REALTY GROUP
             </span>
           </div>
         )}
 
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <span style={{ width: 8, height: 8, borderRadius: 999, background: LIME, animation: "wDot 2s infinite" }} />
-          <span style={{ fontSize: 12, letterSpacing: "0.36em", fontWeight: 700, color: LIME }}>
-            LIVE INVENTORY
-          </span>
-          <span style={{ width: 1, height: 20, background: OLIVE, margin: "0 4px" }} />
-          <span style={{ fontSize: 13, letterSpacing: "0.14em", color: MUTED, fontWeight: 500 }}>
+          <span style={{ fontSize: 11, letterSpacing: "0.38em", fontWeight: 700, color: NAVY }}>LIVE INVENTORY</span>
+          <span style={{ width: 1, height: 18, background: "rgba(18,20,12,.14)", margin: "0 4px" }} />
+          <span style={{ fontSize: 12, letterSpacing: "0.16em", color: SAGE, fontWeight: 600 }}>
             {now.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }).toUpperCase()}
             {"  ·  "}
             {now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
@@ -179,39 +176,38 @@ function WallMonitor() {
           minHeight: 0,
           display: "grid",
           gridTemplateColumns: "1.42fr 1fr",
-          gap: 18,
-          padding: "18px 44px 20px",
+          gap: 16,
+          padding: "16px 44px 18px",
         }}
       >
         {/* ---- left ---- */}
-        <section style={{ display: "grid", gridTemplateRows: "1.55fr 1fr", gap: 18, minHeight: 0 }}>
-          {/* hero */}
+        <section style={{ display: "grid", gridTemplateRows: "1.55fr 1fr", gap: 16, minHeight: 0 }}>
           <div
             style={{
               background: LIME,
               borderRadius: 18,
-              padding: "26px 34px",
+              padding: "24px 32px",
               display: "flex",
               flexDirection: "column",
-              gap: 14,
+              gap: 12,
               minHeight: 0,
               animation: "wIn .5s both",
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 13, letterSpacing: "0.4em", fontWeight: 700, color: ON_LIME }}>
+              <span style={{ fontSize: 12, letterSpacing: "0.42em", fontWeight: 700, color: ON_LIME }}>
                 AVAILABLE NOW
               </span>
-              <span style={{ fontSize: 13, letterSpacing: "0.2em", fontWeight: 700, color: ON_LIME, opacity: 0.75 }}>
+              <span style={{ fontSize: 12, letterSpacing: "0.2em", fontWeight: 700, color: ON_LIME, opacity: 0.7 }}>
                 {Math.round((SAMPLE.available / TOTAL) * 100)}% OF PORTFOLIO
               </span>
             </div>
 
-            <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 26, minHeight: 0 }}>
+            <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 24, minHeight: 0 }}>
               <span
                 style={{
                   fontFamily: DISPLAY,
-                  fontSize: "clamp(90px, 15vh, 190px)",
+                  fontSize: "clamp(88px, 14.5vh, 184px)",
                   lineHeight: 0.76,
                   letterSpacing: "-0.03em",
                   color: INK,
@@ -219,66 +215,65 @@ function WallMonitor() {
               >
                 {SAMPLE.available}
               </span>
-              <div style={{ borderLeft: `2px solid ${ON_LIME}`, paddingLeft: 22, opacity: 0.9 }}>
-                <div style={{ fontFamily: DISPLAY, fontSize: 30, color: ON_LIME, lineHeight: 1 }}>{TOTAL}</div>
-                <div style={{ fontSize: 11, letterSpacing: "0.26em", fontWeight: 700, color: ON_LIME, marginTop: 4 }}>
+              <div style={{ borderLeft: `2px solid ${ON_LIME}`, paddingLeft: 20 }}>
+                <div style={{ fontFamily: DISPLAY, fontSize: 28, color: ON_LIME, lineHeight: 1 }}>{TOTAL}</div>
+                <div style={{ fontSize: 10, letterSpacing: "0.28em", fontWeight: 700, color: ON_LIME, marginTop: 4 }}>
                   TOTAL UNITS
                 </div>
               </div>
             </div>
 
-            {/* portfolio composition */}
-            <div style={{ display: "flex", height: 10, borderRadius: 999, overflow: "hidden", background: ON_LIME }}>
-              <div className="grow" style={{ width: `${(SAMPLE.available / TOTAL) * 100}%`, background: INK, opacity: 0.14 }} />
-              <div className="grow" style={{ width: `${(SAMPLE.underContract / TOTAL) * 100}%`, background: INK }} />
-              <div className="grow" style={{ width: `${(SAMPLE.reserved / TOTAL) * 100}%`, background: BRONZE }} />
+            <div style={{ display: "flex", height: 10, borderRadius: 999, overflow: "hidden", background: "rgba(57,67,15,.22)" }}>
+              <div className="grow" style={{ width: `${(SAMPLE.available / TOTAL) * 100}%`, background: "rgba(57,67,15,.16)" }} />
+              <div className="grow" style={{ width: `${(SAMPLE.underContract / TOTAL) * 100}%`, background: NAVY }} />
+              <div className="grow" style={{ width: `${(SAMPLE.reserved / TOTAL) * 100}%`, background: GOLD }} />
               <div className="grow" style={{ width: `${(SAMPLE.sold / TOTAL) * 100}%`, background: CREAM }} />
             </div>
           </div>
 
-          {/* three states — bright cards, dark numerals */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 18, minHeight: 0 }}>
-            <Stat label="RESERVED" value={SAMPLE.reserved} bg={CREAM} fg={INK} dot={BRONZE} />
-            <Stat label="UNDER CONTRACT" value={SAMPLE.underContract} bg={CREAM} fg={INK} dot={LIME} />
-            <Stat label="SOLD" value={SAMPLE.sold} bg={BRONZE} fg={INK} dot={INK} />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16, minHeight: 0 }}>
+            <Stat label="RESERVED" value={SAMPLE.reserved} bg={GOLD} fg={INK} sub="rgba(18,20,12,.62)" />
+            <Stat label="UNDER CONTRACT" value={SAMPLE.underContract} bg={NAVY} fg={CREAM} sub="rgba(247,245,238,.66)" />
+            <Stat label="SOLD" value={SAMPLE.sold} bg={FOREST} fg={LIME} sub="rgba(198,217,46,.66)" />
           </div>
         </section>
 
         {/* ---- right ---- */}
-        <section style={{ display: "grid", gridTemplateRows: "auto auto 1fr", gap: 18, minHeight: 0 }}>
-          <div style={{ background: OLIVE, borderRadius: 18, padding: "20px 26px" }}>
-            <span style={{ fontSize: 11, letterSpacing: "0.38em", fontWeight: 700, color: MUTED }}>
+        <section style={{ display: "grid", gridTemplateRows: "auto auto 1fr", gap: 16, minHeight: 0 }}>
+          <div style={{ background: INK, borderRadius: 18, padding: "18px 24px" }}>
+            <span style={{ fontSize: 10, letterSpacing: "0.4em", fontWeight: 700, color: SAGE }}>
               CONTRACTED VOLUME
             </span>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginTop: 10 }}>
-              <span style={{ fontFamily: DISPLAY, fontSize: 60, letterSpacing: "-0.02em", color: LIME, lineHeight: 0.9 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 8 }}>
+              <span style={{ fontFamily: DISPLAY, fontSize: 58, letterSpacing: "-0.02em", color: LIME, lineHeight: 0.9 }}>
                 {money(SAMPLE.contractedVolume)}
               </span>
-              <span style={{ fontSize: 13, color: CREAM, fontWeight: 600, letterSpacing: "0.08em" }}>
+              <span style={{ fontSize: 12, color: GOLD, fontWeight: 700, letterSpacing: "0.1em" }}>
                 {money(SAMPLE.soldVolume)} CLOSED
               </span>
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 18 }}>
-            <Week label="SOLD" now={SAMPLE.week.sold} prev={SAMPLE.lastWeek.sold} />
-            <Week label="RESERVED" now={SAMPLE.week.reserved} prev={SAMPLE.lastWeek.reserved} />
-            <Week label="CONTRACTED" now={SAMPLE.week.contracted} prev={SAMPLE.lastWeek.contracted} />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
+            <Week label="SOLD" now={SAMPLE.week.sold} prev={SAMPLE.lastWeek.sold} accent={FOREST} />
+            <Week label="RESERVED" now={SAMPLE.week.reserved} prev={SAMPLE.lastWeek.reserved} accent={GOLD} />
+            <Week label="CONTRACTED" now={SAMPLE.week.contracted} prev={SAMPLE.lastWeek.contracted} accent={NAVY} />
           </div>
 
           <div
             style={{
-              background: OLIVE,
+              background: CREAM,
+              border: `1px solid rgba(18,20,12,.10)`,
               borderRadius: 18,
-              padding: "20px 26px",
+              padding: "18px 24px",
               display: "flex",
               flexDirection: "column",
-              gap: 16,
+              gap: 14,
               minHeight: 0,
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 11, letterSpacing: "0.38em", fontWeight: 700, color: MUTED }}>
+              <span style={{ fontSize: 10, letterSpacing: "0.4em", fontWeight: 700, color: SAGE }}>
                 PROJECT SPOTLIGHT
               </span>
               <div style={{ display: "flex", gap: 5 }}>
@@ -289,7 +284,7 @@ function WallMonitor() {
                       width: i === spot ? 20 : 8,
                       height: 3,
                       borderRadius: 999,
-                      background: i === spot ? LIME : "#445133",
+                      background: i === spot ? NAVY : "rgba(18,20,12,.18)",
                       transition: "width .4s",
                     }}
                   />
@@ -297,24 +292,43 @@ function WallMonitor() {
               </div>
             </div>
 
-            <div key={spot} style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", gap: 16, animation: "wIn .6s both", minHeight: 0 }}>
-              <div style={{ display: "inline-flex", flexDirection: "column", background: INK, padding: "10px 18px", borderRadius: 5, alignSelf: "flex-start" }}>
-                <span style={{ fontSize: 9, letterSpacing: "0.34em", color: MUTED, fontWeight: 700 }}>PROJECT</span>
-                <span style={{ fontFamily: DISPLAY, fontSize: 26, letterSpacing: "0.01em", color: CREAM, lineHeight: 1.15 }}>
-                  {p.name}
-                </span>
+            <div
+              key={spot}
+              style={{
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "center",
+                gap: 14,
+                animation: "wIn .6s both",
+                minHeight: 0,
+              }}
+            >
+              <div
+                style={{
+                  display: "inline-flex",
+                  flexDirection: "column",
+                  background: INK,
+                  padding: "9px 18px",
+                  borderRadius: 5,
+                  alignSelf: "flex-start",
+                }}
+              >
+                <span style={{ fontSize: 9, letterSpacing: "0.34em", color: SAGE, fontWeight: 700 }}>PROJECT</span>
+                <span style={{ fontFamily: DISPLAY, fontSize: 25, color: CREAM, lineHeight: 1.15 }}>{p.name}</span>
               </div>
 
-              <div style={{ display: "flex", height: 14, borderRadius: 999, overflow: "hidden", background: "#3A472B" }}>
-                <div className="grow" style={{ width: `${(p.sold / p.total) * 100}%`, background: CREAM }} />
-                <div className="grow" style={{ width: `${(p.uc / p.total) * 100}%`, background: LIME }} />
-                <div className="grow" style={{ width: `${(p.res / p.total) * 100}%`, background: BRONZE }} />
+              <div style={{ display: "flex", height: 14, borderRadius: 999, overflow: "hidden", background: "rgba(18,20,12,.10)" }}>
+                <div className="grow" style={{ width: `${(p.sold / p.total) * 100}%`, background: FOREST }} />
+                <div className="grow" style={{ width: `${(p.uc / p.total) * 100}%`, background: NAVY }} />
+                <div className="grow" style={{ width: `${(p.res / p.total) * 100}%`, background: GOLD }} />
+                <div className="grow" style={{ width: `${(pAvail / p.total) * 100}%`, background: LIME }} />
               </div>
 
-              <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
-                <Legend swatch={LIME} label="CONTRACT" n={p.uc} />
-                <Legend swatch={BRONZE} label="RESERVED" n={p.res} />
-                <Legend swatch="#3A472B" label="AVAILABLE" n={pAvail} />
+              <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                <Legend swatch={LIME} label="AVAILABLE" n={pAvail} />
+                <Legend swatch={NAVY} label="CONTRACT" n={p.uc} />
+                <Legend swatch={GOLD} label="RESERVED" n={p.res} />
               </div>
             </div>
           </div>
@@ -322,7 +336,7 @@ function WallMonitor() {
       </main>
 
       {/* ---------------- ticker ---------------- */}
-      <footer style={{ background: LIME, overflow: "hidden", padding: "13px 0", flexShrink: 0 }}>
+      <footer style={{ background: LIME, overflow: "hidden", padding: "12px 0", flexShrink: 0 }}>
         <div style={{ display: "flex", width: "max-content", animation: "wTick 46s linear infinite" }}>
           {[0, 1].map((dup) => (
             <div key={dup} style={{ display: "flex" }}>
@@ -330,11 +344,11 @@ function WallMonitor() {
                 <span
                   key={`${dup}-${i}`}
                   style={{
-                    fontSize: 16,
+                    fontSize: 15,
                     fontWeight: 700,
                     letterSpacing: "0.18em",
                     color: ON_LIME,
-                    padding: "0 44px",
+                    padding: "0 42px",
                     whiteSpace: "nowrap",
                   }}
                 >
@@ -349,48 +363,63 @@ function WallMonitor() {
   );
 }
 
-function Stat({ label, value, bg, fg, dot }: { label: string; value: number; bg: string; fg: string; dot: string }) {
+function Stat({
+  label, value, bg, fg, sub,
+}: { label: string; value: number; bg: string; fg: string; sub: string }) {
   return (
     <div
       style={{
         background: bg,
         borderRadius: 18,
-        padding: "18px 22px",
+        padding: "16px 22px",
         display: "flex",
         flexDirection: "column",
-        gap: 6,
+        gap: 4,
         minHeight: 0,
         justifyContent: "center",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ width: 8, height: 8, borderRadius: 2, background: dot }} />
-        <span style={{ fontSize: 11, letterSpacing: "0.3em", fontWeight: 700, color: fg, opacity: 0.65 }}>
-          {label}
-        </span>
-      </div>
-      <span style={{ fontFamily: DISPLAY, fontSize: "clamp(48px, 8vh, 82px)", lineHeight: 0.86, letterSpacing: "-0.02em", color: fg }}>
+      <span style={{ fontSize: 10, letterSpacing: "0.32em", fontWeight: 700, color: sub }}>{label}</span>
+      <span
+        style={{
+          fontFamily: DISPLAY,
+          fontSize: "clamp(46px, 7.6vh, 78px)",
+          lineHeight: 0.86,
+          letterSpacing: "-0.02em",
+          color: fg,
+        }}
+      >
         {value}
       </span>
     </div>
   );
 }
 
-function Week({ label, now, prev }: { label: string; now: number; prev: number }) {
+function Week({
+  label, now, prev, accent,
+}: { label: string; now: number; prev: number; accent: string }) {
   const up = now >= prev;
   const delta = Math.abs(now - prev);
   return (
-    <div style={{ background: OLIVE, borderRadius: 18, padding: "14px 18px" }}>
-      <div style={{ fontSize: 9, letterSpacing: "0.3em", fontWeight: 700, color: MUTED }}>{label} · WK</div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
-        <span style={{ fontFamily: DISPLAY, fontSize: 40, color: CREAM, lineHeight: 1, letterSpacing: "-0.02em" }}>
+    <div
+      style={{
+        background: CREAM,
+        border: `1px solid rgba(18,20,12,.10)`,
+        borderTop: `3px solid ${accent}`,
+        borderRadius: 14,
+        padding: "12px 16px",
+      }}
+    >
+      <div style={{ fontSize: 9, letterSpacing: "0.3em", fontWeight: 700, color: SAGE }}>{label} · WK</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 7, marginTop: 3 }}>
+        <span style={{ fontFamily: DISPLAY, fontSize: 38, color: INK, lineHeight: 1, letterSpacing: "-0.02em" }}>
           {now}
         </span>
-        <span style={{ fontSize: 13, fontWeight: 700, color: up ? LIME : BRONZE }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: up ? "#4C7A1E" : GOLD }}>
           {up ? "▲" : "▼"}{delta}
         </span>
       </div>
-      <div style={{ fontSize: 10, color: "#6E7A5E", marginTop: 3, letterSpacing: "0.12em", fontWeight: 600 }}>
+      <div style={{ fontSize: 9, color: SAGE, marginTop: 2, letterSpacing: "0.14em", fontWeight: 600 }}>
         LAST WK {prev}
       </div>
     </div>
@@ -399,10 +428,10 @@ function Week({ label, now, prev }: { label: string; now: number; prev: number }
 
 function Legend({ swatch, label, n }: { swatch: string; label: string; n: number }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
       <span style={{ width: 10, height: 10, borderRadius: 2, background: swatch }} />
-      <span style={{ fontSize: 10, letterSpacing: "0.2em", fontWeight: 700, color: MUTED }}>{label}</span>
-      <span style={{ fontFamily: DISPLAY, fontSize: 17, color: CREAM }}>{n}</span>
+      <span style={{ fontSize: 9, letterSpacing: "0.22em", fontWeight: 700, color: SAGE }}>{label}</span>
+      <span style={{ fontFamily: DISPLAY, fontSize: 16, color: INK }}>{n}</span>
     </div>
   );
 }
