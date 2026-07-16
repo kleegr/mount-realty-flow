@@ -11,6 +11,7 @@ import {
   Search,
   BarChart3,
   ShieldCheck,
+  Monitor,
   Menu as MenuIcon,
   ChevronDown,
 } from "lucide-react";
@@ -144,6 +145,22 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
                   </DropdownMenuItem>
                 );
               })}
+
+              <DropdownMenuSeparator />
+              {/* Opens in its own tab on purpose: the wall is a full-screen TV
+                  view, and inside the GHL iframe it would be a postage stamp. */}
+              <DropdownMenuItem asChild>
+                <a
+                  href="/wall"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex w-full cursor-pointer items-center gap-2"
+                >
+                  <Monitor className="h-4 w-4" />
+                  Wall Monitor
+                </a>
+              </DropdownMenuItem>
+
               <DropdownMenuSeparator />
               {userEmail && (
                 <DropdownMenuLabel className="truncate text-xs font-normal text-muted-foreground">
