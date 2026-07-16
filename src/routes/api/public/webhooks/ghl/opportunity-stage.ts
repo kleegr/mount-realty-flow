@@ -16,7 +16,11 @@
  *   }
  *
  * The backend automatically calls the GHL API to find the Unit/Building
- * associated with the opportunity — no manual custom field required.
+ * associated with the opportunity — no manual custom field required. Only a
+ * unit carrying the "Locked/Reserved Units" label is ever used: "Suggested
+ * Units" is browsing and must never move inventory. That applies to
+ * `unit_crm_id` too — a workflow naming a suggested unit is ignored, not
+ * obeyed (verifyUnitHint below).
  *
  * DEDUPE — read this before changing it:
  * GHL workflows typically build event_id as "{{opportunity.id}}-{{stage}}", so
@@ -105,7 +109,27 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
           unitCrmIdHint, unitExternalId,
           buildingCrmIdHint, buildingExternalId,
           autoFetchAssociations: true,
+          // A unit named by a workflow is untrusted: it only moves inventory if
+          // the CRM confirms it carries the Locked/Reserved label.
+          verifyUnitHint: true,
         });
+
+        // Suggested-only opportunities are not an inventory event at all — the
+        // salesperson is shortlisting homes for a client. Record it and move
+        // on; do NOT queue it as pending, there is nothing for a human to fix.
+        if (outcome.outcome === "ignored_suggested_only" || outcome.outcome === "ignored_suggested_unit") {
+          if (eventRowId) {
+            await supabaseAdmin
+              .from("webhook_events")
+              .update({
+                processed_at: new Date().toISOString(),
+                outcome: outcome.outcome,
+                unit_crm_id: outcome.unitCrmId ?? null,
+              })
+              .eq("id", eventRowId);
+          }
+          return json({ ok: true, ignored: true, ...outcome });
+        }
 
         // Grace window: no unit yet → keep event pending so it can be replayed
         // when the salesperson associates a unit later.
@@ -119,7 +143,7 @@ export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage
           return json({
             ok: true,
             pending: true,
-            message: "No unit associated yet. Event queued — will apply automatically once a unit is added to this opportunity.",
+            message: "No unit associated yet. Event queued — will apply automatically once a unit is added to this opportunity as Locked/Reserved.",
           });
         }
 
