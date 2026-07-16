@@ -10,23 +10,12 @@ import { z } from "zod";
  * parent_crm_id. The importer resolves the parent correctly, uses it to create
  * the GHL association, then discards it instead of persisting it locally.
  *
- * WHY IT MATTERS: recalcAllRollups() opens each unit with
- *   `const parent = u.parent_crm_id; if (!parent) continue;`
- * With every parent null it skips all 332 units and writes nothing — "Recalculated
- * 0 buildings and 0 projects". The Jul 7 spreadsheet's numbers (MYLU: Total 4 /
- * Available 7 / Reserved -3) have been unrepairable ever since, because the
- * repair path had no hierarchy to count through.
+ * recalcAllRollups() opens each unit with `if (!parent) continue;`, so with every
+ * parent null it skipped all 332 units and wrote nothing.
  *
- * THE FIX IS CHEAP BECAUSE OF HOW GHL STORES IT: the inspect showed the BUILDING
- * is firstRecordId in BOTH associations — buildings<->units and
- * buildings<->projects. So one read per building yields its units AND its
- * project. 71 reads rebuild the whole graph, not 403.
- *
- * MATCHED BY OBJECT KEY, NOT ASSOCIATION ID: association ids are location data
- * and can be recreated. objectKeyCandidates() already knows every alias for a
- * scope (raw object id, singular, plural), so relations are classified by what
- * they point AT. Direction is not assumed either — whichever end is not this
- * building is treated as the other record.
+ * THE FIX IS CHEAP BECAUSE OF HOW GHL STORES IT: the BUILDING is firstRecordId in
+ * BOTH associations — buildings<->units and buildings<->projects. One read per
+ * building yields its units AND its project. 71 reads rebuild the graph, not 403.
  */
 
 async function requireAdmin(userId: string) {
@@ -48,7 +37,6 @@ interface Relation {
   associationId?: string;
 }
 
-/** Page through every relation on a record. */
 async function readAllRelations(
   client: { config: { location_id: string | null }; request: <T>(m: "GET", p: string, o?: unknown) => Promise<{ data: T }> },
   recordId: string,
@@ -69,6 +57,86 @@ async function readAllRelations(
   }
   return out;
 }
+
+/**
+ * WHICH FIELD AM I ACTUALLY WRITING?
+ *
+ * normalizeRecordProperties() resolves a property key against the live object
+ * schema and SILENTLY DROPS anything it cannot match:
+ *
+ *   if (!schemaTypeMap.has(prop)) continue;
+ *
+ * So a field-map key that doesn't correspond to a real GHL field writes nothing,
+ * with no error — indistinguishable from a value that happened to already be
+ * correct. With three "Reserved" columns in the Buildings view, "it shows 0" is
+ * not evidence that we wrote the 0.
+ *
+ * This dumps every field on each object with its key, and marks which one each
+ * FIELDS entry resolves to — matching by the same rule the normalizer uses
+ * (field.name, field.fieldKey, or the tail after the last dot).
+ */
+export const inspectSchema = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ confirm: z.literal("LOOK") }).parse(d))
+  .handler(async ({ context }) => {
+    await requireAdmin(context.userId);
+
+    const { createCrmClient } = await import("./kleegr/client.server");
+    const { requestObject } = await import("./kleegr/object-config.server");
+    const { FIELDS } = await import("./kleegr/field-map");
+    const client = await createCrmClient();
+    const locationId = client.config.location_id;
+
+    const out: Record<string, unknown> = {};
+
+    for (const scope of ["building", "project", "unit"] as const) {
+      try {
+        const res = await requestObject<{ fields?: Array<Record<string, unknown>> }>(client, "GET", scope, "", {
+          query: { locationId: String(locationId), fetchProperties: "true" },
+        });
+        const fields = Array.isArray(res.data?.fields) ? res.data.fields : [];
+
+        // Same key resolution the normalizer performs.
+        const keysFor = (f: Record<string, unknown>): string[] => {
+          const keys: string[] = [];
+          if (typeof f.name === "string" && f.name) keys.push(f.name);
+          if (typeof f.fieldKey === "string" && f.fieldKey) {
+            keys.push(f.fieldKey);
+            const tail = f.fieldKey.split(".").pop();
+            if (tail) keys.push(tail);
+          }
+          return keys;
+        };
+
+        const allFields = fields.map((f) => ({
+          name: f.name ?? null,
+          fieldKey: f.fieldKey ?? null,
+          dataType: f.dataType ?? f.type ?? null,
+          options: Array.isArray(f.options)
+            ? (f.options as Array<Record<string, unknown>>).map((o) => o.key ?? o.label ?? null)
+            : undefined,
+        }));
+
+        // Does each FIELDS entry for this scope resolve to a real field?
+        const mapping = FIELDS[scope] as Record<string, string>;
+        const resolution: Record<string, { writes: boolean; matchedField: string | null; dataType: string | null }> = {};
+        for (const [logical, key] of Object.entries(mapping)) {
+          const hit = fields.find((f) => keysFor(f).includes(key));
+          resolution[`${logical} -> "${key}"`] = {
+            writes: Boolean(hit),
+            matchedField: hit ? String(hit.name ?? hit.fieldKey ?? "?") : null,
+            dataType: hit ? String(hit.dataType ?? hit.type ?? "?") : null,
+          };
+        }
+
+        out[scope] = { fieldCount: fields.length, resolution, allFields };
+      } catch (err) {
+        out[scope] = { error: err instanceof Error ? err.message.slice(0, 400) : String(err) };
+      }
+    }
+
+    return out;
+  });
 
 export const inspectHierarchy = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -129,10 +197,6 @@ export const inspectHierarchy = createServerFn({ method: "POST" })
     return { locationId, associationDefinitions: defs, associationDefinitionsError: defsError, samples };
   });
 
-/**
- * Walk buildings in chunks; for each, read its relations once and record both
- * directions: which units hang off it, and which project it hangs off.
- */
 export const repairHierarchyChunk = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>
@@ -177,8 +241,6 @@ export const repairHierarchyChunk = createServerFn({ method: "POST" })
         let parentProject: string | null = null;
 
         for (const r of rels) {
-          // Whichever end isn't this building is the other record. Direction is
-          // read, not assumed.
           let otherKey: string | undefined;
           let otherId: string | undefined;
           if (r.firstRecordId === buildingId) {
@@ -196,7 +258,6 @@ export const repairHierarchyChunk = createServerFn({ method: "POST" })
           else if (projectKeys.has(norm(otherKey))) parentProject = otherId;
         }
 
-        // unit -> this building
         for (const unitId of childUnits) {
           const { error } = await supabaseAdmin
             .from("external_id_map")
@@ -205,9 +266,6 @@ export const repairHierarchyChunk = createServerFn({ method: "POST" })
             .eq("crm_record_id", unitId);
           if (!error) unitsLinked++;
 
-          // The mirror needs parentage too: recomputeParents() returns early
-          // when both ids are null, so without this every future single-unit
-          // release would silently fail to update its building's counts.
           await supabaseAdmin
             .from("unit_state")
             .update({ building_crm_id: buildingId, project_crm_id: parentProject })
@@ -215,7 +273,6 @@ export const repairHierarchyChunk = createServerFn({ method: "POST" })
             .then(() => undefined, () => undefined);
         }
 
-        // this building -> its project
         if (parentProject) {
           const { error } = await supabaseAdmin
             .from("external_id_map")
@@ -243,7 +300,6 @@ export const repairHierarchyChunk = createServerFn({ method: "POST" })
     };
   });
 
-/** What the graph looks like now — for confirming the repair actually took. */
 export const hierarchyCoverage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ confirm: z.literal("COUNT") }).parse(d))
