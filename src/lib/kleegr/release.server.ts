@@ -2,17 +2,25 @@
  * Unit status engine — the single place a unit's state is written, plus the
  * shared self-heal entry point both pages call.
  *
- * MODEL (confirmed by the owner): the pipeline card's CURRENT STAGE is the
- * absolute truth for the unit's status. Direction of movement and history do
- * not matter. Every stage in both pipelines maps to exactly one of four
- * statuses — available / reserved / under_contract / sold — via the
- * crm_pipelines stage lists:
- *   reserved_stage_names[] → Reserved
- *   under_contract_stage_names[] → Under Contract
- *   sold_stage_names[] → Closed/Sold
- *   release_stage_names[] → Available (includes Lost / Not Interested)
- * Dragging a deal backward — even out of Closing — re-applies the mapped
- * status, including un-selling.
+ * TWO RULES GOVERN EVERYTHING HERE (both owner-confirmed):
+ *
+ * 1. THE LOCKED/RESERVED LABEL IS THE ON SWITCH.
+ *    Only a unit associated to an opportunity via "Locked/Reserved Units"
+ *    is driven by this engine. "Suggested Units" is browsing: a suggested
+ *    unit stays Available no matter what stage the deal sits in, no matter
+ *    how many deals suggest it. Losing the locked label (detached, or
+ *    switched to Suggested) releases the unit.
+ *
+ * 2. THE CARD'S CURRENT STAGE IS ABSOLUTE TRUTH.
+ *    For units that pass rule 1, direction of movement and history do not
+ *    matter. Every stage in both pipelines maps to exactly one status via the
+ *    crm_pipelines lists:
+ *      reserved_stage_names[]       -> Reserved
+ *      under_contract_stage_names[] -> Under Contract
+ *      sold_stage_names[]           -> Closed/Sold
+ *      release_stage_names[]        -> Available (includes Lost / Not Interested)
+ *    Dragging a deal backward — even out of Closing — re-applies the mapped
+ *    status, including un-selling.
  *
  * Sold guard: a Sold unit may only change via an explicit card POSITION
  * (MOVED_TO_RELEASE_STAGE / position sync) or a MANUAL release. Deleting or
@@ -150,9 +158,12 @@ export async function releaseUnit(
 
 /**
  * Write a non-available canonical status to a unit — the "position is truth"
- * apply path used by the reconcile sweep when a deal's card sits in a
- * Reserved / Under Contract / Sold stage. Both directions are legal,
- * including sold → under_contract when a card is dragged back from Closing.
+ * apply path used when a deal's card sits in a Reserved / Under Contract /
+ * Sold stage. Both directions are legal, including sold -> under_contract when
+ * a card is dragged back from Closing.
+ *
+ * Callers MUST have already established that the unit is Locked/Reserved to
+ * this opportunity. This function does not check associations.
  */
 export async function applyUnitStatus(
   client: CrmClient,
@@ -296,7 +307,7 @@ function normStage(value: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline catalog (stage id -> name) + the full stage→status table
+// Pipeline catalog (stage id -> name) + the full stage->status table
 // ---------------------------------------------------------------------------
 
 interface PipelineCatalog {
@@ -398,6 +409,18 @@ async function fetchOpportunitySnapshot(c: CrmClient, oppId: string): Promise<Op
   }
 }
 
+/** Map an opportunity snapshot's current stage to a canonical status. */
+async function statusForSnapshot(c: CrmClient, snap: OppSnapshot): Promise<CanonicalStatus | null> {
+  if (!snap.pipelineId || !snap.stageId) return null;
+  const [catalog, rules] = await Promise.all([fetchPipelineCatalog(c), loadStageRules()]);
+  if (!catalog) return null;
+  const stageName = catalog.stageNameById.get(snap.stageId) ?? null;
+  const pipelineName = catalog.pipelineNameById.get(snap.pipelineId) ?? null;
+  const rule = ruleFor(rules, snap.pipelineId, pipelineName);
+  if (!rule || !stageName) return null;
+  return rule.get(normStage(stageName)) ?? null;
+}
+
 export interface HoldCheck {
   verdict: "held" | "free" | "unknown";
   reason?: ReleaseReason;
@@ -406,10 +429,15 @@ export interface HoldCheck {
 
 /**
  * Is this opportunity's hold on this unit still justified, per the LIVE CRM?
- * Used by the reconcile sweep AND by the stage webhook when a unit carries a
- * stale holder — instead of blocking blindly, the webhook verifies the holder
- * and frees the unit when the hold is no longer real.
- * "unknown" (read failure / nothing to filter on) must be treated as held.
+ * Used by the stage webhook when a unit carries a stale holder — instead of
+ * blocking blindly, the webhook verifies the holder and frees the unit when
+ * the hold is no longer real.
+ *
+ * Order matters: the ASSOCIATION is checked before the stage, because the
+ * Locked/Reserved label is the on switch. A unit whose label was removed (or
+ * switched to Suggested) is free even if the deal sits in Contract Negotiation.
+ *
+ * "unknown" (read failure) must be treated as held.
  */
 export async function checkOpportunityHold(
   c: CrmClient,
@@ -421,38 +449,67 @@ export async function checkOpportunityHold(
   if (!snap.exists || snap.status === "deleted") return { verdict: "free", reason: "OPPORTUNITY_DELETED" };
   if (snap.status === "lost" || snap.status === "abandoned") return { verdict: "free", reason: "OPPORTUNITY_LOST" };
 
-  if (snap.pipelineId && snap.stageId) {
-    const [catalog, rules] = await Promise.all([fetchPipelineCatalog(c), loadStageRules()]);
-    if (catalog) {
-      const stageName = catalog.stageNameById.get(snap.stageId) ?? null;
-      const pipelineName = catalog.pipelineNameById.get(snap.pipelineId) ?? null;
-      const rule = ruleFor(rules, snap.pipelineId, pipelineName);
-      const mapped = rule && stageName ? rule.get(normStage(stageName)) : undefined;
-      if (mapped === "available") return { verdict: "free", reason: "MOVED_TO_RELEASE_STAGE" };
-      if (mapped) return { verdict: "held" }; // card sits in a locking stage — hold is real
-    }
-  }
-
+  // Rule 1 — the label is the on switch.
   try {
-    const { fetchUnitAssociationSets } = await import("./opportunities.server");
-    const sets = await fetchUnitAssociationSets(c, opportunityId);
-    if (!sets.lockedAssociationDefined) return { verdict: "unknown", detail: "no Locked/Reserved association defined" };
-    return new Set(sets.lockedUnitIds).has(unitCrmId)
-      ? { verdict: "held" }
-      : { verdict: "free", reason: "UNIT_ASSOCIATION_REMOVED" };
+    const { classifyUnitForOpportunity } = await import("./opportunities.server");
+    const kind = await classifyUnitForOpportunity(c, opportunityId, unitCrmId);
+    if (kind !== "locked") return { verdict: "free", reason: "UNIT_ASSOCIATION_REMOVED" };
   } catch (err) {
     return { verdict: "unknown", detail: err instanceof Error ? err.message : String(err) };
   }
+
+  // Rule 2 — the card's position.
+  const mapped = await statusForSnapshot(c, snap);
+  if (mapped === "available") return { verdict: "free", reason: "MOVED_TO_RELEASE_STAGE" };
+  return { verdict: "held" };
 }
 
 /**
- * Self-healing reconcile: for every unit tied to an opportunity, enforce the
- * stage→status table against the LIVE CRM — in BOTH directions:
- *   - opportunity deleted                    -> release (sold units stay sold)
- *   - opportunity lost / abandoned           -> release (sold units stay sold)
- *   - card in a release stage                -> Available (yes, even from Sold)
- *   - card in a reserved / UC / sold stage   -> that exact status
- *   - stage not in the table (typo/new)      -> fall back to association check
+ * A unit was just Locked/Reserved to an opportunity — apply that deal's
+ * CURRENT stage to it immediately. This is what makes attaching the label
+ * "work the full everything" even when the deal was already sitting in a
+ * locking stage before the unit was chosen.
+ *
+ * The caller MUST have verified the association is Locked/Reserved.
+ */
+export async function applyOpportunityStageToUnit(
+  client: CrmClient,
+  opportunityId: string,
+  unitCrmId: string,
+): Promise<{ outcome: string }> {
+  const snap = await fetchOpportunitySnapshot(client, opportunityId);
+  if (snap === "error") return { outcome: "opportunity_read_failed" };
+  if (!snap.exists || snap.status === "deleted") {
+    const r = await releaseUnit(client, unitCrmId, "OPPORTUNITY_DELETED", opportunityId);
+    return { outcome: `deleted:${r.outcome}` };
+  }
+  if (snap.status === "lost" || snap.status === "abandoned") {
+    const r = await releaseUnit(client, unitCrmId, "OPPORTUNITY_LOST", opportunityId);
+    return { outcome: `lost:${r.outcome}` };
+  }
+
+  const mapped = await statusForSnapshot(client, snap);
+  if (!mapped) return { outcome: "stage_not_mapped" };
+  if (mapped === "available") {
+    const r = await releaseUnit(client, unitCrmId, "MOVED_TO_RELEASE_STAGE", opportunityId);
+    return { outcome: `release_stage:${r.outcome}` };
+  }
+  const r = await applyUnitStatus(client, unitCrmId, mapped, opportunityId);
+  return { outcome: r.outcome };
+}
+
+/**
+ * Self-healing reconcile. For every unit an opportunity is holding, enforce
+ * both rules against the LIVE CRM:
+ *
+ *   1. opportunity deleted / lost           -> release
+ *   2. unit no longer Locked/Reserved       -> release (UNIT_ASSOCIATION_REMOVED)
+ *      (covers "switched to Suggested" and "detached")
+ *   3. otherwise the card's stage decides   -> Available / Reserved / UC / Sold
+ *
+ * The association gate runs BEFORE the stage map — without that order, a unit
+ * downgraded from Locked to Suggested while its deal sat in a locking stage
+ * would be held forever.
  *
  * Units with no recorded holder get one recovered from webhook history; units
  * with no webhook history (pure CSV imports) are never touched.
@@ -549,49 +606,46 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
       continue;
     }
 
-    // 2) THE TABLE: the card's current stage decides the status, both
-    //    directions, no history.
-    if (snap.pipelineId && snap.stageId && catalog) {
-      const stageName = catalog.stageNameById.get(snap.stageId) ?? null;
-      const pipelineName = catalog.pipelineNameById.get(snap.pipelineId) ?? null;
-      const rule = ruleFor(rules, snap.pipelineId, pipelineName);
-      const mapped = rule && stageName ? rule.get(normStage(stageName)) : undefined;
-      if (mapped === "available") {
-        for (const u of units) {
-          result.released.push(await releaseUnit(c, u.unitCrmId, "MOVED_TO_RELEASE_STAGE", oppId));
-        }
-        continue;
-      }
-      if (mapped) {
-        for (const u of units) {
-          const res = await applyUnitStatus(c, u.unitCrmId, mapped, oppId);
-          if (res.outcome === "already_in_state") result.keptHeld++;
-          else result.adjusted.push({ unitCrmId: u.unitCrmId, to: mapped, outcome: res.outcome });
-        }
-        continue;
-      }
-    }
-
-    // 3) Stage not in the table — fall back to the association check.
-    let lockedIds: Set<string>;
+    // 2) RULE 1 — the Locked/Reserved label is the on switch. Strict read: a
+    //    failed call must never look like "the label is gone".
+    let lockedIds: Set<string> | null = null;
     try {
       const sets = await fetchUnitAssociationSets(c, oppId);
-      if (!sets.lockedAssociationDefined) {
-        result.skipped.push({ opportunityId: oppId, reason: "no Locked/Reserved association defined; cannot verify" });
-        continue;
-      }
-      lockedIds = new Set(sets.lockedUnitIds);
+      // null = this location defines no Locked/Reserved association at all, so
+      // there is nothing to gate on (legacy behaviour).
+      lockedIds = sets.lockedAssociationDefined ? new Set(sets.lockedUnitIds) : null;
     } catch (err) {
       result.skipped.push({ opportunityId: oppId, reason: `associations read failed: ${err instanceof Error ? err.message : String(err)}` });
       continue;
     }
 
+    // 3) RULE 2 — the card's current stage decides, both directions.
+    let mapped: CanonicalStatus | undefined;
+    if (snap.pipelineId && snap.stageId && catalog) {
+      const stageName = catalog.stageNameById.get(snap.stageId) ?? null;
+      const pipelineName = catalog.pipelineNameById.get(snap.pipelineId) ?? null;
+      const rule = ruleFor(rules, snap.pipelineId, pipelineName);
+      mapped = rule && stageName ? rule.get(normStage(stageName)) : undefined;
+    }
+
     for (const u of units) {
-      if (lockedIds.has(u.unitCrmId)) {
-        result.keptHeld++;
-      } else {
+      // Lost the label (detached, or switched to Suggested) -> free it.
+      if (lockedIds && !lockedIds.has(u.unitCrmId)) {
         result.released.push(await releaseUnit(c, u.unitCrmId, "UNIT_ASSOCIATION_REMOVED", oppId));
+        continue;
       }
+      if (mapped === "available") {
+        result.released.push(await releaseUnit(c, u.unitCrmId, "MOVED_TO_RELEASE_STAGE", oppId));
+        continue;
+      }
+      if (mapped) {
+        const res = await applyUnitStatus(c, u.unitCrmId, mapped, oppId);
+        if (res.outcome === "already_in_state") result.keptHeld++;
+        else result.adjusted.push({ unitCrmId: u.unitCrmId, to: mapped, outcome: res.outcome });
+        continue;
+      }
+      // Stage isn't in the table (typo / brand-new stage): hold current state.
+      result.keptHeld++;
     }
   }
 
@@ -606,7 +660,7 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
  * Runs, in order:
  *   1. prune local mappings for records deleted in the CRM
  *   2. mirror every Unit's ACTUAL availability/stage from the CRM
- *   3. the stage→status reconcile sweep (enforces the table in both directions)
+ *   3. the reconcile sweep (enforces both rules in both directions)
  */
 export async function selfHealCrmState(force: boolean): Promise<void> {
   const supabaseAdmin = await admin();
