@@ -11,12 +11,18 @@
  *   Locked/Reserved Units (key: lockedreserved_units)   the committed unit.
  *                                                       This one drives inventory.
  *
+ * The Locked/Reserved label is the ON SWITCH for the whole automation. A unit
+ * that is only Suggested stays Available no matter what stage the deal sits
+ * in, no matter how many deals suggest it. Only a Locked/Reserved unit is
+ * driven by the pipeline stage.
+ *
  * A single opportunity routinely has several Suggested Units and at most one
- * Locked/Reserved Unit. Every relation row carries an `associationId`, so we
- * resolve the association definitions for the location, then keep only the
- * relations belonging to the Locked/Reserved association. Taking "the first
- * unit we find" locks whichever unit GHL happens to return first — usually a
- * suggested one — and silently removes the wrong unit from the market.
+ * Locked/Reserved Unit (that association is 1-to-1 in GHL). Every relation row
+ * carries an `associationId`, so we resolve the association definitions for the
+ * location, then keep only the relations belonging to the Locked/Reserved
+ * association. Taking "the first unit we find" locks whichever unit GHL happens
+ * to return first — usually a suggested one — and silently removes the wrong
+ * unit from the market.
  *
  * Relation shape returned by GET /associations/relations/{recordId}:
  *   {
@@ -33,9 +39,13 @@ import type { CrmClient } from "./client.server";
 export interface OpportunityAssociations {
   /** The Locked/Reserved unit — the only unit permitted to drive inventory. */
   unitCrmId: string | null;
+  /** All Locked/Reserved units (normally 0 or 1 — the association is 1-to-1). */
+  lockedUnitCrmIds: string[];
   buildingCrmId: string | null;
   /** Informational: units merely suggested to this lead. Never locked. */
   suggestedUnitCrmIds: string[];
+  /** False when this location defines no Locked/Reserved association at all. */
+  lockedAssociationDefined: boolean;
   raw?: unknown;
 }
 
@@ -55,6 +65,15 @@ export interface UnitAssociationSets {
   /** False when this location defines no Locked/Reserved association at all. */
   lockedAssociationDefined: boolean;
 }
+
+/**
+ * What is this unit to this opportunity?
+ *   locked    — Locked/Reserved. Full automation applies.
+ *   suggested — browsing only. Nothing may happen to this unit.
+ *   unrelated — not associated, or associated by something that is not the
+ *               Locked/Reserved label. Treated as "do not touch".
+ */
+export type UnitAssociationKind = "locked" | "suggested" | "unrelated";
 
 interface Relation {
   id?: string;
@@ -228,11 +247,38 @@ export async function fetchUnitAssociationSets(
   };
 }
 
+/**
+ * Is this unit Locked/Reserved to this opportunity, merely Suggested, or
+ * neither? THROWS on transport failure — the caller must decide what to do
+ * when the CRM can't be reached, and "assume it's locked" is never safe.
+ *
+ * The one legacy allowance: if this location defines no Locked/Reserved
+ * association at all, an unclassified association counts as locked, since
+ * there is nothing to distinguish it from.
+ */
+export async function classifyUnitForOpportunity(
+  client: CrmClient,
+  opportunityId: string,
+  unitCrmId: string,
+): Promise<UnitAssociationKind> {
+  const sets = await fetchUnitAssociationSets(client, opportunityId);
+  if (sets.suggestedUnitIds.includes(unitCrmId)) return "suggested";
+  if (sets.lockedUnitIds.includes(unitCrmId)) return "locked";
+  if (!sets.lockedAssociationDefined && sets.unclassifiedUnitIds.includes(unitCrmId)) return "locked";
+  return "unrelated";
+}
+
 export async function fetchOpportunityAssociations(
   client: CrmClient,
   opportunityId: string,
 ): Promise<OpportunityAssociations> {
-  const empty: OpportunityAssociations = { unitCrmId: null, buildingCrmId: null, suggestedUnitCrmIds: [] };
+  const empty: OpportunityAssociations = {
+    unitCrmId: null,
+    lockedUnitCrmIds: [],
+    buildingCrmId: null,
+    suggestedUnitCrmIds: [],
+    lockedAssociationDefined: false,
+  };
   const locationId = client.config.location_id;
   if (!locationId) return empty;
 
@@ -240,25 +286,28 @@ export async function fetchOpportunityAssociations(
     resolveAssociations(client),
     fetchRelations(client, opportunityId, locationId),
   ]);
+  const lockedAssociationDefined = assoc.locked.size > 0;
 
-  if (relations.length === 0) return empty;
+  if (relations.length === 0) return { ...empty, lockedAssociationDefined };
 
   const sets = classifyRelations(relations, opportunityId, assoc);
 
   // Only a Locked/Reserved unit may move inventory.
-  let unitCrmId: string | null = sets.lockedUnitIds[0] ?? null;
+  const lockedUnitCrmIds = [...sets.lockedUnitIds];
+  let unitCrmId: string | null = lockedUnitCrmIds[0] ?? null;
 
-  if (sets.lockedUnitIds.length > 1) {
+  if (lockedUnitCrmIds.length > 1) {
     console.warn(
-      `[opportunities] opportunity ${opportunityId} has ${sets.lockedUnitIds.length} Locked/Reserved units; using the first (${unitCrmId}).`,
+      `[opportunities] opportunity ${opportunityId} has ${lockedUnitCrmIds.length} Locked/Reserved units; using the first (${unitCrmId}).`,
     );
   }
 
   // Fallback: this location defines no Locked/Reserved association at all, so
   // there is nothing to filter on. Use a non-suggested unit rather than doing
   // nothing — but never promote a Suggested unit into a lock.
-  if (!unitCrmId && assoc.locked.size === 0 && sets.unclassifiedUnitIds.length > 0) {
+  if (!unitCrmId && !lockedAssociationDefined && sets.unclassifiedUnitIds.length > 0) {
     unitCrmId = sets.unclassifiedUnitIds[0];
+    lockedUnitCrmIds.push(unitCrmId);
     console.warn(
       `[opportunities] no Locked/Reserved association defined for this location; falling back to unclassified unit ${unitCrmId}.`,
     );
@@ -266,7 +315,9 @@ export async function fetchOpportunityAssociations(
 
   return {
     unitCrmId,
+    lockedUnitCrmIds,
     buildingCrmId: sets.buildingIds[0] ?? null,
     suggestedUnitCrmIds: sets.suggestedUnitIds,
+    lockedAssociationDefined,
   };
 }
