@@ -18,6 +18,14 @@ import { z } from "zod";
  *    custom-field payload and silently drops it. Without a read-back the happy
  *    path is "149 contacts imported", every one missing the father names,
  *    discovered a week later. Verification failure aborts after ONE row.
+ *
+ * 4. CONTACT DETAILS ARE SANITISED, NOT TRUSTED. The first run put 143/149
+ *    through and lost six to bad inputs: three rows had non-address text in the
+ *    email column ("email must be an email"), three had two phone numbers in one
+ *    cell ("the string supplied is too long to be a phone number"). A spreadsheet
+ *    column is a suggestion, not a typed field — so both are now parsed, and a
+ *    value that can't be salvaged is dropped WITH a recorded warning rather than
+ *    failing the whole person. A bad phone should never cost you a contact.
  */
 
 const CHUNK_MAX = 25;
@@ -33,7 +41,7 @@ function normEmail(s: unknown): string {
   return String(s ?? "").trim().toLowerCase();
 }
 
-/** Last 10 digits — tolerates +1, dashes, parens, spaces. */
+/** Last 10 digits — tolerates +1, dashes, parens, spaces. For MATCHING only. */
 function normPhone(s: unknown): string {
   const d = String(s ?? "").replace(/\D+/g, "");
   return d.length > 10 ? d.slice(-10) : d;
@@ -48,6 +56,59 @@ function isJunk(v: unknown): boolean {
   const s = String(v ?? "").trim();
   if (!s) return true;
   return /^(#value!|#ref!|#n\/a|#div\/0!|#name\?|null|undefined|n\/a|-)$/i.test(s);
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/**
+ * The email column holds whatever someone typed: a real address, two addresses,
+ * a note, a phone number. Take the first thing that is actually an address;
+ * otherwise drop it and say so. Never hand GHL something it will 422 on.
+ */
+function pickEmail(raw: unknown): { value: string | null; warning?: string } {
+  const s = String(raw ?? "").trim();
+  if (!s || isJunk(s)) return { value: null };
+  const parts = s.split(/[;,\s/|]+/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const valid = parts.filter((p) => EMAIL_RE.test(p));
+  if (valid.length === 0) return { value: null, warning: `email "${s}" is not a valid address — left blank` };
+  if (valid.length > 1) return { value: valid[0], warning: `email: kept "${valid[0]}" of ${valid.length} in "${s}"` };
+  return { value: valid[0] };
+}
+
+/**
+ * Same problem, worse: "845-555-1234 / 845-555-9999" is 20 digits and GHL
+ * rejects the lot. Split on the separators people actually use, take the first
+ * usable number, and emit E.164 so there's no ambiguity about country code.
+ */
+function pickPhone(raw: unknown): { value: string | null; warning?: string } {
+  const s = String(raw ?? "").trim();
+  if (!s || isJunk(s)) return { value: null };
+
+  const parts = s.split(/[\/;,|\n]|\bor\b|\band\b/i).map((x) => x.trim()).filter(Boolean);
+  const candidates: string[] = [];
+  for (const part of parts.length ? parts : [s]) {
+    const d = part.replace(/\D+/g, "");
+    if (d.length >= 10 && d.length <= 15) candidates.push(d);
+  }
+
+  if (candidates.length === 0) {
+    // One unbroken run of digits containing several numbers, e.g. "84555512348455559999".
+    const all = s.replace(/\D+/g, "");
+    if (all.length >= 10 && all.length <= 15) candidates.push(all);
+    else if (all.length > 15) {
+      return { value: `+1${all.slice(0, 10)}`, warning: `phone "${s}" ran together — kept the first 10 digits` };
+    }
+  }
+
+  if (candidates.length === 0) return { value: null, warning: `phone "${s}" has no usable number — left blank` };
+
+  let d = candidates[0];
+  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+
+  const extra = candidates.length > 1 ? `phone: kept the first of ${candidates.length} numbers in "${s}"` : undefined;
+  if (d.length === 10) return { value: `+1${d}`, warning: extra };
+  if (d.length > 10 && d.length <= 15) return { value: `+${d}`, warning: extra };
+  return { value: null, warning: `phone "${s}" is not a usable number — left blank` };
 }
 
 function splitName(full: string): { firstName: string; lastName: string } {
@@ -145,9 +206,7 @@ const BUILTINS = [
  * produced Total 4 / Available 7 on the inventory import.
  *
  * Skipped EVEN WHEN a same-named contact field exists. GHL ships a contact
- * field called "Notes", which is exactly the trap: the mapper matched it
- * happily, and Friedman would have kept one of his six notes with no error to
- * show for the other five. These belong on the Opportunity.
+ * field called "Notes", which is exactly the trap.
  */
 const DEAL_LEVEL = new Set([
   "notes",
@@ -231,6 +290,8 @@ export const previewContactImport = createServerFn({ method: "POST" })
 
     const people = new Map<string, { name: string; email: string; phone: string; rows: number }>();
     let noName = 0;
+    let badEmail = 0;
+    let badPhone = 0;
     for (const row of data.rows) {
       const name = cleanName(nameCol ? row[nameCol] : "");
       if (!name || isJunk(name)) {
@@ -239,12 +300,14 @@ export const previewContactImport = createServerFn({ method: "POST" })
       }
       const stable = idCol && !isJunk(row[idCol]) ? String(row[idCol]).trim() : `name:${norm(name)}`;
       const prev = people.get(stable);
-      const email = emailCol && !isJunk(row[emailCol]) ? normEmail(row[emailCol]) : "";
-      const phone = phoneCol && !isJunk(row[phoneCol]) ? normPhone(row[phoneCol]) : "";
+      const e = emailCol ? pickEmail(row[emailCol]) : { value: null as string | null };
+      const ph = phoneCol ? pickPhone(row[phoneCol]) : { value: null as string | null };
+      if (emailCol && !isJunk(row[emailCol]) && !e.value) badEmail++;
+      if (phoneCol && !isJunk(row[phoneCol]) && !ph.value) badPhone++;
       people.set(stable, {
         name: prev?.name || name,
-        email: prev?.email || email,
-        phone: prev?.phone || phone,
+        email: prev?.email || e.value || "",
+        phone: prev?.phone || ph.value || "",
         rows: (prev?.rows ?? 0) + 1,
       });
     }
@@ -260,6 +323,8 @@ export const previewContactImport = createServerFn({ method: "POST" })
       ok: true as const,
       totalRows: data.rows.length,
       rowsWithoutName: noName,
+      unusableEmails: badEmail,
+      unusablePhones: badPhone,
       distinctPeople: people.size,
       alreadyImported: [...alreadyDone].length,
       toImport: stableIds.filter((s) => !alreadyDone.has(s)).length,
@@ -325,15 +390,26 @@ export const runContactImportChunk = createServerFn({ method: "POST" })
       email: string;
       phone: string;
       custom: Record<string, unknown>;
+      warnings: string[];
     }
     const people = new Map<string, Person>();
     for (const row of data.rows) {
       const name = cleanName(nameCol ? row[nameCol] : "");
       if (!name || isJunk(name)) continue;
       const stableId = idCol && !isJunk(row[idCol]) ? String(row[idCol]).trim() : `name:${norm(name)}`;
-      const p: Person = people.get(stableId) ?? { stableId, name, email: "", phone: "", custom: {} };
-      if (!p.email && emailCol && !isJunk(row[emailCol])) p.email = normEmail(row[emailCol]);
-      if (!p.phone && phoneCol && !isJunk(row[phoneCol])) p.phone = String(row[phoneCol]).trim();
+      const p: Person = people.get(stableId) ?? { stableId, name, email: "", phone: "", custom: {}, warnings: [] };
+
+      if (!p.email && emailCol) {
+        const e = pickEmail(row[emailCol]);
+        if (e.value) p.email = e.value;
+        if (e.warning && !p.warnings.includes(e.warning)) p.warnings.push(e.warning);
+      }
+      if (!p.phone && phoneCol) {
+        const ph = pickPhone(row[phoneCol]);
+        if (ph.value) p.phone = ph.value;
+        if (ph.warning && !p.warnings.includes(ph.warning)) p.warnings.push(ph.warning);
+      }
+
       for (const m of mapping) {
         if (m.kind !== "custom") continue;
         const v = row[m.header];
@@ -383,7 +459,7 @@ export const runContactImportChunk = createServerFn({ method: "POST" })
         }
 
         const customFields: Array<{ id: string; value: unknown }> = [];
-        const warnings: string[] = [];
+        const warnings: string[] = [...p.warnings];
         for (const [fieldId, raw] of Object.entries(p.custom)) {
           const f = fields.find((x) => x.id === fieldId);
           if (!f) continue;
@@ -420,6 +496,8 @@ export const runContactImportChunk = createServerFn({ method: "POST" })
           name: p.name,
           source: "kleegr-lazers-import",
         };
+        // Only ever sent when they survived parsing. An unusable value is a
+        // warning on the record, never a failed contact.
         if (p.email) body.email = p.email;
         if (p.phone) body.phone = p.phone;
         if (customFields.length) body.customFields = customFields;
