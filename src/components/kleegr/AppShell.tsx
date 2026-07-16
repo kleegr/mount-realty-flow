@@ -12,6 +12,7 @@ import {
   BarChart3,
   ShieldCheck,
   Monitor,
+  FlaskConical,
   Menu as MenuIcon,
   ChevronDown,
 } from "lucide-react";
@@ -59,6 +60,7 @@ const MENU_NAV = [
 ] as const;
 
 const ADMIN_MENU_NAV = [
+  { to: "/tools/crm-probe", label: "CRM Probe", icon: FlaskConical },
   { to: "/settings/admin", label: "Admin Panel", icon: ShieldCheck },
 ] as const;
 
