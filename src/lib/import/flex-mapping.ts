@@ -1,6 +1,16 @@
 /**
  * Flexible importer field catalog + column auto-mapping.
  * Client-safe — no server imports.
+ *
+ * NOTE — the unit COUNT fields (Total / Available / Reserved / Under Contract
+ * / Sold Units) are deliberately NOT in this catalog. Units are the source of
+ * truth: those numbers are computed from the actual Unit records by the rollup
+ * engine (rollups.server.ts) and written to the Building/Project.
+ *
+ * They used to be importable, which meant two writers owned the same fields:
+ * a sheet could assert "Total 4, Available 7" and the import would write both
+ * verbatim — an impossible state that no later rollup would necessarily undo.
+ * A column named "Available Units" in an upload is now simply ignored.
  */
 import { FIELDS, ALLOWED } from "../kleegr/field-map";
 
@@ -27,6 +37,26 @@ export interface FlexField {
 
 const N = (s: string) => s.toLowerCase().replace(/[\s_\-?.]+/g, " ").replace(/\?$/, "").trim();
 
+/**
+ * Derived fields an upload may never set — they are computed from Units.
+ * Kept as an explicit list so the reason is discoverable, and so the import UI
+ * can tell the user why their column was ignored.
+ */
+export const DERIVED_COUNT_ALIASES: readonly string[] = [
+  "total units",
+  "available units",
+  "reserved / locked units",
+  "reserved locked units",
+  "reserved units",
+  "under contract units",
+  "sold units",
+];
+
+export function isDerivedCountHeader(header: string): boolean {
+  const n = N(header);
+  return DERIVED_COUNT_ALIASES.some((a) => N(a) === n);
+}
+
 export const FIELD_CATALOG: Record<FlexScope, FlexField[]> = {
   project: [
     { key: "record_id", label: "CRM Record ID", role: "record_id",
@@ -43,16 +73,7 @@ export const FIELD_CATALOG: Record<FlexScope, FlexField[]> = {
       aliases: ["property type", "project property type"], enum: ALLOWED.projectPropertyType },
     { key: "address", label: "Address", crmField: FIELDS.project.address,
       aliases: ["address", "project address"] },
-    { key: "total_units", label: "Total Units", crmField: FIELDS.project.total_units, type: "number",
-      aliases: ["total units"] },
-    { key: "available_units", label: "Available Units", crmField: FIELDS.project.available_units, type: "number",
-      aliases: ["available units"] },
-    { key: "reserved_locked_units", label: "Reserved / Locked Units", crmField: FIELDS.project.reserved_locked_units, type: "number",
-      aliases: ["reserved / locked units", "reserved locked units", "reserved units"] },
-    { key: "under_contract_units", label: "Under Contract Units", crmField: FIELDS.project.under_contract_units, type: "number",
-      aliases: ["under contract units"] },
-    { key: "sold_units", label: "Sold Units", crmField: FIELDS.project.sold_units, type: "number",
-      aliases: ["sold units"] },
+    // Unit counts are derived — see the note at the top of this file.
     { key: "recalc_requested", label: "Recalc Requested", crmField: FIELDS.project.recalc_requested, type: "yesno",
       aliases: ["recalc requested", "recalc"] },
   ],
@@ -69,16 +90,7 @@ export const FIELD_CATALOG: Record<FlexScope, FlexField[]> = {
       aliases: ["building address", "address"] },
     { key: "status", label: "Building Status", crmField: FIELDS.building.status,
       aliases: ["building status", "status"], enum: ALLOWED.buildingStatus },
-    { key: "total_units", label: "Total Units", crmField: FIELDS.building.total_units, type: "number",
-      aliases: ["total units"] },
-    { key: "available_units", label: "Available Units", crmField: FIELDS.building.available_units, type: "number",
-      aliases: ["available units"] },
-    { key: "reserved_locked_units", label: "Reserved / Locked Units", crmField: FIELDS.building.reserved_locked_units, type: "number",
-      aliases: ["reserved / locked units", "reserved locked units", "reserved units"] },
-    { key: "under_contract_units", label: "Under Contract Units", crmField: FIELDS.building.under_contract_units, type: "number",
-      aliases: ["under contract units"] },
-    { key: "sold_units", label: "Sold Units", crmField: FIELDS.building.sold_units, type: "number",
-      aliases: ["sold units"] },
+    // Unit counts are derived — see the note at the top of this file.
     { key: "recalc_requested", label: "Recalc Requested", crmField: FIELDS.building.recalc_requested, type: "yesno",
       aliases: ["recalc requested", "recalc"] },
     { key: "parent_project", label: "Project (name / code / id)", role: "parent_ref", parentScope: "project",
