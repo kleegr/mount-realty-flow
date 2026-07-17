@@ -7,33 +7,38 @@ import { z } from "zod";
  *
  * RESOLUTION. The sheet's Building column carries the unit number glued on the
  * end ("10 Chesnut Drive # 101") while GHL's building is "10 Chesnut Drive".
- * That single pattern was the whole reason the first dry run resolved 118/183.
- * stripUnitSuffix() handles it.
+ * That single pattern was why the first dry run only resolved 118/183.
  *
- * Units are matched BUILDING-FIRST: unit names are
+ * Units match BUILDING-FIRST: unit names are
  * "{DEVELOPER} - {BUILDING} - {UNIT} {NUMBER}", so matching "101" globally would
  * hit every building with a 101. Resolving the building narrows it to that
- * building's ~4 units, which is what makes "47 Mangin Lot 1" vs "Lot 2"
- * decidable. Only possible because parent_crm_id was repaired.
+ * building's ~4 units. Only possible because parent_crm_id was repaired.
  *
- * THE LOCK. Per the engine's rule 1, the Locked/Reserved association is the ON
- * switch — the stage map does nothing without it. The association definition
- * says units are FIRST and the opportunity SECOND:
+ * THE LOCK. The Locked/Reserved association is the ON switch - the stage map
+ * does nothing without it. The definition says units are FIRST:
  *   firstObjectKey: custom_objects.units, secondObjectKey: opportunity
- * Passing the opportunity first is what produced
- * "Invalid record id ... for association" in the earlier probe.
+ * Passing the opportunity first is what produced "Invalid record id" earlier.
  *
- * IDEMPOTENCY WITHOUT A NEW TABLE. A unit can be locked to exactly ONE
- * opportunity, so unit_state.held_by_opportunity_id IS the resume state: held
- * means done. No cursor, no bookkeeping table, and re-running is free.
+ * IDEMPOTENCY WITHOUT A NEW TABLE. A unit locks to exactly ONE opportunity, so
+ * unit_state.held_by_opportunity_id IS the resume state: held means done.
  *
- * ATOMIC PER ROW. If the association fails after the opportunity is created, the
- * opportunity is DELETED. Otherwise a retry would see an unheld unit, create a
- * second deal, and leave an orphan card behind for every partial failure.
+ * ATOMIC PER ROW. If the lock fails after the deal is created, the deal is
+ * DELETED. Otherwise a retry sees a free unit, creates a second deal, and
+ * orphans the first.
  *
- * DOUBLE-CLAIMED UNITS RESOLVE THEMSELVES SAFELY. Two rows on one apartment: the
- * first wins, the second finds the unit already held and reports it instead of
- * silently stealing it. Two families cannot be under contract on one unit.
+ * THE NAME is the contact's full name plus their full phone. The unit is NOT in
+ * the name: it is already on the association, and duplicating it there means two
+ * places to disagree.
+ *
+ * PAYMENT FIELDS ARE SCHEMA-DRIVEN. The deal-level columns (Date Signed,
+ * Executed, Down Payment, Paid Amount, Remaining, Receipt #, Payment Type,
+ * % Paid, Notes) were deliberately blocked from the contact import - one buyer
+ * with six units has six different payment schedules, so they cannot live on the
+ * person. They belong here. Field keys and picklist values are read live from
+ * GHL and matched case/punctuation-insensitively, and the FIRST write is read
+ * back: GHL 200s an unknown custom-field payload and silently drops it, so
+ * without the check the happy path is "186 deals imported" with no payment data
+ * on any of them.
  */
 
 async function requireImporter(userId: string) {
@@ -74,6 +79,13 @@ function pickHeader(headers: string[], aliases: string[]): string | null {
   return headers.find((h) => wanted.includes(norm(h))) ?? null;
 }
 
+/** Columns that identify the row rather than describe the deal. */
+const STRUCTURAL = new Set([
+  "developer", "project", "builder", "building", "buildingname", "unit", "unitnumber", "unitno", "apt",
+  "status", "unitstatus", "clientname", "client", "buyer", "buyername", "phone", "email", "father",
+  "fatherinlaw", "saleprice", "floor1", "floor2", "empty",
+]);
+
 function headersOf(row: Record<string, unknown>) {
   const headers = Object.keys(row ?? {});
   return {
@@ -84,6 +96,84 @@ function headersOf(row: Record<string, unknown>) {
     client: pickHeader(headers, ["clientname", "client", "buyer", "buyername"]),
     price: pickHeader(headers, ["saleprice", "price", "askingprice", "askingsaleprice"]),
   };
+}
+
+// ---------------------------------------------------------------- opp schema
+
+interface OppField {
+  id: string;
+  name: string;
+  fieldKey: string;
+  dataType: string;
+  options: string[];
+}
+
+async function loadOpportunityFields(client: {
+  config: { location_id: string | null };
+  request: <T>(m: "GET", p: string, o?: { query?: Record<string, string> }) => Promise<{ data: T }>;
+}): Promise<OppField[]> {
+  const locationId = client.config.location_id;
+  if (!locationId) return [];
+  const res = await client.request<{ customFields?: Array<Record<string, unknown>> }>(
+    "GET",
+    `/locations/${locationId}/customFields`,
+    { query: { model: "opportunity" } },
+  );
+  const all = Array.isArray(res.data?.customFields) ? res.data.customFields : [];
+  return all
+    .filter((f) => /opportunity/i.test(String(f.model ?? "")) || /^opportunity\./.test(String(f.fieldKey ?? "")))
+    .map((f) => {
+      const raw = (f.picklistOptions ?? f.picklistOptionValues ?? f.options) as unknown;
+      const options = Array.isArray(raw)
+        ? raw
+            .map((o) => {
+              if (typeof o === "string") return o;
+              if (o && typeof o === "object") {
+                const r = o as Record<string, unknown>;
+                const v = r.value ?? r.name ?? r.label ?? r.key;
+                return typeof v === "string" ? v : null;
+              }
+              return null;
+            })
+            .filter((v): v is string => Boolean(v))
+        : [];
+      return {
+        id: String(f.id ?? ""),
+        name: String(f.name ?? ""),
+        fieldKey: String(f.fieldKey ?? ""),
+        dataType: String(f.dataType ?? ""),
+        options,
+      };
+    });
+}
+
+function resolveOption(f: OppField, value: unknown): string | null {
+  const n = norm(value);
+  if (!n) return null;
+  return f.options.find((o) => norm(o) === n) ?? null;
+}
+
+export interface OppColumnMap {
+  header: string;
+  fieldId: string | null;
+  fieldName: string;
+  dataType: string | null;
+}
+
+/** Map every non-structural column onto a live opportunity field, by name. */
+function mapDealColumns(headers: string[], fields: OppField[]): OppColumnMap[] {
+  return headers
+    .filter((h) => !STRUCTURAL.has(norm(h)) && norm(h))
+    .map((h) => {
+      const n = norm(h);
+      const f = fields.find((x) => norm(x.name) === n || norm(x.fieldKey.replace(/^opportunity\./, "")) === n);
+      return {
+        header: h,
+        fieldId: f?.id ?? null,
+        fieldName: f?.name ?? "(no matching opportunity field)",
+        dataType: f?.dataType ?? null,
+      };
+    });
 }
 
 // ---------------------------------------------------------------- context
@@ -146,6 +236,14 @@ export const getOpportunityContext = createServerFn({ method: "POST" })
       crmError = err instanceof Error ? err.message.slice(0, 400) : String(err);
     }
 
+    let oppFields: OppField[] = [];
+    let fieldsError: string | null = null;
+    try {
+      oppFields = await loadOpportunityFields(client as never);
+    } catch (err) {
+      fieldsError = err instanceof Error ? err.message.slice(0, 300) : String(err);
+    }
+
     const [{ count: contacts }, { count: units }] = await Promise.all([
       supabaseAdmin.from("contact_id_map").select("stable_id", { count: "exact", head: true }),
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "unit"),
@@ -154,7 +252,14 @@ export const getOpportunityContext = createServerFn({ method: "POST" })
     return {
       pipelines,
       crmError,
-      stageRules: rules ?? [],
+      opportunityFields: oppFields.map((f) => ({
+        id: f.id,
+        name: f.name,
+        key: f.fieldKey,
+        dataType: f.dataType,
+        options: f.options,
+      })),
+      fieldsError,
       contactsMapped: contacts ?? 0,
       unitsMapped: units ?? 0,
       dealsInGovernedPipelines: pipelines.filter((p) => p.governed).reduce((n, p) => n + (p.openDeals ?? 0), 0),
@@ -167,7 +272,7 @@ export const getOpportunityContext = createServerFn({ method: "POST" })
 interface Maps {
   buildingByName: Map<string, string>;
   unitsByBuilding: Map<string, Array<{ id: string; name: string }>>;
-  contactByStable: Map<string, string>;
+  contactByStable: Map<string, { id: string; phone: string | null }>;
 }
 
 async function loadMaps(): Promise<Maps> {
@@ -175,7 +280,7 @@ async function loadMaps(): Promise<Maps> {
   const [unitsRes, buildingsRes, contactsRes] = await Promise.all([
     supabaseAdmin.from("external_id_map").select("crm_record_id, display_name, parent_crm_id").eq("scope", "unit"),
     supabaseAdmin.from("external_id_map").select("crm_record_id, display_name").eq("scope", "building"),
-    supabaseAdmin.from("contact_id_map").select("stable_id, crm_contact_id"),
+    supabaseAdmin.from("contact_id_map").select("stable_id, crm_contact_id, phone"),
   ]);
 
   const buildingByName = new Map<string, string>();
@@ -189,8 +294,8 @@ async function loadMaps(): Promise<Maps> {
     unitsByBuilding.set(u.parent_crm_id, arr);
   }
 
-  const contactByStable = new Map<string, string>();
-  for (const c of contactsRes.data ?? []) contactByStable.set(c.stable_id, c.crm_contact_id);
+  const contactByStable = new Map<string, { id: string; phone: string | null }>();
+  for (const c of contactsRes.data ?? []) contactByStable.set(c.stable_id, { id: c.crm_contact_id, phone: c.phone });
 
   return { buildingByName, unitsByBuilding, contactByStable };
 }
@@ -200,17 +305,18 @@ interface Resolved {
   client: string;
   status: string;
   contactId: string | null;
+  phone: string | null;
   unitId: string | null;
   unitLabel: string;
   price: number | null;
   why: string;
   conflict: string | null;
+  raw: Record<string, unknown>;
 }
 
 function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeof headersOf>, m: Maps): Resolved | null {
   const rowNo = i + 2;
   const clientName = clean(H.client ? row[H.client] : "");
-  const status = clean(H.status ? row[H.status] : "");
   if (!clientName || isJunk(clientName)) return null;
 
   const dev = clean(H.developer ? row[H.developer] : "");
@@ -249,16 +355,19 @@ function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeo
     else why = `no unit "${unitRef}" under that building`;
   }
 
+  const c = m.contactByStable.get(`name:${norm(clientName)}`);
   return {
     rowNo,
     client: clientName,
-    status,
-    contactId: m.contactByStable.get(`name:${norm(clientName)}`) ?? null,
+    status: clean(H.status ? row[H.status] : ""),
+    contactId: c?.id ?? null,
+    phone: c?.phone ?? null,
     unitId,
-    unitLabel: `${dev} ${bldName} ${unitRef ?? ""}`.trim(),
+    unitLabel: `${bldName} ${unitRef ?? ""}`.trim(),
     price: H.price ? money(row[H.price]) : null,
     why,
     conflict,
+    raw: row,
   };
 }
 
@@ -271,17 +380,29 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ rows: z.array(RowSchema).max(5000) }).parse(d))
   .handler(async ({ data, context }) => {
     await requireImporter(context.userId);
+    const { createCrmClient } = await import("./kleegr/client.server");
+    const client = await createCrmClient();
+
     const H = headersOf(data.rows[0] ?? {});
     const m = await loadMaps();
+
+    let oppFields: OppField[] = [];
+    try {
+      oppFields = await loadOpportunityFields(client as never);
+    } catch {
+      oppFields = [];
+    }
+    const dealColumns = mapDealColumns(Object.keys(data.rows[0] ?? {}), oppFields);
 
     const statusCounts: Record<string, number> = {};
     let withClient = 0;
     let contactHit = 0;
     let unitHit = 0;
+    let withPhone = 0;
     const unresolvedUnits: Array<{ row: number; key: string; why: string }> = [];
     const unresolvedContacts: Array<{ row: number; name: string }> = [];
     const conflicts: Array<{ row: number; detail: string }> = [];
-    const claims = new Map<string, Array<string>>();
+    const claims = new Map<string, string[]>();
 
     for (const [i, row] of data.rows.entries()) {
       const status = clean(H.status ? row[H.status] : "");
@@ -291,6 +412,7 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
       withClient++;
       if (r.contactId) contactHit++;
       else if (unresolvedContacts.length < 30) unresolvedContacts.push({ row: r.rowNo, name: r.client });
+      if (r.phone) withPhone++;
       if (r.conflict && conflicts.length < 30) conflicts.push({ row: r.rowNo, detail: r.conflict });
       if (r.unitId) {
         unitHit++;
@@ -302,7 +424,10 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
       }
     }
 
-    const doubleClaimed = [...claims.entries()].filter(([, rs]) => rs.length > 1).map(([unitId, rs]) => ({ unitId, rows: rs })).slice(0, 20);
+    const doubleClaimed = [...claims.entries()]
+      .filter(([, rs]) => rs.length > 1)
+      .map(([unitId, rows]) => ({ unitId, rows }))
+      .slice(0, 20);
 
     return {
       totalRows: data.rows.length,
@@ -311,7 +436,10 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
       withClient,
       contactHit,
       unitHit,
+      withPhone,
       importable: Math.min(contactHit, unitHit),
+      dealColumns,
+      opportunityFieldCount: oppFields.length,
       unresolvedContacts,
       unresolvedUnits,
       conflicts,
@@ -329,7 +457,6 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
         confirm: z.literal("IMPORT"),
         rows: z.array(RowSchema).max(5000),
         pipelineId: z.string().min(1),
-        // normalised sheet status -> pipeline stage id
         stageMap: z.record(z.string(), z.string()),
         offset: z.number().int().min(0).default(0),
         limit: z.number().int().min(1).max(15).default(10),
@@ -345,26 +472,22 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
     const client = await createCrmClient();
     const locationId = client.config.location_id;
 
-    // The Locked/Reserved association — the engine's ON switch. Resolved live so
-    // a recreated definition doesn't silently break the lock.
     const defsRes = await client.request<{ associations?: Array<Record<string, unknown>> }>("GET", "/associations/", {
       query: { locationId: String(locationId), skip: 0, limit: 100 },
     });
-    const defs = defsRes.data?.associations ?? [];
-    const lockDef = defs.find((d) => norm(d.key) === norm("lockedreserved_units"));
+    const lockDef = (defsRes.data?.associations ?? []).find((d) => norm(d.key) === norm("lockedreserved_units"));
     if (!lockDef?.id) {
       throw new Error(
-        "No Locked/Reserved Units association is defined in GHL. Without it the stage map does nothing and every unit would stay Available.",
+        "No Locked/Reserved Units association is defined in GHL. Without it the stage map does nothing and every unit stays Available.",
       );
     }
-    // Definition order is authoritative: units are first, opportunity second.
     const unitIsFirst = norm(lockDef.firstObjectKey).includes("unit");
 
     const H = headersOf(data.rows[0] ?? {});
     const m = await loadMaps();
+    const oppFields = await loadOpportunityFields(client as never).catch(() => [] as OppField[]);
+    const dealColumns = mapDealColumns(Object.keys(data.rows[0] ?? {}), oppFields).filter((c) => c.fieldId);
 
-    // Only rows that describe a deal. Blank status = no opportunity; the unit
-    // just stays Available.
     const queue: Resolved[] = [];
     for (const [i, row] of data.rows.entries()) {
       const r = resolveRow(row, i, H, m);
@@ -375,33 +498,60 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
 
     const slice = queue.slice(data.offset, data.offset + data.limit);
     const results: Array<{ row: number; client: string; ok: boolean; detail: string }> = [];
+    let verified = data.offset > 0;
 
     for (const r of slice) {
       try {
-        if (!r.contactId) throw new Error(`no contact for "${r.client}" — import contacts first`);
+        if (!r.contactId) throw new Error(`no contact for "${r.client}" - import contacts first`);
         if (!r.unitId) throw new Error(r.why || "unit not resolved");
 
-        // Resume state + double-claim guard in one: a unit holds exactly one deal.
         const { data: st } = await supabaseAdmin
           .from("unit_state")
           .select("held_by_opportunity_id")
           .eq("unit_crm_id", r.unitId)
           .maybeSingle();
         if (st?.held_by_opportunity_id) {
-          results.push({ row: r.rowNo, client: r.client, ok: true, detail: `skipped — unit already held by ${st.held_by_opportunity_id}` });
+          results.push({
+            row: r.rowNo,
+            client: r.client,
+            ok: true,
+            detail: `skipped - unit already held by ${st.held_by_opportunity_id}`,
+          });
           continue;
         }
 
-        const stageId = data.stageMap[norm(r.status)];
+        // ---- payment / deal fields, against the REAL schema
+        const customFields: Array<{ id: string; value: unknown }> = [];
+        const warnings: string[] = [];
+        for (const col of dealColumns) {
+          const v = r.raw[col.header];
+          if (isJunk(v)) continue;
+          const f = oppFields.find((x) => x.id === col.fieldId);
+          if (!f) continue;
+          if (f.options.length > 0) {
+            const exact = resolveOption(f, v);
+            if (!exact) {
+              warnings.push(`${f.name}: "${String(v)}" not in [${f.options.join(", ")}]`);
+              continue;
+            }
+            customFields.push({ id: f.id, value: f.dataType === "MULTIPLE_OPTIONS" ? [exact] : exact });
+          } else {
+            customFields.push({ id: f.id, value: String(v).trim() });
+          }
+        }
+
+        // Name = full contact name + full phone. No unit: it lives on the association.
+        const namePhone = r.phone ? ` ${r.phone}` : "";
         const body: Record<string, unknown> = {
           pipelineId: data.pipelineId,
           locationId,
-          name: `${r.client} — ${r.unitLabel}`,
-          pipelineStageId: stageId,
+          name: `${r.client}${namePhone}`,
+          pipelineStageId: data.stageMap[norm(r.status)],
           status: "open",
           contactId: r.contactId,
         };
         if (r.price) body.monetaryValue = r.price;
+        if (customFields.length) body.customFields = customFields;
 
         const res = await client.request<Record<string, unknown>>("POST", "/opportunities/", { body });
         const d = (res.data ?? {}) as Record<string, unknown>;
@@ -409,8 +559,8 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
         const oppId = typeof o.id === "string" ? o.id : null;
         if (!oppId) throw new Error("CRM did not return an opportunity id");
 
-        // Atomic-ish: an opportunity with no lock is worse than no opportunity,
-        // because a retry would create a second one and orphan this card.
+        // An unlocked deal is worse than no deal: a retry would create a second
+        // one and orphan this card. So roll back rather than leave it.
         try {
           await client.request("POST", "/associations/relations", {
             body: {
@@ -422,21 +572,39 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
           });
         } catch (assocErr) {
           await client.request("DELETE", `/opportunities/${oppId}`).catch(() => undefined);
-          throw new Error(`lock failed, deal rolled back: ${assocErr instanceof Error ? assocErr.message : String(assocErr)}`);
+          throw new Error(
+            `lock failed, deal rolled back: ${assocErr instanceof Error ? assocErr.message : String(assocErr)}`,
+          );
         }
 
-        // The engine's own path: reads the card's live stage and applies it.
+        // VERIFY THE FIRST WRITE. GHL 200s an unknown custom-field payload and
+        // drops it silently - without this, 186 deals import with no payment data.
+        if (!verified && customFields.length > 0) {
+          const back = await client.request<Record<string, unknown>>("GET", `/opportunities/${oppId}`);
+          const bd = (back.data ?? {}) as Record<string, unknown>;
+          const bo = (bd.opportunity && typeof bd.opportunity === "object" ? bd.opportunity : bd) as Record<
+            string,
+            unknown
+          >;
+          const got = Array.isArray(bo.customFields) ? (bo.customFields as Array<Record<string, unknown>>) : [];
+          const landed = customFields.filter((cf) => got.some((g) => g.id === cf.id));
+          if (landed.length === 0) {
+            throw new Error(
+              `ABORTED AFTER ONE ROW. Sent ${customFields.length} payment fields; GHL returned 200 but stored none. ` +
+                `Fix the payload shape before importing 186 deals. Read back: ${JSON.stringify(got).slice(0, 250)}`,
+            );
+          }
+          verified = true;
+        }
+
         const applied = await applyOpportunityStageToUnit(client, oppId, r.unitId);
-        results.push({
-          row: r.rowNo,
-          client: r.client,
-          ok: true,
-          detail: `${oppId} · ${applied.outcome}${r.conflict ? ` · ⚠ ${r.conflict}` : ""}`,
-        });
+        const notes = [applied.outcome, ...(r.conflict ? [`WARNING ${r.conflict}`] : []), ...warnings];
+        results.push({ row: r.rowNo, client: r.client, ok: true, detail: `${oppId} - ${notes.join(" - ")}` });
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
         const msg = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw)?.[1] ?? raw;
         results.push({ row: r.rowNo, client: r.client, ok: false, detail: msg.slice(0, 240) });
+        if (/ABORTED AFTER ONE ROW/.test(raw)) break;
       }
     }
 
@@ -446,6 +614,7 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
       succeeded: results.filter((x) => x.ok).length,
       failed: results.filter((x) => !x.ok),
       results,
+      dealFieldsMapped: dealColumns.length,
       totalDeals: queue.length,
       nextOffset,
       remaining: Math.max(0, queue.length - nextOffset),
