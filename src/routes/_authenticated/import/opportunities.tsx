@@ -102,6 +102,7 @@ function OpportunityImportPage() {
         setTotal(r.totalDeals);
         setDone(r.nextOffset);
         offset = r.nextOffset;
+        if (r.results.some((x) => /ABORTED AFTER ONE ROW/.test(x.detail))) break;
         if (r.remaining === 0 || r.processed === 0) break;
       }
     } catch (e) {
@@ -116,19 +117,22 @@ function OpportunityImportPage() {
   const pipeline = c?.pipelines.find((x) => x.id === pipelineId);
   const pct = total ? Math.round((done / total) * 100) : 0;
   const statuses = p ? Object.keys(p.statusCounts).filter((s) => s !== "(blank)") : [];
+  const mapped = p?.dealColumns.filter((d) => d.fieldId) ?? [];
+  const unmapped = p?.dealColumns.filter((d) => !d.fieldId) ?? [];
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Opportunity Import</h1>
         <p className="mt-1 text-muted-foreground">
-          Creates a deal per row, locks its unit, and lets the engine set the unit&apos;s status from the stage.
+          Creates a deal per row named for the buyer and their phone, locks its unit, carries the payment columns, and
+          lets the engine set the unit&apos;s status from the stage.
         </p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">1 · The sheet</CardTitle>
+          <CardTitle className="text-lg">1 - The sheet</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <Input
@@ -158,9 +162,10 @@ function OpportunityImportPage() {
           )}
 
           {p && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
               <Stat label="With a client" value={p.withClient} />
               <Stat label="Person found" value={p.contactHit} danger={p.contactHit < p.withClient} />
+              <Stat label="Phone found" value={p.withPhone} />
               <Stat label="Unit found" value={p.unitHit} danger={p.unitHit < p.withClient} />
               <Stat label="Importable" value={p.importable} />
             </div>
@@ -184,10 +189,71 @@ function OpportunityImportPage() {
       {p && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">2 · Where each status lands</CardTitle>
+            <CardTitle className="text-lg">2 - Payment information</CardTitle>
+            <CardDescription>
+              Payment lives on the deal, not the person: one buyer with six units has six different schedules. These
+              columns are matched against the opportunity fields that exist in GHL right now.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {p.opportunityFieldCount === 0 ? (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription className="space-y-1 text-sm">
+                  <p>GHL has no custom fields on opportunities.</p>
+                  <p className="text-xs">
+                    Payment data has nowhere to land. Create the fields in GHL under Settings - Custom Fields -
+                    Opportunity, named to match your sheet headers, then re-upload.
+                  </p>
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {mapped.length} of {p.dealColumns.length} columns matched a field in GHL.
+              </p>
+            )}
+
+            {mapped.length > 0 && (
+              <div className="space-y-1">
+                {mapped.map((d) => (
+                  <div key={d.header} className="flex items-center gap-2 rounded border p-2 text-sm">
+                    <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                    <code className="text-xs">{d.header}</code>
+                    <span className="text-muted-foreground">-&gt;</span>
+                    <span className="font-medium">{d.fieldName}</span>
+                    <Badge variant="outline" className="ml-auto text-[10px]">
+                      {d.dataType}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {unmapped.length > 0 && (
+              <details className="text-sm">
+                <summary className="cursor-pointer text-muted-foreground">
+                  {unmapped.length} columns have no matching field and will be ignored
+                </summary>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {unmapped.map((d) => (
+                    <Badge key={d.header} variant="secondary" className="text-[10px]">
+                      {d.header}
+                    </Badge>
+                  ))}
+                </div>
+              </details>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {p && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">3 - Where each status lands</CardTitle>
             <CardDescription>
               Every stage in the engine&apos;s under-contract list produces the same unit status, so this choice
-              decides which column the card sits in — not what happens to the apartment.
+              decides which column the card sits in - not what happens to the apartment.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -203,7 +269,7 @@ function OpportunityImportPage() {
                       onClick={() => setPipelineId(pl.id)}
                     >
                       {pl.name}
-                      {!pl.governed && " · no rules"}
+                      {!pl.governed && " - no rules"}
                     </Button>
                   ))}
                 </div>
@@ -241,7 +307,7 @@ function OpportunityImportPage() {
               ))}
 
             <p className="text-xs text-muted-foreground">
-              Rows with a blank status get no deal — their unit stays Available. A status with no stage selected is
+              Rows with a blank status get no deal - their unit stays Available. A status with no stage selected is
               skipped entirely.
             </p>
           </CardContent>
@@ -251,15 +317,17 @@ function OpportunityImportPage() {
       {p && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">3 · Import</CardTitle>
+            <CardTitle className="text-lg">4 - Import</CardTitle>
             <CardDescription>
-              Batches of 10, resumable. A unit already locked to a deal is skipped, so re-running is safe.
+              Batches of 10, resumable. A unit already locked to a deal is skipped, so re-running is safe. The first
+              deal is read back - if GHL accepts the payment fields but stores nothing, the run stops after one row
+              instead of creating 186 empty deals.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Button onClick={run} disabled={running || !pipelineId}>
               <Upload className="mr-2 h-4 w-4" />
-              {running ? "Importing…" : done > 0 ? "Continue import" : "Create deals and lock units"}
+              {running ? "Importing..." : done > 0 ? "Continue import" : "Create deals and lock units"}
             </Button>
 
             {total > 0 && (
