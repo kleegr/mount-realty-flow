@@ -42,7 +42,7 @@ function OpportunityUndoPage() {
       setTotalUnits(r.totalUnits);
       say(`${r.heldUnits} of ${r.totalUnits} units are held by a deal.`);
       for (const p of r.pipelines) {
-        say(`${p.name}: ${p.deals} deals${p.governed ? "" : " (UNGOVERNED \u2014 not managed by the engine)"}`);
+        say(`${p.name}: ${p.deals} deals${p.governed ? "" : " (UNGOVERNED - not managed by the engine)"}`);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -56,7 +56,7 @@ function OpportunityUndoPage() {
     try {
       const r = await showUnitFieldResolution({ data: { confirm: "LOOK" } });
       setDump(r);
-      toast.success("Field resolution loaded \u2014 look for any writes:false");
+      toast.success("Field resolution loaded - look for any writes:false");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -76,11 +76,11 @@ function OpportunityUndoPage() {
         for (const f of r.failed) say(`  FAILED ${f.name}: ${f.detail}`);
         if (r.remaining === 0 || r.processed === 0) break;
         if (++guard > 60) {
-          say("Stopped after 60 passes \u2014 press again to continue.");
+          say("Stopped after 60 passes - press again to continue.");
           break;
         }
       }
-      say("Deals deleted. Now press \u201cSet Available\u201d.");
+      say("Deals deleted. Now press Set Available.");
       toast.success("Deals deleted");
       await look();
     } catch (err) {
@@ -108,7 +108,7 @@ function OpportunityUndoPage() {
         done += r.succeeded;
         for (const f of r.failed) say(`  FAILED ${f.unit}: ${f.detail}`);
         if (r.failed.some((f) => /ABORTED AFTER ONE UNIT/.test(f.detail))) {
-          say("STOPPED \u2014 the write did not land. Press \u201cShow field resolution\u201d.");
+          say("STOPPED - the write did not land. Press Show field resolution.");
           break;
         }
         offset = r.nextOffset;
@@ -148,12 +148,12 @@ function OpportunityUndoPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>1 \u00b7 Look</CardTitle>
+          <CardTitle>Step 1 - Look</CardTitle>
           <CardDescription>See what is actually in the CRM right now.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Button onClick={look} disabled={busy !== null}>
-            {busy === "look" ? "Reading\u2026" : "Look at the CRM"}
+            {busy === "look" ? "Reading..." : "Look at the CRM"}
           </Button>
           {totalUnits > 0 && (
             <p className="text-sm">
@@ -165,17 +165,17 @@ function OpportunityUndoPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>2 \u00b7 Delete the deals</CardTitle>
+          <CardTitle>Step 2 - Delete the deals</CardTitle>
           <CardDescription>Associations are removed with the deal. This cannot be undone.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
-          {pipelines.length === 0 && <p className="text-muted-foreground text-sm">Press \u201cLook at the CRM\u201d first.</p>}
+          {pipelines.length === 0 && <p className="text-muted-foreground text-sm">Press Look at the CRM first.</p>}
           {pipelines.map((p) => (
             <div key={p.id} className="flex items-center justify-between rounded border p-3">
               <div>
                 <p className="font-medium">{p.name}</p>
                 <p className="text-muted-foreground text-xs">
-                  {p.deals} deals{p.governed ? "" : " \u00b7 ungoverned"}
+                  {p.deals} deals{p.governed ? "" : " (ungoverned)"}
                 </p>
               </div>
               <Button
@@ -183,7 +183,7 @@ function OpportunityUndoPage() {
                 disabled={busy !== null || p.deals === 0}
                 onClick={() => deleteAll(p.id, p.name)}
               >
-                {busy === "delete" ? "Deleting\u2026" : `Delete ${p.deals}`}
+                {busy === "delete" ? "Deleting..." : `Delete ${p.deals}`}
               </Button>
             </div>
           ))}
@@ -192,7 +192,7 @@ function OpportunityUndoPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>3 \u00b7 Set everything Available</CardTitle>
+          <CardTitle>Step 3 - Set everything Available</CardTitle>
           <CardDescription>
             Every unit with no deal gets Available, Stage cleared, Inventory Deducted = No. Stops immediately if GHL
             accepts the write but stores nothing.
@@ -203,19 +203,19 @@ function OpportunityUndoPage() {
             Dry run
           </Button>
           <Button onClick={() => sweep(false)} disabled={busy !== null}>
-            {busy === "sweep" ? "Sweeping\u2026" : "Set Available"}
+            {busy === "sweep" ? "Sweeping..." : "Set Available"}
           </Button>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>4 \u00b7 Recalculate</CardTitle>
+          <CardTitle>Step 4 - Recalculate</CardTitle>
           <CardDescription>Rebuilds building and project counts from real unit state.</CardDescription>
         </CardHeader>
         <CardContent className="flex gap-2">
           <Button onClick={recalc} disabled={busy !== null}>
-            {busy === "recalc" ? "Recalculating\u2026" : "Recalculate rollups"}
+            {busy === "recalc" ? "Recalculating..." : "Recalculate rollups"}
           </Button>
           <Button variant="outline" onClick={fields} disabled={busy !== null}>
             Show field resolution
@@ -238,7 +238,7 @@ function OpportunityUndoPage() {
         <Card>
           <CardHeader>
             <CardTitle>Field resolution</CardTitle>
-            <CardDescription>Any writes:false is a key GHL does not know \u2014 those writes vanish silently.</CardDescription>
+            <CardDescription>Any writes:false is a key GHL does not know - those writes vanish silently.</CardDescription>
           </CardHeader>
           <CardContent>
             <pre className="max-h-96 overflow-auto text-xs">{JSON.stringify(dump, null, 2)}</pre>
