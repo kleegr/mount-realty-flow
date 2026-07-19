@@ -6,7 +6,7 @@ import { z } from "zod";
  * UNDO + AVAILABLE SWEEP.
  *
  * WHY. The opportunity import only writes units that got a deal. The 181
- * blank-STATUS rows correctly produce no deal — but the inventory reset had
+ * blank-STATUS rows correctly produce no deal - but the inventory reset had
  * already CLEARED every unit's status first, so those units are left BLANK, not
  * "Available". "Left over" only equals "Available" if something writes the word.
  * Nothing did. That was a design gap, not a CRM bug.
@@ -19,7 +19,10 @@ import { z } from "zod";
  * and normalizeRecordProperties drops any key not in the live schema. So the
  * FIRST write of each phase is read back, and the run ABORTS if GHL accepted the
  * call but stored nothing. Better to fail on unit 1 than to report "332 units
- * set" over a no-op — which is exactly how Stages ended up empty.
+ * set" over a no-op - which is exactly how Stages ended up empty.
+ *
+ * PATHS. requestObject comes from object-config.server (NOT objects.server),
+ * and unit records live at /records/{id} - the same path the stage engine uses.
  */
 
 async function requireImporter(userId: string) {
@@ -49,7 +52,7 @@ export const showUnitFieldResolution = createServerFn({ method: "POST" })
     await requireImporter(context.userId);
 
     const { createCrmClient } = await import("./kleegr/client.server");
-    const { requestObject } = await import("./kleegr/objects.server");
+    const { requestObject } = await import("./kleegr/object-config.server");
     const { FIELDS } = await import("./kleegr/field-map");
     const client = await createCrmClient();
     const locationId = client.config.location_id;
@@ -82,7 +85,7 @@ export const showUnitFieldResolution = createServerFn({ method: "POST" })
         const hit = live.get(key);
         resolution[`${logical} -> "${key}"`] = hit
           ? { writes: true, ghlName: hit.name, dataType: hit.dataType, options: hit.options }
-          : { writes: false, WARNING: "KEY NOT IN LIVE SCHEMA — WRITES HERE ARE SILENTLY DROPPED" };
+          : { writes: false, WARNING: "KEY NOT IN LIVE SCHEMA - WRITES HERE ARE SILENTLY DROPPED" };
       }
 
       out[scope] = {
@@ -209,7 +212,7 @@ export const undoOpportunities = createServerFn({ method: "POST" })
 // ------------------------------------------------------------- available sweep
 
 /**
- * Set every UNHELD unit to Available. Held units are never touched — the lock is
+ * Set every UNHELD unit to Available. Held units are never touched - the lock is
  * the on switch, so a held unit's status belongs to its deal.
  */
 export const sweepAvailableUnits = createServerFn({ method: "POST" })
@@ -229,8 +232,7 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
 
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { createCrmClient } = await import("./kleegr/client.server");
-    const { requestObject } = await import("./kleegr/objects.server");
-    const { normalizeRecordProperties } = await import("./kleegr/object-config.server");
+    const { requestObject, normalizeRecordProperties } = await import("./kleegr/object-config.server");
     const { FIELDS } = await import("./kleegr/field-map");
     const client = await createCrmClient();
     const locationId = client.config.location_id;
@@ -282,19 +284,23 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
           { forUpdate: true },
         )) as Record<string, unknown>;
 
-        // Stage has no "Available" value — Available IS the stage cleared. An
+        // Stage has no "Available" value - Available IS the stage cleared. An
         // explicit null clears it, appended AFTER normalisation because
         // stripEmpty() drops nulls.
         props[FIELDS.unit.stage] = null;
 
-        await requestObject(client, "PUT", "unit", `/${u.crm_record_id}`, {
-          body: { locationId, properties: props },
+        await requestObject(client, "PUT", "unit", `/records/${u.crm_record_id}`, {
+          body: { properties: props },
         });
 
         if (!verified) {
-          const back = await requestObject<Record<string, unknown>>(client, "GET", "unit", `/${u.crm_record_id}`, {
-            query: { locationId: String(locationId) },
-          });
+          const back = await requestObject<Record<string, unknown>>(
+            client,
+            "GET",
+            "unit",
+            `/records/${u.crm_record_id}`,
+            { query: { locationId: String(locationId) } },
+          );
           const b = (back.data ?? {}) as Record<string, unknown>;
           const rec = (b.record && typeof b.record === "object" ? b.record : b) as Record<string, unknown>;
           const p = (rec.properties ?? {}) as Record<string, unknown>;
@@ -303,7 +309,7 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
             throw new Error(
               `ABORTED AFTER ONE UNIT. Sent availability="Available" to key "${FIELDS.unit.availability}"; ` +
                 `GHL returned 200 but read back "${got}". The key is wrong or "Available" is not a valid option. ` +
-                `Run "Show field resolution" to see the real key. Read back: ${JSON.stringify(p).slice(0, 300)}`,
+                `Run "Show unit field resolution" to see the real key. Read back: ${JSON.stringify(p).slice(0, 300)}`,
             );
           }
           verified = true;
@@ -340,7 +346,7 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
     };
   });
 
-/** Rebuild building + project rollups from real unit state. Kills the −1s. */
+/** Rebuild building + project rollups from real unit state. Kills the negative counts. */
 export const recalcAll = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ confirm: z.literal("RECALC") }).parse(d))
