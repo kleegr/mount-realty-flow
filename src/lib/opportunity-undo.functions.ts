@@ -3,23 +3,21 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
 /**
- * UNDO + AVAILABLE SWEEP.
+ * UNDO + AVAILABLE SWEEP + STALE-HOLD CLEAR.
  *
- * WHY. The opportunity import only writes units that got a deal. The 181
- * blank-STATUS rows correctly produce no deal - but the inventory reset had
- * already CLEARED every unit's status first, so those units are left BLANK, not
- * "Available". "Left over" only equals "Available" if something writes the word.
- * Nothing did. That was a design gap, not a CRM bug.
+ * WHY. The opportunity import only writes units that got a deal. Blank-STATUS
+ * rows correctly produce no deal - but the inventory reset had already CLEARED
+ * every unit's status first, so those units are left BLANK, not "Available".
+ * "Left over" only equals "Available" if something writes the word. Nothing did.
  *
- * ORDER MATTERS. Delete the deals FIRST, then sweep. A unit still associated to
- * a live deal would get repainted by the engine on the next webhook, so freeing
- * it before the deal is gone just produces a race.
+ * ORDER. Free holds -> set Available -> recalc. A unit still associated to a
+ * live deal would get repainted by the engine, so we only free holds whose deal
+ * is verified gone.
  *
  * VERIFY-FIRST. GHL 200s an unknown custom-field payload and silently drops it,
  * and normalizeRecordProperties drops any key not in the live schema. So the
  * FIRST write of each phase is read back, and the run ABORTS if GHL accepted the
- * call but stored nothing. Better to fail on unit 1 than to report "332 units
- * set" over a no-op - which is exactly how Stages ended up empty.
+ * call but stored nothing.
  *
  * PATHS. requestObject comes from object-config.server (NOT objects.server),
  * and unit records live at /records/{id} - the same path the stage engine uses.
@@ -40,11 +38,6 @@ function shortErr(err: unknown): string {
 
 // ------------------------------------------------------------- field resolution
 
-/**
- * Dump how each unit field key resolves against the LIVE schema. A key the
- * schema doesn't know is silently dropped, so a wrong key looks like success
- * forever. This settles the "Stages is empty" question with evidence.
- */
 export const showUnitFieldResolution = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ confirm: z.literal("LOOK") }).parse(d))
@@ -97,7 +90,7 @@ export const showUnitFieldResolution = createServerFn({ method: "POST" })
     return out;
   });
 
-// ------------------------------------------------------------- undo
+// ------------------------------------------------------------- undo (still available)
 
 export const previewUndo = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -146,9 +139,6 @@ export const previewUndo = createServerFn({ method: "POST" })
     return { pipelines, heldUnits: heldUnits ?? 0, totalUnits: totalUnits ?? 0 };
   });
 
-/**
- * Delete every opportunity in the given pipeline. Associations go with the deal.
- */
 export const undoOpportunities = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>
@@ -168,8 +158,6 @@ export const undoOpportunities = createServerFn({ method: "POST" })
     const client = await createCrmClient();
     const locationId = client.config.location_id;
 
-    // Always read page 1: deleting shrinks the list, so paging by offset would
-    // skip records. Caller loops until remaining hits 0.
     const search = await client.request<{
       opportunities?: Array<Record<string, unknown>>;
       meta?: { total?: number };
@@ -209,12 +197,95 @@ export const undoOpportunities = createServerFn({ method: "POST" })
     };
   });
 
-// ------------------------------------------------------------- available sweep
+// ------------------------------------------------------------- clear stale holds
 
 /**
- * Set every UNHELD unit to Available. Held units are never touched - the lock is
- * the on switch, so a held unit's status belongs to its deal.
+ * Free every unit whose held_by_opportunity_id points at a deal that no longer
+ * exists in GHL. Needed after deals are deleted DIRECTLY in GHL (not through the
+ * undo tool): Supabase still thinks those units are held, so a re-import would
+ * skip them with "unit already held". Verifies each holder against the live CRM
+ * and clears only the genuinely dead ones - a live deal's hold is kept. A
+ * transient read error never frees a unit.
  */
+export const clearStaleHolds = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        confirm: z.literal("CLEAR"),
+        offset: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(25).default(20),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    await requireImporter(context.userId);
+
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { createCrmClient } = await import("./kleegr/client.server");
+    const client = await createCrmClient();
+
+    const { data: heldRows } = await supabaseAdmin
+      .from("unit_state")
+      .select("unit_crm_id, held_by_opportunity_id")
+      .not("held_by_opportunity_id", "is", null)
+      .order("unit_crm_id");
+
+    const rows = heldRows ?? [];
+    const slice = rows.slice(data.offset, data.offset + data.limit);
+
+    const existence = new Map<string, boolean>();
+    const results: Array<{ unit: string; opp: string; ok: boolean; detail: string }> = [];
+
+    for (const row of slice) {
+      const oppId = row.held_by_opportunity_id as string;
+      const unitId = row.unit_crm_id as string;
+      try {
+        let exists = existence.get(oppId);
+        if (exists === undefined) {
+          try {
+            await client.request("GET", `/opportunities/${oppId}`, {});
+            exists = true;
+          } catch (err) {
+            const status = (err as { status?: number })?.status;
+            if (status === 404 || status === 400) exists = false;
+            else throw err;
+          }
+          existence.set(oppId, exists);
+        }
+
+        if (exists) {
+          results.push({ unit: unitId, opp: oppId, ok: true, detail: "deal still exists - hold kept" });
+          continue;
+        }
+
+        await supabaseAdmin
+          .from("unit_state")
+          .update({ held_by_opportunity_id: null, status: null, stage: "" })
+          .eq("unit_crm_id", unitId);
+        results.push({ unit: unitId, opp: oppId, ok: true, detail: "deal gone - hold cleared" });
+      } catch (err) {
+        results.push({ unit: unitId, opp: oppId, ok: false, detail: shortErr(err) });
+      }
+    }
+
+    const nextOffset = data.offset + slice.length;
+    const cleared = results.filter((r) => r.detail.includes("cleared")).length;
+    const kept = results.filter((r) => r.detail.includes("kept")).length;
+    return {
+      totalHeld: rows.length,
+      processed: slice.length,
+      cleared,
+      kept,
+      failed: results.filter((r) => !r.ok),
+      results,
+      nextOffset,
+      remaining: Math.max(0, rows.length - nextOffset),
+    };
+  });
+
+// ------------------------------------------------------------- available sweep
+
 export const sweepAvailableUnits = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>
@@ -284,9 +355,6 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
           { forUpdate: true },
         )) as Record<string, unknown>;
 
-        // Stage has no "Available" value - Available IS the stage cleared. An
-        // explicit null clears it, appended AFTER normalisation because
-        // stripEmpty() drops nulls.
         props[FIELDS.unit.stage] = null;
 
         await requestObject(client, "PUT", "unit", `/records/${u.crm_record_id}`, {
