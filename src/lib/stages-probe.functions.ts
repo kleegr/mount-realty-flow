@@ -3,20 +3,22 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
 /**
- * STAGES PROBE.
+ * STAGES PROBE v2.
  *
- * The unit "Stages" field is MULTIPLE_OPTIONS and was writing NOTHING: every
- * other unit field updated but Stages stayed blank. object-config.server.ts
- * special-cases `stages` OUT of array-wrapping, so it has been sending a bare
- * string on PUT - and GHL silently drops it (200, stored nothing).
+ * Round 1 established: options DO exist, with INCONSISTENT keys -
+ *   reservedlocked | under_contract | closedsold
+ * and:
+ *   - array shapes -> 422 "unexpected format" (PUT rejects arrays, as with
+ *     property_type)
+ *   - bare string, whether label "Under Contract" or key "under_contract"
+ *     -> accepted with no error but STORED NOTHING.
  *
- * The schema dump also showed the field's options as []. So we do not actually
- * know the valid option VALUES or the accepted payload SHAPE. Guessing wastes
- * runs. Instead this probe writes one real unit several ways, reading the field
- * back after each, and reports which shape (if any) sticks. Whatever wins is
- * the shape the engine and the sweep must use.
+ * So GHL wants neither a scalar nor an array. This round tests the remaining
+ * candidate shapes for a MULTIPLE_OPTIONS field on PUT: the object/map form and
+ * the comma-joined form, using the EXACT option keys from the schema. Whatever
+ * reads back non-empty is the shape the engine and sweep must send.
  *
- * It restores the unit's original Stages value at the end (best effort).
+ * Restores the original value at the end (best effort).
  */
 
 async function requireImporter(userId: string) {
@@ -31,16 +33,15 @@ function readStage(rec: Record<string, unknown>): unknown {
   return props?.stages;
 }
 
+function stuckOn(readBack: unknown): boolean {
+  const s = JSON.stringify(readBack ?? null).toLowerCase();
+  return s.includes("under") || s.includes("contract");
+}
+
 export const probeStagesField = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>
-    z
-      .object({
-        confirm: z.literal("PROBE"),
-        // Optional: a specific unit CRM id. If omitted, the first mapped unit is used.
-        unitCrmId: z.string().optional(),
-      })
-      .parse(d),
+    z.object({ confirm: z.literal("PROBE"), unitCrmId: z.string().optional() }).parse(d),
   )
   .handler(async ({ data, context }) => {
     await requireImporter(context.userId);
@@ -64,21 +65,6 @@ export const probeStagesField = createServerFn({ method: "POST" })
     }
     if (!unitId) throw new Error("No unit found to probe.");
 
-    // 1) Read the field's real schema, including option values (the earlier dump
-    //    showed []; confirm whether options truly exist).
-    const schema = await requestObject<{ fields?: Array<Record<string, unknown>> }>(client, "GET", "unit", "", {
-      query: { locationId, fetchProperties: "true" },
-    });
-    const stagesField = (schema.data?.fields ?? []).find(
-      (f) => String(f.fieldKey ?? f.key ?? "").replace(/^custom_objects\.[^.]+\./, "") === "stages",
-    );
-    const rawOptions =
-      (stagesField?.picklistOptions ??
-        stagesField?.picklistOptionValues ??
-        stagesField?.options ??
-        stagesField?.picklist) as unknown;
-
-    // Capture original value to restore later.
     const before = await requestObject<Record<string, unknown>>(client, "GET", "unit", `/records/${unitId}`, {
       query: { locationId },
     });
@@ -95,10 +81,7 @@ export const probeStagesField = createServerFn({ method: "POST" })
           query: { locationId },
         });
         const readBack = readStage((back.data ?? {}) as Record<string, unknown>);
-        const stuck =
-          JSON.stringify(readBack ?? null).toLowerCase().includes("under") ||
-          JSON.stringify(readBack ?? null).toLowerCase().includes("contract");
-        attempts.push({ shape, sent: value, readBack, stuck });
+        attempts.push({ shape, sent: value, readBack, stuck: stuckOn(readBack) });
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
         const msg = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw)?.[1] ?? raw;
@@ -106,13 +89,19 @@ export const probeStagesField = createServerFn({ method: "POST" })
       }
     }
 
-    // The candidate shapes, in order. Target value "Under Contract" in each guise.
-    await tryShape("bare string 'Under Contract'", "Under Contract");
-    await tryShape("array ['Under Contract']", ["Under Contract"]);
-    await tryShape("underscore key 'under_contract'", "under_contract");
-    await tryShape("array underscore ['under_contract']", ["under_contract"]);
+    // The exact key for "Under Contract" from round 1.
+    const KEY = "under_contract";
 
-    // Restore original (best effort, try both shapes).
+    // Remaining candidate shapes for MULTIPLE_OPTIONS on PUT.
+    await tryShape("object map { key: true }", { [KEY]: true });
+    await tryShape("comma-joined keys", KEY);
+    await tryShape("value wrapper { value: [key] }", { value: [KEY] });
+    await tryShape("value wrapper { value: key }", { value: KEY });
+    await tryShape("options wrapper { options: [key] }", { options: [KEY] });
+    await tryShape("selected wrapper { selected: [key] }", { selected: [KEY] });
+    await tryShape("label as array ['Under Contract'] via key form", { [KEY]: "Under Contract" });
+
+    // Restore original (best effort).
     try {
       const restore = originalStage == null || originalStage === "" ? null : originalStage;
       await requestObject(client, "PUT", "unit", `/records/${unitId}`, {
@@ -124,12 +113,9 @@ export const probeStagesField = createServerFn({ method: "POST" })
 
     return {
       unitId,
-      stagesFieldRawOptions: rawOptions ?? null,
-      stagesFieldSchema: stagesField
-        ? { name: stagesField.name, dataType: stagesField.dataType, fieldKey: stagesField.fieldKey }
-        : null,
+      keyUsed: KEY,
       originalStage,
       attempts,
-      winner: attempts.find((a) => a.stuck)?.shape ?? "NONE STUCK - see attempts and rawOptions",
+      winner: attempts.find((a) => a.stuck)?.shape ?? "STILL NONE - send this whole result",
     };
   });
