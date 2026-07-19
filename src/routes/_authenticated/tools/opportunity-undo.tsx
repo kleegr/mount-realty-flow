@@ -10,6 +10,7 @@ import {
   recalcAll,
   showUnitFieldResolution,
 } from "@/lib/opportunity-undo.functions";
+import { getOpportunityContext } from "@/lib/opportunity-import.functions";
 
 export const Route = createFileRoute("/_authenticated/tools/opportunity-undo")({
   component: OpportunityUndoPage,
@@ -22,6 +23,14 @@ interface PipelineRow {
   governed: boolean;
 }
 
+interface OppFieldRow {
+  id: string;
+  name: string;
+  key: string;
+  dataType: string;
+  options: string[];
+}
+
 function OpportunityUndoPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [pipelines, setPipelines] = useState<PipelineRow[]>([]);
@@ -29,6 +38,7 @@ function OpportunityUndoPage() {
   const [totalUnits, setTotalUnits] = useState(0);
   const [log, setLog] = useState<string[]>([]);
   const [dump, setDump] = useState<unknown>(null);
+  const [oppFields, setOppFields] = useState<OppFieldRow[] | null>(null);
 
   const say = (line: string) => setLog((l) => [...l, line]);
 
@@ -44,6 +54,21 @@ function OpportunityUndoPage() {
       for (const p of r.pipelines) {
         say(`${p.name}: ${p.deals} deals${p.governed ? "" : " (UNGOVERNED - not managed by the engine)"}`);
       }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function loadOppFields() {
+    setBusy("oppfields");
+    try {
+      const r = await getOpportunityContext({ data: { confirm: "LOOK" } });
+      setOppFields(r.opportunityFields);
+      if (r.fieldsError) toast.error(`Field read error: ${r.fieldsError}`);
+      else if (r.opportunityFields.length === 0) toast.warning("GHL has NO opportunity custom fields");
+      else toast.success(`${r.opportunityFields.length} opportunity fields found`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -218,8 +243,47 @@ function OpportunityUndoPage() {
             {busy === "recalc" ? "Recalculating..." : "Recalculate rollups"}
           </Button>
           <Button variant="outline" onClick={fields} disabled={busy !== null}>
-            Show field resolution
+            Show unit field resolution
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Diagnostics - Opportunity payment fields</CardTitle>
+          <CardDescription>
+            Lists every custom field that exists on opportunities in GHL right now, with its ID and type. This is what
+            the payment columns map onto. If the list is empty, the fields must be created in GHL before payment data
+            can be imported.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Button variant="outline" onClick={loadOppFields} disabled={busy !== null}>
+            {busy === "oppfields" ? "Reading..." : "List opportunity fields in GHL"}
+          </Button>
+          {oppFields !== null && oppFields.length === 0 && (
+            <p className="text-destructive text-sm font-medium">
+              GHL has no custom fields on opportunities. Payment data has nowhere to land - create the fields first.
+            </p>
+          )}
+          {oppFields !== null && oppFields.length > 0 && (
+            <div className="space-y-1">
+              {oppFields.map((f) => (
+                <div key={f.id} className="rounded border p-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{f.name}</span>
+                    <span className="text-muted-foreground">{f.dataType}</span>
+                  </div>
+                  <div className="text-muted-foreground font-mono">
+                    id: {f.id} - key: {f.key}
+                  </div>
+                  {f.options.length > 0 && (
+                    <div className="text-muted-foreground mt-1">options: {f.options.join(", ")}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -237,7 +301,7 @@ function OpportunityUndoPage() {
       {dump !== null && (
         <Card>
           <CardHeader>
-            <CardTitle>Field resolution</CardTitle>
+            <CardTitle>Unit field resolution</CardTitle>
             <CardDescription>Any writes:false is a key GHL does not know - those writes vanish silently.</CardDescription>
           </CardHeader>
           <CardContent>
