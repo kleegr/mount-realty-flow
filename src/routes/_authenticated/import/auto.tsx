@@ -21,7 +21,6 @@ export const Route = createFileRoute("/_authenticated/import/auto")({
 });
 
 type Row = Record<string, unknown>;
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
 
 interface StepState {
   key: string;
