@@ -121,21 +121,23 @@ function AutoRunPage() {
       setPct(10);
 
       // ---- Step 2: clear stale holds.
-      setStep("holds", { status: "running" });
+      setStep("holds", { status: "running", detail: "checking..." });
       let offset = 0;
       for (;;) {
         const r = await clearFn({ data: { confirm: "CLEAR" as const, offset, limit: 20 } });
         totals.staleCleared += r.cleared;
         totals.liveKept += r.kept;
         offset = r.nextOffset;
+        setStep("holds", { status: "running", detail: `checked ${offset} of ${r.totalHeld}...` });
         if (r.remaining === 0 || r.processed === 0) break;
       }
       say(`Cleared ${totals.staleCleared} stale holds, kept ${totals.liveKept} live ones.`);
       setStep("holds", { status: "done", detail: `${totals.staleCleared} cleared, ${totals.liveKept} kept` });
       setPct(25);
 
-      // ---- Step 3: set Available.
-      setStep("available", { status: "running" });
+      // ---- Step 3: set Available. Reports progress every batch so it never
+      // looks frozen while grinding through hundreds of units.
+      setStep("available", { status: "running", detail: "starting..." });
       let so = 0;
       let aborted = false;
       for (;;) {
@@ -147,6 +149,9 @@ function AutoRunPage() {
           break;
         }
         so = r.nextOffset;
+        const totalToDo = totals.setAvailable + r.remaining;
+        setStep("available", { status: "running", detail: `${totals.setAvailable} of ${totalToDo}...` });
+        setPct(25 + Math.round((totals.setAvailable / Math.max(1, totalToDo)) * 20));
         if (r.remaining === 0 || r.processed === 0) break;
       }
       if (aborted) {
@@ -158,14 +163,14 @@ function AutoRunPage() {
       setPct(45);
 
       // ---- Step 4: recalc.
-      setStep("recalc", { status: "running" });
+      setStep("recalc", { status: "running", detail: "rebuilding..." });
       const rc = await recalcFn({ data: { confirm: "RECALC" as const } });
       say(`Recalculated ${JSON.stringify(rc)}`);
       setStep("recalc", { status: "done", detail: "counts rebuilt" });
       setPct(55);
 
       // ---- Step 5: import opportunities.
-      setStep("import", { status: "running" });
+      setStep("import", { status: "running", detail: "starting..." });
       let io = 0;
       let total = 0;
       for (let pass = 0; pass < 80; pass++) {
@@ -188,6 +193,7 @@ function AutoRunPage() {
           throw new Error("Payment fields did not store on the first deal. Stopped.");
         }
         io = r.nextOffset;
+        setStep("import", { status: "running", detail: `${io} of ${total}...` });
         setPct(55 + Math.round((io / Math.max(1, total)) * 45));
         if (r.remaining === 0 || r.processed === 0) break;
       }
