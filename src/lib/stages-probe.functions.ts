@@ -3,22 +3,23 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
 /**
- * STAGES PROBE v2.
+ * STAGES PROBE v3.
  *
- * Round 1 established: options DO exist, with INCONSISTENT keys -
- *   reservedlocked | under_contract | closedsold
- * and:
- *   - array shapes -> 422 "unexpected format" (PUT rejects arrays, as with
- *     property_type)
- *   - bare string, whether label "Under Contract" or key "under_contract"
- *     -> accepted with no error but STORED NOTHING.
+ * Rounds 1-2 proved: for `stages` on PUT, EVERY structured shape 422s
+ * ("unexpected format") and EVERY bare string is accepted-and-dropped,
+ * including the exact Value string from the field settings (`under_contract`).
  *
- * So GHL wants neither a scalar nor an array. This round tests the remaining
- * candidate shapes for a MULTIPLE_OPTIONS field on PUT: the object/map form and
- * the comma-joined form, using the EXACT option keys from the schema. Whatever
- * reads back non-empty is the shape the engine and sweep must send.
+ * Silent-accept-then-drop (not 422) means the value reaches the option matcher
+ * and fails to match. So the string GHL matches on is probably NOT the "Value"
+ * column shown in the UI - custom-object option pickers frequently key on an
+ * internal option id. This round does two things:
  *
- * Restores the original value at the end (best effort).
+ *   1. DUMP the raw option objects for `stages` with ALL their properties, so
+ *      we can see the real id/value/key the writer must send.
+ *   2. Try writing each option's every string-ish property as a bare value,
+ *      reading back after each, to discover empirically which string sticks.
+ *
+ * Restores original at the end (best effort).
  */
 
 async function requireImporter(userId: string) {
@@ -31,11 +32,6 @@ async function requireImporter(userId: string) {
 function readStage(rec: Record<string, unknown>): unknown {
   const props = (rec.properties ?? rec) as Record<string, unknown>;
   return props?.stages;
-}
-
-function stuckOn(readBack: unknown): boolean {
-  const s = JSON.stringify(readBack ?? null).toLowerCase();
-  return s.includes("under") || s.includes("contract");
 }
 
 export const probeStagesField = createServerFn({ method: "POST" })
@@ -65,14 +61,52 @@ export const probeStagesField = createServerFn({ method: "POST" })
     }
     if (!unitId) throw new Error("No unit found to probe.");
 
+    // 1) Full raw schema for the stages field - every property on every option.
+    const schema = await requestObject<{ fields?: Array<Record<string, unknown>> }>(client, "GET", "unit", "", {
+      query: { locationId, fetchProperties: "true" },
+    });
+    const stagesField = (schema.data?.fields ?? []).find(
+      (f) => String(f.fieldKey ?? f.key ?? "").replace(/^custom_objects\.[^.]+\./, "") === "stages",
+    );
+
+    // Collect every option object exactly as GHL returns it.
+    const rawOptionContainers = [
+      stagesField?.picklistOptions,
+      stagesField?.picklistOptionValues,
+      stagesField?.options,
+      stagesField?.picklist,
+    ].filter(Boolean);
+    const optionObjects: Array<Record<string, unknown>> = [];
+    for (const container of rawOptionContainers) {
+      if (Array.isArray(container)) {
+        for (const o of container) {
+          if (o && typeof o === "object") optionObjects.push(o as Record<string, unknown>);
+          else if (typeof o === "string") optionObjects.push({ _stringOption: o });
+        }
+      }
+    }
+
+    // Find the option that represents "Under Contract".
+    const uc = optionObjects.find((o) =>
+      Object.values(o).some((v) => typeof v === "string" && /under.?contract/i.test(v)),
+    );
+
+    // Every distinct string value across that option's properties = write candidates.
+    const candidates: Array<{ from: string; value: string }> = [];
+    if (uc) {
+      for (const [k, v] of Object.entries(uc)) {
+        if (typeof v === "string" && v.trim()) candidates.push({ from: k, value: v });
+      }
+    }
+
     const before = await requestObject<Record<string, unknown>>(client, "GET", "unit", `/records/${unitId}`, {
       query: { locationId },
     });
     const originalStage = readStage((before.data ?? {}) as Record<string, unknown>);
 
-    const attempts: Array<{ shape: string; sent: unknown; readBack: unknown; stuck: boolean; error?: string }> = [];
+    const attempts: Array<{ from: string; sent: unknown; readBack: unknown; stuck: boolean; error?: string }> = [];
 
-    async function tryShape(shape: string, value: unknown) {
+    async function tryValue(from: string, value: unknown) {
       try {
         await requestObject(client, "PUT", "unit", `/records/${unitId}`, {
           body: { properties: { stages: value } },
@@ -81,27 +115,22 @@ export const probeStagesField = createServerFn({ method: "POST" })
           query: { locationId },
         });
         const readBack = readStage((back.data ?? {}) as Record<string, unknown>);
-        attempts.push({ shape, sent: value, readBack, stuck: stuckOn(readBack) });
+        const stuck = readBack != null && JSON.stringify(readBack) !== "\"\"" && JSON.stringify(readBack) !== "[]";
+        attempts.push({ from, sent: value, readBack, stuck });
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
         const msg = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw)?.[1] ?? raw;
-        attempts.push({ shape, sent: value, readBack: undefined, stuck: false, error: msg.slice(0, 200) });
+        attempts.push({ from, sent: value, readBack: undefined, stuck: false, error: msg.slice(0, 200) });
       }
     }
 
-    // The exact key for "Under Contract" from round 1.
-    const KEY = "under_contract";
+    // Try each candidate string as a bare value AND array-wrapped.
+    for (const cand of candidates) {
+      await tryValue(`${cand.from} (bare)`, cand.value);
+      await tryValue(`${cand.from} (array)`, [cand.value]);
+    }
 
-    // Remaining candidate shapes for MULTIPLE_OPTIONS on PUT.
-    await tryShape("object map { key: true }", { [KEY]: true });
-    await tryShape("comma-joined keys", KEY);
-    await tryShape("value wrapper { value: [key] }", { value: [KEY] });
-    await tryShape("value wrapper { value: key }", { value: KEY });
-    await tryShape("options wrapper { options: [key] }", { options: [KEY] });
-    await tryShape("selected wrapper { selected: [key] }", { selected: [KEY] });
-    await tryShape("label as array ['Under Contract'] via key form", { [KEY]: "Under Contract" });
-
-    // Restore original (best effort).
+    // Restore.
     try {
       const restore = originalStage == null || originalStage === "" ? null : originalStage;
       await requestObject(client, "PUT", "unit", `/records/${unitId}`, {
@@ -113,9 +142,19 @@ export const probeStagesField = createServerFn({ method: "POST" })
 
     return {
       unitId,
-      keyUsed: KEY,
+      stagesFieldSchema: stagesField
+        ? {
+            name: stagesField.name,
+            dataType: stagesField.dataType,
+            fieldKey: stagesField.fieldKey,
+            allFieldProps: Object.keys(stagesField),
+          }
+        : null,
+      underContractOption: uc ?? "NOT FOUND",
+      allOptionObjects: optionObjects,
+      candidatesTried: candidates,
       originalStage,
       attempts,
-      winner: attempts.find((a) => a.stuck)?.shape ?? "STILL NONE - send this whole result",
+      winner: attempts.find((a) => a.stuck) ?? "STILL NONE - send allOptionObjects, that has the real shape",
     };
   });
