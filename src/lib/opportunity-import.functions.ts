@@ -7,38 +7,28 @@ import { z } from "zod";
  *
  * RESOLUTION. The sheet's Building column carries the unit number glued on the
  * end ("10 Chesnut Drive # 101") while GHL's building is "10 Chesnut Drive".
- * That single pattern was why the first dry run only resolved 118/183.
  *
  * Units match BUILDING-FIRST: unit names are
- * "{DEVELOPER} - {BUILDING} - {UNIT} {NUMBER}", so matching "101" globally would
- * hit every building with a 101. Resolving the building narrows it to that
- * building's ~4 units. Only possible because parent_crm_id was repaired.
+ * "{DEVELOPER} - {BUILDING} - {UNIT} {NUMBER}". Resolving the building narrows
+ * to that building's ~4 units. Only possible because parent_crm_id was repaired.
  *
  * THE LOCK. The Locked/Reserved association is the ON switch - the stage map
- * does nothing without it. The definition says units are FIRST:
- *   firstObjectKey: custom_objects.units, secondObjectKey: opportunity
- * Passing the opportunity first is what produced "Invalid record id" earlier.
+ * does nothing without it. Units are FIRST in the definition.
  *
- * IDEMPOTENCY WITHOUT A NEW TABLE. A unit locks to exactly ONE opportunity, so
+ * IDEMPOTENCY. A unit locks to exactly ONE opportunity, so
  * unit_state.held_by_opportunity_id IS the resume state: held means done.
  *
  * ATOMIC PER ROW. If the lock fails after the deal is created, the deal is
- * DELETED. Otherwise a retry sees a free unit, creates a second deal, and
- * orphans the first.
+ * DELETED, so a retry never orphans a card.
  *
- * THE NAME is the contact's full name plus their full phone. The unit is NOT in
- * the name: it is already on the association, and duplicating it there means two
- * places to disagree.
+ * THE NAME is the contact's full name plus their full phone. No unit - it lives
+ * on the association.
  *
- * PAYMENT FIELDS ARE SCHEMA-DRIVEN. The deal-level columns (Date Signed,
- * Executed, Down Payment, Paid Amount, Remaining, Receipt #, Payment Type,
- * % Paid, Notes) were deliberately blocked from the contact import - one buyer
- * with six units has six different payment schedules, so they cannot live on the
- * person. They belong here. Field keys and picklist values are read live from
- * GHL and matched case/punctuation-insensitively, and the FIRST write is read
- * back: GHL 200s an unknown custom-field payload and silently drops it, so
- * without the check the happy path is "186 deals imported" with no payment data
- * on any of them.
+ * PAYMENT FIELDS ARE SCHEMA-DRIVEN. Deal-level columns map to live GHL
+ * opportunity fields by name or explicit alias (see DEAL_ALIASES), and the FIRST
+ * write is read back: GHL 200s an unknown custom-field payload and silently
+ * drops it, so without the check the happy path is "deals imported" with no
+ * payment data on any of them.
  */
 
 async function requireImporter(userId: string) {
@@ -160,13 +150,40 @@ export interface OppColumnMap {
   dataType: string | null;
 }
 
-/** Map every non-structural column onto a live opportunity field, by name. */
+/**
+ * Explicit sheet-header -> GHL-opportunity-field-NAME aliases, for columns whose
+ * names don't match GHL by luck. Keyed by normalized header. The Lazers sheet
+ * has "REMANING D" (a typo for Remaining) and ALL-CAPS payment headers; without
+ * these, that data would silently not map. The right side is the exact GHL field
+ * name, matched case/punctuation-insensitively downstream.
+ *
+ * Note: Sale Price is intentionally NOT here - it is in STRUCTURAL and flows in
+ * as the deal's monetaryValue, not as a custom field.
+ */
+const DEAL_ALIASES: Record<string, string> = {
+  remaningd: "Remaining Payment",
+  remaining: "Remaining Payment",
+  remainingd: "Remaining Payment",
+  remainingpayment: "Remaining Payment",
+  downpayment: "Down Payment",
+  paidamount: "Paid Amount",
+  datesigned: "Date Signed",
+  executed: "Executed",
+  duedate: "Due Date",
+};
+
+/** Map every non-structural column onto a live opportunity field, by name or alias. */
 function mapDealColumns(headers: string[], fields: OppField[]): OppColumnMap[] {
   return headers
     .filter((h) => !STRUCTURAL.has(norm(h)) && norm(h))
     .map((h) => {
       const n = norm(h);
-      const f = fields.find((x) => norm(x.name) === n || norm(x.fieldKey.replace(/^opportunity\./, "")) === n);
+      const aliasTarget = DEAL_ALIASES[n];
+      const f = fields.find((x) => {
+        const byName = norm(x.name) === n || norm(x.fieldKey.replace(/^opportunity\./, "")) === n;
+        const byAlias = aliasTarget ? norm(x.name) === norm(aliasTarget) : false;
+        return byName || byAlias;
+      });
       return {
         header: h,
         fieldId: f?.id ?? null,
@@ -578,7 +595,7 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
         }
 
         // VERIFY THE FIRST WRITE. GHL 200s an unknown custom-field payload and
-        // drops it silently - without this, 186 deals import with no payment data.
+        // drops it silently - without this, deals import with no payment data.
         if (!verified && customFields.length > 0) {
           const back = await client.request<Record<string, unknown>>("GET", `/opportunities/${oppId}`);
           const bd = (back.data ?? {}) as Record<string, unknown>;
@@ -591,7 +608,7 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
           if (landed.length === 0) {
             throw new Error(
               `ABORTED AFTER ONE ROW. Sent ${customFields.length} payment fields; GHL returned 200 but stored none. ` +
-                `Fix the payload shape before importing 186 deals. Read back: ${JSON.stringify(got).slice(0, 250)}`,
+                `Fix the payload shape first. Read back: ${JSON.stringify(got).slice(0, 250)}`,
             );
           }
           verified = true;
