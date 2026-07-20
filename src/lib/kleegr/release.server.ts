@@ -22,6 +22,13 @@
  *    Dragging a deal backward — even out of Closing — re-applies the mapped
  *    status, including un-selling.
  *
+ * AVAILABLE IS A REAL STAGE (owner decision): an available unit carries
+ * Stage = "Available" on the CRM record instead of an empty stage, so the
+ * unit list shows its state explicitly. The "Available" option must exist on
+ * the Stages picklist in GHL. Legacy empty-stage units are treated as
+ * available too (reads accept both), and get upgraded to the explicit value
+ * the next time they are released or synced.
+ *
  * Sold guard: a Sold unit may only change via an explicit card POSITION
  * (MOVED_TO_RELEASE_STAGE / position sync) or a MANUAL release. Deleting or
  * losing a deal does NOT quietly un-sell a unit.
@@ -44,11 +51,17 @@ export type ReleaseReason =
 export type CanonicalStatus = "available" | "reserved" | "under_contract" | "sold";
 
 const STATUS_TARGETS: Record<CanonicalStatus, { availability: string; stage: string; deducted: string }> = {
-  available: { availability: "Available", stage: "", deducted: "No" },
+  available: { availability: "Available", stage: "Available", deducted: "No" },
   reserved: { availability: "Not Available", stage: "Reserved/Locked", deducted: "Yes" },
   under_contract: { availability: "Not Available", stage: "Under Contract", deducted: "Yes" },
   sold: { availability: "Not Available", stage: "Closed/Sold", deducted: "Yes" },
 };
+
+/** Both the legacy empty stage and the explicit value mean "available". */
+function isAvailableStage(stage: string): boolean {
+  const s = stage.trim().toLowerCase();
+  return s === "" || s === "available";
+}
 
 export interface ReleaseResult {
   unitCrmId: string;
@@ -99,21 +112,22 @@ export async function releaseUnit(
     return { unitCrmId, released: false, outcome: "sold_protected", reason };
   }
 
-  // Idempotent no-op.
-  if (row && currentAvailability === "Available" && !currentStage) {
+  // Idempotent no-op — already Available with the EXPLICIT stage value. A
+  // legacy empty-stage unit is NOT skipped: it gets upgraded to the explicit
+  // "Available" stage below.
+  if (row && currentAvailability === "Available" && currentStage === "Available") {
     await clearHolder(unitCrmId);
     return { unitCrmId, released: false, outcome: "already_available", reason };
   }
 
-  // ---- GHL side. Empty strings are stripped by normalizeRecordProperties,
-  // so cleared fields are appended as explicit nulls (verified accepted).
+  // ---- GHL side. Stage is written EXPLICITLY as "Available" (owner decision).
   const setProps = await normalizeRecordProperties(client, "unit", {
     [FIELDS.unit.availability]: "Available",
     [FIELDS.unit.inventory_deducted]: "No",
+    [FIELDS.unit.stage]: "Available",
   }, { forUpdate: true });
   const clearProps = {
     ...setProps,
-    [FIELDS.unit.stage]: null,
     [FIELDS.unit.locked_date]: null,
   };
 
@@ -132,7 +146,7 @@ export async function releaseUnit(
 
   // ---- Mirror side.
   const { error: upErr } = await supabaseAdmin.from("unit_state").upsert(
-    { unit_crm_id: unitCrmId, availability: "Available", stage: "" },
+    { unit_crm_id: unitCrmId, availability: "Available", stage: "Available" },
     { onConflict: "unit_crm_id" },
   );
   if (upErr) {
@@ -149,7 +163,7 @@ export async function releaseUnit(
     entity_scope: "unit",
     entity_crm_id: unitCrmId,
     previous: { availability: currentAvailability || null, stage: currentStage || null } as never,
-    next: { availability: "Available", stage: "" } as never,
+    next: { availability: "Available", stage: "Available" } as never,
     reason: `${reason}${opportunityId ? ` (opportunity ${opportunityId})` : ""}`,
   });
 
@@ -551,7 +565,8 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
   // Backfill: locked units with NO recorded holder (locks that predate holder
   // tracking). Recover the holder from webhook history — the "applied:*"
   // event that locked the unit names the opportunity that did it. Units with
-  // no webhook history (pure CSV imports) stay untouched.
+  // no webhook history (pure CSV imports) stay untouched. Units whose stage is
+  // Available (explicit or legacy empty) are not held and are skipped.
   const { data: orphanRows } = await supabaseAdmin
     .from("unit_state")
     .select("unit_crm_id, stage, held_by_opportunity_id")
@@ -560,7 +575,7 @@ export async function reconcileHeldUnits(client?: CrmClient): Promise<ReconcileR
     const unitCrmId = typeof row.unit_crm_id === "string" ? row.unit_crm_id : null;
     if (!unitCrmId) continue;
     const stage = String(row.stage ?? "").trim();
-    if (!stage) continue;
+    if (isAvailableStage(stage)) continue;
     const { data: ev } = await supabaseAdmin
       .from("webhook_events")
       .select("opportunity_id")
