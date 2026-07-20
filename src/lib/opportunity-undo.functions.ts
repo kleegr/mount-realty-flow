@@ -23,7 +23,9 @@ import { z } from "zod";
  * VERIFY-FIRST. GHL 200s an unknown custom-field payload and silently drops it,
  * and normalizeRecordProperties drops any key not in the live schema. So the
  * FIRST write of each phase is read back, and the run ABORTS if GHL accepted the
- * call but stored nothing.
+ * call but stored nothing. On a stage failure the abort message includes the
+ * exact value sent AND the live option objects on the stages field, so the run
+ * log diagnoses itself.
  *
  * PATHS. requestObject comes from object-config.server (NOT objects.server),
  * and unit records live at /records/{id} - the same path the stage engine uses.
@@ -344,6 +346,23 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
       };
     }
 
+    /** Raw option objects on the stages field, for the self-diagnosing abort message. */
+    const stagesOptionsDump = async (): Promise<string> => {
+      try {
+        const schema = await requestObject<{ fields?: Array<Record<string, unknown>> }>(client, "GET", "unit", "", {
+          query: { locationId: String(locationId), fetchProperties: "true" },
+        });
+        const stagesField = (schema.data?.fields ?? []).find(
+          (f) => String(f.fieldKey ?? f.key ?? "").replace(/^custom_objects\.[^.]+\./, "") === FIELDS.unit.stage,
+        );
+        if (!stagesField) return ` NO FIELD keyed \"${FIELDS.unit.stage}\" in the live unit schema.`;
+        const raw = stagesField.picklistOptions ?? stagesField.picklistOptionValues ?? stagesField.options ?? stagesField.picklist ?? null;
+        return ` LIVE OPTIONS on \"${FIELDS.unit.stage}\": ${JSON.stringify(raw).slice(0, 400)}.`;
+      } catch {
+        return "";
+      }
+    };
+
     const slice = free.slice(data.offset, data.offset + data.limit);
     const results: Array<{ unit: string; ok: boolean; detail: string }> = [];
     let verified = data.offset > 0;
@@ -352,8 +371,8 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
       const label = u.display_name ?? u.crm_record_id;
       try {
         // Availability AND Stage both say "Available" (owner decision). The
-        // stage goes through normalizeRecordProperties so a MULTIPLE_OPTIONS
-        // picklist gets the list shape it demands.
+        // stage goes through normalizeRecordProperties, which resolves the
+        // stored option value from the LIVE schema.
         const props = (await normalizeRecordProperties(
           client,
           "unit",
@@ -384,17 +403,18 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
           const gotStage = String(p[FIELDS.unit.stage] ?? "");
           if (!/available/i.test(gotAvail)) {
             throw new Error(
-              `ABORTED AFTER ONE UNIT. Sent availability=\"Available\" to key \"${FIELDS.unit.availability}\"; ` +
+              `ABORTED AFTER ONE UNIT. Sent availability=\"${String(props[FIELDS.unit.availability])}\" to key \"${FIELDS.unit.availability}\"; ` +
                 `GHL returned 200 but read back \"${gotAvail}\". The key is wrong or \"Available\" is not a valid option. ` +
                 `Run \"Show unit field resolution\" to see the real key. Read back: ${JSON.stringify(p).slice(0, 300)}`,
             );
           }
           if (!/available/i.test(gotStage)) {
+            const dump = await stagesOptionsDump();
             throw new Error(
-              `ABORTED AFTER ONE UNIT. Sent Stage=\"Available\" to key \"${FIELDS.unit.stage}\"; ` +
-                `GHL returned 200 but read back \"${gotStage}\". ` +
-                `Most likely \"Available\" is missing from the Stages picklist options in GHL - add it, then run again. ` +
-                `Read back: ${JSON.stringify(p).slice(0, 300)}`,
+              `ABORTED AFTER ONE UNIT. Sent Stage=\"${String(props[FIELDS.unit.stage])}\" to key \"${FIELDS.unit.stage}\"; ` +
+                `GHL returned 200 but read back \"${gotStage}\".${dump} ` +
+                `The sent value must equal one of the stored option values above. ` +
+                `Read back: ${JSON.stringify(p).slice(0, 200)}`,
             );
           }
           verified = true;

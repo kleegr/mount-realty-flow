@@ -20,13 +20,71 @@ const FALLBACK_OPTION_KEYS: Record<string, Record<string, string>> = {
   },
 };
 
+type SchemaOptionObject = {
+  key?: string;
+  label?: string;
+  value?: string;
+  name?: string;
+  id?: string;
+};
+
 type SchemaField = {
   name?: string;
   fieldKey?: string;
   dataType?: string;
   type?: string;
-  options?: Array<{ key?: string; label?: string }>;
+  options?: Array<SchemaOptionObject | string>;
+  picklistOptions?: Array<SchemaOptionObject | string>;
+  picklistOptionValues?: Array<SchemaOptionObject | string>;
+  picklist?: Array<SchemaOptionObject | string>;
 };
+
+/**
+ * GHL is inconsistent about WHERE a picklist's options live (options,
+ * picklistOptions, picklistOptionValues, picklist) and about their SHAPE
+ * (bare strings or objects with value/key/name/label/id). Collect every
+ * option from every container. `canonical` is the string GHL's option
+ * matcher accepts on write (the stored value); `aliases` is every string
+ * a caller might plausibly send for it.
+ */
+function schemaOptionEntries(field: SchemaField): Array<{ canonical: string; aliases: string[] }> {
+  const containers = [field.picklistOptions, field.picklistOptionValues, field.options, field.picklist];
+  const entries: Array<{ canonical: string; aliases: string[] }> = [];
+  for (const container of containers) {
+    if (!Array.isArray(container)) continue;
+    for (const raw of container) {
+      if (typeof raw === "string") {
+        if (raw.trim()) entries.push({ canonical: raw, aliases: [raw] });
+        continue;
+      }
+      if (!raw || typeof raw !== "object") continue;
+      const o = raw as SchemaOptionObject;
+      const strings = [o.value, o.key, o.name, o.label, o.id]
+        .filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+      if (strings.length === 0) continue;
+      // The stored VALUE is what the option matcher compares against on
+      // write; fall through key/name/label when value is absent.
+      const canonical = o.value ?? o.key ?? o.name ?? o.label ?? strings[0];
+      entries.push({ canonical, aliases: strings });
+    }
+  }
+  return entries;
+}
+
+/**
+ * Resolve the string GHL's option matcher will accept, in strict safety order:
+ *   1. the battle-tested hardcoded pairs (FALLBACK_OPTION_KEYS) — values
+ *      proven to stick for the original options; these must never regress;
+ *   2. the LIVE schema's stored option value — fixes options added later
+ *      through the GHL UI, whose stored value GHL invents and no local guess
+ *      can predict (e.g. the "Available" stage);
+ *   3. a snake_case guess from the label (legacy last resort).
+ */
+function resolveOptionValue(prop: string, value: unknown, liveMap?: Map<string, string>): string | null {
+  const n = normalizeOption(value);
+  if (!n) return null;
+  return FALLBACK_OPTION_KEYS[prop]?.[n] ?? liveMap?.get(n) ?? toOptionKey(value);
+}
 
 type CrmObjectDefinition = {
   id?: string;
@@ -199,13 +257,14 @@ export async function normalizeRecordProperties(
     const schemaType = String(field.dataType ?? field.type ?? "").toLowerCase();
     for (const k of keys) schemaTypeMap.set(k, schemaType);
 
-    const options = field.options ?? [];
-    if (keys.length === 0 || options.length === 0) continue;
+    const entries = schemaOptionEntries(field);
+    if (keys.length === 0 || entries.length === 0) continue;
     const valueMap = new Map<string, string>();
-    for (const opt of options) {
-      if (!opt.key) continue;
-      valueMap.set(normalizeOption(opt.key), opt.key);
-      if (opt.label) valueMap.set(normalizeOption(opt.label), opt.key);
+    for (const entry of entries) {
+      for (const alias of entry.aliases) {
+        const n = normalizeOption(alias);
+        if (n && !valueMap.has(n)) valueMap.set(n, entry.canonical);
+      }
     }
     for (const k of keys) optionMap.set(k, valueMap);
   }
@@ -225,7 +284,7 @@ export async function normalizeRecordProperties(
 
     if (Array.isArray(value)) {
       const mapped = value
-        .map((v) => map.get(normalizeOption(v)) ?? fallbackOption(prop, v))
+        .map((v) => resolveOptionValue(prop, v, map))
         .filter(Boolean);
       if (mapped.length === 0) continue;
       // On update a MULTIPLE_OPTIONS field cannot take an array at all, so an
@@ -234,7 +293,7 @@ export async function normalizeRecordProperties(
       continue;
     }
 
-    const mapped = map.get(normalizeOption(value)) ?? fallbackOption(prop, value);
+    const mapped = resolveOptionValue(prop, value, map);
     if (mapped) out[prop] = isMulti ? [mapped] : mapped;
   }
   return out;
