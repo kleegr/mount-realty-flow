@@ -17,11 +17,10 @@ import { z } from "zod";
  *   - same buyer's opportunity holds it -> UPDATE the deal (name, payments).
  *   - a DIFFERENT buyer's live opp holds it -> CONFLICT, report both, touch none.
  *   - the holder no longer exists -> clear the stale hold, create fresh.
- * This is what makes a second import correct existing deals instead of skipping,
- * WITHOUT overwriting one buyer's deal with another buyer's data.
  *
  * THE NAME (spec 2) is "{full name} - {phone}": sheet phone preferred, GHL
  * contact phone fallback, name-only when neither exists (flagged Missing Phone).
+ * The phone is shown in US format, e.g. (347) 786-0323.
  *
  * PAYMENT FIELDS map to live GHL opportunity fields by name or alias; the first
  * write is read back - GHL 200s an unknown custom-field payload and drops it.
@@ -54,7 +53,7 @@ function money(v: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** Digits-and-plus phone, for comparison and display. Empty if nothing usable. */
+/** Digits-and-plus phone, for COMPARISON. Empty if nothing usable. */
 function normalizePhone(v: unknown): string {
   const s = String(v ?? "").trim();
   if (!s) return "";
@@ -62,6 +61,26 @@ function normalizePhone(v: unknown): string {
   const digits = kept.replace(/\D/g, "");
   if (digits.length < 7) return "";
   return kept.startsWith("+") ? `+${digits}` : digits;
+}
+
+/**
+ * Format a normalized phone as a US number for DISPLAY on the deal name.
+ *   3477860323   -> (347) 786-0323
+ *   13477860323  -> (347) 786-0323   (leading US country code stripped)
+ *   +13477860323 -> (347) 786-0323
+ * Anything that isn't a recognizable US 10-digit number is returned intelligibly
+ * (an international +44... stays +44..., a 7-digit local stays as-is), so a
+ * number we don't understand is never mangled into a wrong shape.
+ */
+function formatUsPhone(normalized: string): string {
+  if (!normalized) return "";
+  const hadPlus = normalized.startsWith("+");
+  let digits = normalized.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  return hadPlus ? `+${digits}` : digits;
 }
 
 /** "10 Chesnut Drive # 101" -> { building: "10 Chesnut Drive", unit: "101" } */
@@ -193,7 +212,6 @@ function mapDealColumns(headers: string[], fields: OppField[]): OppColumnMap[] {
 function toIsoDate(v: unknown): string | null {
   const s = String(v ?? "").trim();
   if (!s) return null;
-  // Already ISO?
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
   const t = Date.parse(s);
   if (Number.isNaN(t)) return null;
@@ -209,7 +227,7 @@ function fieldValueFor(f: OppField, v: unknown): unknown | null {
     return f.dataType === "MULTIPLE_OPTIONS" ? [exact] : exact;
   }
   if (/date/i.test(f.dataType)) {
-    return toIsoDate(v); // null if the cell isn't a real date -> skipped, not sent
+    return toIsoDate(v);
   }
   if (/monet/i.test(f.dataType) || /numer/i.test(f.dataType)) {
     const n = Number(String(v).replace(/[$,\s]/g, ""));
@@ -423,10 +441,14 @@ function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeo
   };
 }
 
-/** Name per spec 2: sheet phone preferred, contact phone fallback, name-only otherwise. */
+/**
+ * Name per spec 2: sheet phone preferred, contact phone fallback, name-only
+ * otherwise. The phone is displayed in US format, e.g. "Client - (347) 786-0323".
+ */
 function buildName(r: Resolved): { name: string; missingPhone: boolean } {
-  const phone = r.sheetPhone || r.contactPhone;
-  return { name: phone ? `${r.client} - ${phone}` : r.client, missingPhone: !phone };
+  const rawPhone = r.sheetPhone || r.contactPhone;
+  const pretty = formatUsPhone(rawPhone);
+  return { name: pretty ? `${r.client} - ${pretty}` : r.client, missingPhone: !pretty };
 }
 
 // ---------------------------------------------------------------- preview
@@ -617,7 +639,6 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
                 ? String((holderDeal.contact as Record<string, unknown>).id ?? "")
                 : "");
 
-            // A DIFFERENT active buyer holds this unit -> CONFLICT, touch nothing.
             if (holderContact && holderContact !== r.contactId) {
               results.push({
                 row: r.rowNo,
@@ -629,8 +650,6 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
               continue;
             }
 
-            // Same buyer -> UPDATE in place: name + payments. No new deal, no
-            // association change, inventory status untouched.
             const body: Record<string, unknown> = { name: dealName };
             if (r.price) body.monetaryValue = r.price;
             if (customFields.length) body.customFields = customFields;
@@ -651,7 +670,6 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
             continue;
           }
 
-          // Stale holder: deal gone. Clear the hold, fall through to create.
           await supabaseAdmin
             .from("unit_state")
             .update({ held_by_opportunity_id: null })
