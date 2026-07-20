@@ -47,11 +47,6 @@ type ItemInsert = Database["public"]["Tables"]["import_items"]["Insert"];
 
 /**
  * Turn a raw CRM failure into something a human can act on.
- * GHL returns e.g.
- *   PUT /objects/custom_objects.projects/records/abc failed (422):
- *   {"statusCode":422,"message":"We couldn't apply updates to Property Type
- *    due to an unexpected format.","error":"Unprocessable Entity","traceId":"..."}
- * The path and traceId are noise in a row-level report; the message is the point.
  */
 function humanizeCrmError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
@@ -94,27 +89,19 @@ export async function executeFlexImport(params: {
     warnings: [],
   };
 
-  // Pairs discovered during the row loop; processed after all upserts complete.
   const assocPairs: Array<{ parent: FlexScope; parentId: string; child: FlexScope; childId: string }> = [];
 
   const items: ItemInsert[] = [];
   const failedRows: Array<Record<string, unknown>> = [];
 
-  // Per-file caches: scope -> logical key -> CRM ID
   const cache: Record<FlexScope, { byExternalId: Map<string, string>; byName: Map<string, string>; byCode: Map<string, string> }> = {
     project: { byExternalId: new Map(), byName: new Map(), byCode: new Map() },
     building: { byExternalId: new Map(), byName: new Map(), byCode: new Map() },
     unit: { byExternalId: new Map(), byName: new Map(), byCode: new Map() },
   };
 
-  // "identity + exact same properties" -> crmId, for this run only.
-  // A typical sheet repeats its Project on every Unit row; without this the
-  // same Project record is PUT once per row (N identical API calls, and N
-  // copies of any error). Writing identical properties twice is a no-op, so
-  // repeat writes are skipped and the known crmId is reused.
   const writeCache = new Map<string, string>();
 
-  // Process scopes in parent-first order
   const scopeOrder: FlexScope[] = ["project", "building", "unit"].filter((s) => scopes.includes(s as FlexScope)) as FlexScope[];
 
   for (const scope of scopeOrder) {
@@ -129,11 +116,8 @@ export async function executeFlexImport(params: {
         const { properties, ids, parentRefs } = extractRow(scope, row, scopeMap);
         rowRef = ids.name ?? ids.code ?? ids.external_id ?? ids.record_id ?? `row ${rowNumber}`;
 
-        // Skip rows that have no meaningful data for this scope
         if (!ids.record_id && !ids.external_id && !ids.name && !ids.code && Object.keys(properties).length === 0) continue;
 
-        // Require at least one identity field (name / code / external id / record id) to create or update.
-        // Otherwise CRM will reject with "required property missing" (e.g. building_name).
         const hasIdentity = Boolean(ids.record_id || ids.external_id || ids.name || ids.code);
         if (!hasIdentity) {
           report.skipped++;
@@ -144,8 +128,6 @@ export async function executeFlexImport(params: {
           continue;
         }
 
-
-        // Resolve parent CRM IDs
         const parentCrm: Record<FlexScope, string | null> = { project: null, building: null, unit: null };
         let parentResolution: string | null = null;
 
@@ -189,8 +171,6 @@ export async function executeFlexImport(params: {
           }
         }
 
-        // ---- Identical-write dedupe (this file only).
-        // Not applied when the user explicitly asked for duplicate records.
         const identityKey = (ids.record_id ?? ids.external_id ?? ids.code ?? ids.name ?? "").toLowerCase();
         const writeKey = identityKey && options.duplicateStrategy !== "create_duplicate"
           ? `${scope}|${identityKey}|${stableStringify(properties)}`
@@ -202,7 +182,6 @@ export async function executeFlexImport(params: {
           items.push(makeItem(jobId, scope, ids, "skip", "duplicate_row_same_file", parentResolution, properties, alreadyWritten,
             [{ level: "info", message: `Identical ${scope} already written by an earlier row in this file \u2014 CRM write skipped.` }],
             alreadyWritten, null, null));
-          // Parent links still matter even when the record write is skipped.
           if (scope === "building" && parentCrm.project) {
             assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "building", childId: alreadyWritten });
           }
@@ -212,7 +191,6 @@ export async function executeFlexImport(params: {
           continue;
         }
 
-        // Duplicate detection
         const existing = await resolveIdentity(supabaseAdmin, scope, ids, options.duplicateKey);
         let resolution: "create" | "update" | "skip" | "create_duplicate";
         let action: "create" | "update" | "skip" | "create_duplicate";
@@ -226,6 +204,14 @@ export async function executeFlexImport(params: {
             report.skipped++;
             report.per_scope[scope].skipped++;
             items.push(makeItem(jobId, scope, ids, action, resolution, parentResolution, properties, existing, [], null, null, null));
+            // Even when the record write is skipped, the parent link still matters
+            // so the unit attaches to its building.
+            if (scope === "unit" && parentCrm.building) {
+              assocPairs.push({ parent: "building", parentId: parentCrm.building, child: "unit", childId: existing });
+            }
+            if (scope === "building" && parentCrm.project) {
+              assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "building", childId: existing });
+            }
             continue;
           }
           if (options.duplicateStrategy === "create_duplicate") {
@@ -236,7 +222,6 @@ export async function executeFlexImport(params: {
             report.imported++;
             undoOp = { kind: "delete", scope, crmId };
           } else {
-            // update, unless the saved local CRM mapping points at a record that no longer exists.
             const previousResult = await tryReadPrevious(client, scope, existing);
             previous = previousResult.properties;
             if (previousResult.missing) {
@@ -262,7 +247,6 @@ export async function executeFlexImport(params: {
           undoOp = { kind: "delete", scope, crmId };
         }
 
-        // Store mapping so later rows / undo can find it
         if (crmId) {
           if (writeKey) writeCache.set(writeKey, crmId);
           await saveMap(supabaseAdmin, scope, crmId, ids, jobId);
@@ -270,7 +254,6 @@ export async function executeFlexImport(params: {
           if (ids.name) cache[scope].byName.set(ids.name.toLowerCase(), crmId);
           if (ids.code) cache[scope].byCode.set(ids.code.toLowerCase(), crmId);
 
-          // Queue associations Project\u2192Building and Building\u2192Unit for this row.
           if (scope === "building" && parentCrm.project) {
             assocPairs.push({ parent: "project", parentId: parentCrm.project, child: "building", childId: crmId });
           }
@@ -291,8 +274,6 @@ export async function executeFlexImport(params: {
     }
   }
 
-  // ---------- Associations pass ----------
-  // Dedupe, then create Project<->Building and Building<->Unit relations in the CRM.
   const assocSeen = new Set<string>();
   const uniquePairs = assocPairs.filter((p) => {
     const key = `${p.parent}:${p.parentId}->${p.child}:${p.childId}`;
@@ -315,15 +296,12 @@ export async function executeFlexImport(params: {
     }
   }
 
-  // Bulk insert items
   if (items.length > 0) {
-    // Insert in batches to avoid payload limits
     for (let i = 0; i < items.length; i += 200) {
       await supabaseAdmin.from("import_items").insert(items.slice(i, i + 200));
     }
   }
 
-  // Determine status
   if (report.failed > 0 && report.imported + report.updated === 0) report.status = "failed";
   else if (report.failed > 0) report.status = "partial_failure";
   else if (report.duplicates_created > 0 || report.auto_created_projects + report.auto_created_buildings > 0 || report.associations_failed > 0) report.status = "success_with_warnings";
@@ -347,7 +325,6 @@ export async function executeFlexImport(params: {
     error_message: report.errors[0]?.message ?? null,
   }).eq("id", jobId);
 
-  // Save failed rows CSV without overwriting the original source rows.
   if (failedRows.length > 0) {
     const headers = [...new Set(failedRows.flatMap((r) => Object.keys(r)))];
     const csv = toCsv(headers, failedRows);
@@ -393,8 +370,6 @@ function extractRow(scope: FlexScope, row: Row, scopeMap: ScopeMap): ExtractOut 
     let value = coerce(raw, field.type);
     if (value === null) continue;
 
-    // Enum normalization: case-insensitive match against allowed list.
-    // If the value doesn't match, drop it (GHL rejects unknown picklist values).
     if (field.enum && typeof value === "string") {
       const match = field.enum.find((opt) => opt.toLowerCase() === String(value).toLowerCase().trim());
       if (!match) {
@@ -437,7 +412,6 @@ async function resolveIdentity(
     const { data } = await supabaseAdmin.from("external_id_map").select("crm_record_id").eq("scope", scope).ilike("display_name", ids.name).limit(1).maybeSingle();
     if (data?.crm_record_id) return data.crm_record_id;
   }
-  // Also try sibling identity fields so reruns after a partial import update existing records.
   if (ids.record_id) return ids.record_id;
   if (key !== "external_id" && ids.external_id) {
     const { data } = await supabaseAdmin.from("external_id_map").select("crm_record_id").eq("scope", scope).eq("external_import_id", ids.external_id).maybeSingle();
@@ -495,6 +469,29 @@ async function autoCreateParent(client: CrmClient, scope: FlexScope, ref: Ids): 
   );
   const id = extractId(res.data);
   if (!id) throw new Error(`Auto-create ${scope}: no id returned`);
+
+  // CRITICAL: record the auto-created parent in external_id_map WITH its
+  // display_name. Without this, the record exists in the CRM but is invisible
+  // to any name-based lookup - including the opportunity importer's
+  // buildingByName map, which resolves a sheet's "Developer - Building" against
+  // external_id_map.display_name. A unit could associate to this building (by
+  // CRM id) yet an opportunity row could never find it (by name). This was the
+  // cause of "no building matching" for flex-created buildings.
+  try {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    await supabaseAdmin.from("external_id_map").upsert(
+      {
+        scope,
+        external_import_id: ref.external_id ?? `crm:${id}`,
+        crm_record_id: id,
+        display_name: ref.name ?? null,
+        code: ref.code ?? null,
+      },
+      { onConflict: "scope,external_import_id" },
+    );
+  } catch (err) {
+    console.warn(`[flex-import] auto-created ${scope} ${id} but failed to record its name in external_id_map:`, err);
+  }
   return id;
 }
 
@@ -519,11 +516,6 @@ async function createRecord(client: CrmClient, scope: FlexScope, properties: Rec
 }
 
 async function updateRecord(client: CrmClient, scope: FlexScope, crmId: string, properties: Record<string, unknown>) {
-  // forUpdate: true is REQUIRED here. GHL's PUT rejects the MULTIPLE_OPTIONS
-  // array shape that its own POST accepts:
-  //   PUT  property_type: ["condo"] -> 422 "unexpected format"
-  //   PUT  property_type: "condo"   -> OK
-  // Without the flag, every row carrying Property Type fails on update.
   const normalized = await normalizeRecordProperties(client, scope, stripEmpty(properties), { forUpdate: true });
   if (Object.keys(normalized).length === 0) return;
   await requestObject(client, "PUT", scope, `/records/${crmId}`, { body: { properties: normalized } });
@@ -556,7 +548,6 @@ async function tryReadPrevious(
 
 async function saveMap(supabaseAdmin: SupabaseAdmin, scope: FlexScope, crmId: string, ids: Ids, jobId: string) {
   if (!ids.external_id && !ids.name && !ids.code) return;
-  // Prefer external_id as the key; else synthesize from name/code
   const externalId = ids.external_id ?? `crm:${crmId}`;
   await supabaseAdmin.from("external_id_map").upsert({
     scope,
