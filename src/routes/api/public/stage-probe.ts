@@ -1,20 +1,11 @@
 /**
- * TEMPORARY diagnostic endpoint - DELETE AFTER USE. Round 4: THE FIX.
- * Rounds 1-3 proved: GHL's records API cannot SET a MULTIPLE_OPTIONS field on
- * update (arrays 422, strings silently dropped, the property never exists on
- * the record under any Version header). Single-option fields write fine
- * (availablenot_available does). The stages field holds no data anywhere -
- * writes never landed - so converting it is risk-free.
- *
- * This round, in order:
- *   1. Fetch all unit fields via Custom Fields V2 (object-key endpoint) to
- *      get the stages field's id and exact JSON shape.
- *   2. Attempt PUT /custom-fields/{id} converting dataType to SINGLE_OPTIONS,
- *      adaptively building the body from the field's own shape.
- *   3. VERIFY by writing "available" to the probe record and reading it back.
- *   4. If conversion is refused, POST a new SINGLE_OPTIONS field "Stage" with
- *      the four options and verify a record write against ITS key instead.
- * Restores the record at the end. Results returned AND stored in
+ * TEMPORARY diagnostic endpoint - DELETE AFTER USE. Round 5: CREATE THE FIX.
+ * dataType is immutable on update (round 4), so the broken MULTIPLE_OPTIONS
+ * "stages" field cannot be converted. Instead: create a new SINGLE_OPTIONS
+ * field "Stage" (fieldKey custom_objects.units.stage) with the same four
+ * options in the same folder, VERIFY two real record writes stick, then
+ * delete the old unwritable field (it holds no data anywhere - proven in
+ * rounds 1-3). Idempotent: safe to re-run. Results returned AND stored in
  * audit_events (kind 'stage_probe'). Auth: ?token=<PROBE_TOKEN>.
  */
 import { createFileRoute } from "@tanstack/react-router";
@@ -38,15 +29,15 @@ export const Route = createFileRoute("/api/public/stage-probe")({
         const bearer = process.env.KLEEGR_CRM_TOKEN ?? "";
         const base = String(client.config.api_base_url ?? "https://services.leadconnectorhq.com").replace(/\/$/, "");
         const recSchemaKey = objectKey(client, "unit");
+        const V = "2021-07-28";
 
-        const result: Record<string, unknown> = { round: 4, startedAt: new Date().toISOString() };
+        const result: Record<string, unknown> = { round: 5, startedAt: new Date().toISOString() };
         const log: Array<Record<string, unknown>> = [];
         result.log = log;
 
         const call = async (
           method: "GET" | "PUT" | "POST" | "DELETE",
           path: string,
-          version: string,
           body?: unknown,
         ): Promise<{ status: number; data: unknown; head: string }> => {
           const res = await fetch(`${base}${path}`, {
@@ -55,7 +46,7 @@ export const Route = createFileRoute("/api/public/stage-probe")({
               Authorization: `Bearer ${bearer}`,
               "Content-Type": "application/json",
               Accept: "application/json",
-              Version: version,
+              Version: V,
             },
             body: body === undefined ? undefined : JSON.stringify(body),
           });
@@ -70,7 +61,6 @@ export const Route = createFileRoute("/api/public/stage-probe")({
         };
 
         try {
-          // Probe record.
           const { data: u } = await supabaseAdmin
             .from("external_id_map")
             .select("crm_record_id, display_name")
@@ -82,112 +72,113 @@ export const Route = createFileRoute("/api/public/stage-probe")({
           const unitId = u.crm_record_id;
           result.unit = { id: unitId, name: u.display_name };
 
-          const writeAndRead = async (propKey: string, value: string): Promise<{ stuck: boolean; readBack: unknown }> => {
-            await call("PUT", `/objects/${recSchemaKey}/records/${unitId}?locationId=${encodeURIComponent(locationId)}`, "2021-07-28", {
+          const writeAndRead = async (propKey: string, value: string | null): Promise<{ stuck: boolean; readBack: unknown }> => {
+            await call("PUT", `/objects/${recSchemaKey}/records/${unitId}?locationId=${encodeURIComponent(locationId)}`, {
               properties: { [propKey]: value },
             });
-            const back = await call("GET", `/objects/${recSchemaKey}/records/${unitId}?locationId=${encodeURIComponent(locationId)}`, "2021-07-28");
+            const back = await call("GET", `/objects/${recSchemaKey}/records/${unitId}?locationId=${encodeURIComponent(locationId)}`);
             const b = (back.data ?? {}) as Record<string, unknown>;
             const rec = (b.record && typeof b.record === "object" ? b.record : b) as Record<string, unknown>;
             const got = ((rec.properties ?? {}) as Record<string, unknown>)[propKey];
             return { stuck: got != null && got !== "" && JSON.stringify(got) !== "[]", readBack: got ?? null };
           };
 
-          // 1) All unit fields via Custom Fields V2.
-          let fields: Array<Record<string, unknown>> = [];
-          for (const [ver, path] of [
-            ["2021-07-28", `/custom-fields/object-key/custom_objects.units?locationId=${encodeURIComponent(locationId)}`],
-            ["2021-07-28", `/custom-field/object-key/custom_objects.units?locationId=${encodeURIComponent(locationId)}`],
-          ] as const) {
-            const r = await call("GET", path, ver);
-            log.push({ step: `fetch fields ${path}`, status: r.status, head: r.status === 200 ? undefined : r.head });
+          const fetchFields = async (): Promise<Array<Record<string, unknown>>> => {
+            const r = await call("GET", `/custom-fields/object-key/custom_objects.units?locationId=${encodeURIComponent(locationId)}`);
             if (r.status === 200 && r.data && typeof r.data === "object") {
               const d = r.data as Record<string, unknown>;
               const arr = (d.fields ?? d.customFields ?? d.data) as unknown;
-              if (Array.isArray(arr)) {
-                fields = arr as Array<Record<string, unknown>>;
-                break;
-              }
+              if (Array.isArray(arr)) return arr as Array<Record<string, unknown>>;
             }
-          }
-          result.fieldCount = fields.length;
+            return [];
+          };
 
           const tail = (fk: unknown) => String(fk ?? "").replace(/^custom_objects\.[^.]+\./, "");
-          const stagesField = fields.find((f) => tail(f.fieldKey ?? f.key) === "stages") ?? null;
-          result.stagesField = stagesField;
-          const unitStatusField = fields.find((f) => tail(f.fieldKey ?? f.key) === "unit_status") ?? null;
-          result.unitStatusField = unitStatusField
-            ? { id: unitStatusField.id, dataType: unitStatusField.dataType, options: unitStatusField.picklistOptions ?? unitStatusField.options }
-            : null;
+          let fields = await fetchFields();
+          const oldStages = fields.find((f) => tail(f.fieldKey ?? f.key) === "stages") ?? null;
+          let newField = fields.find((f) => tail(f.fieldKey ?? f.key) === "stage") ?? null;
+          log.push({ step: "initial field scan", total: fields.length, oldStagesId: oldStages?.id ?? null, newFieldId: newField?.id ?? null });
 
-          // 2) Try converting stages -> SINGLE_OPTIONS.
-          let fixed: { propKey: string; via: string } | null = null;
-          if (stagesField?.id) {
-            const fid = String(stagesField.id);
-            const rawOptions = (stagesField.picklistOptions ?? stagesField.options) as unknown;
-            const bodies: Array<{ name: string; body: Record<string, unknown> }> = [];
-            // Adaptive: copy the field's own shape minus read-only props.
-            const copy: Record<string, unknown> = { ...stagesField };
-            for (const k of ["id", "_id", "locationId", "objectId", "objectKey", "createdAt", "updatedAt", "dateAdded", "dateUpdated", "createdBy", "updatedBy", "fieldKey", "parentId", "standard", "model"]) {
-              delete copy[k];
-            }
-            copy.dataType = "SINGLE_OPTIONS";
-            bodies.push({ name: "full copy minus readonly", body: { ...copy, locationId } });
-            bodies.push({ name: "minimal name+dataType+options", body: { locationId, name: String(stagesField.name ?? "Stages"), dataType: "SINGLE_OPTIONS", ...(Array.isArray(rawOptions) ? { picklistOptions: rawOptions } : {}) } });
-            bodies.push({ name: "minimal dataType only", body: { locationId, dataType: "SINGLE_OPTIONS" } });
+          const OPTIONS = [
+            { key: "available", label: "Available" },
+            { key: "reserved_locked", label: "Reserved/Locked" },
+            { key: "under_contract", label: "Under Contract" },
+            { key: "closed_sold", label: "Closed/Sold" },
+          ];
 
+          // 1) Create the new SINGLE_OPTIONS field if it does not exist yet.
+          if (!newField) {
+            const parentId = String((oldStages?.parentId as string | undefined) ?? "");
+            const bodies: Array<{ name: string; body: Record<string, unknown> }> = [
+              {
+                name: "full fieldKey",
+                body: {
+                  locationId,
+                  objectKey: "custom_objects.units",
+                  fieldKey: "custom_objects.units.stage",
+                  name: "Stage",
+                  dataType: "SINGLE_OPTIONS",
+                  description: "",
+                  position: 201,
+                  showInForms: true,
+                  ...(parentId ? { parentId } : {}),
+                  options: OPTIONS,
+                },
+              },
+              {
+                name: "short fieldKey",
+                body: {
+                  locationId,
+                  objectKey: "custom_objects.units",
+                  fieldKey: "stage",
+                  name: "Stage",
+                  dataType: "SINGLE_OPTIONS",
+                  description: "",
+                  position: 201,
+                  showInForms: true,
+                  ...(parentId ? { parentId } : {}),
+                  options: OPTIONS,
+                },
+              },
+            ];
             for (const attempt of bodies) {
-              const r = await call("PUT", `/custom-fields/${fid}`, "2021-07-28", attempt.body);
-              log.push({ step: `convert stages: ${attempt.name}`, status: r.status, head: r.head });
-              if (r.status >= 200 && r.status < 300) {
-                const v = await writeAndRead("stages", "available");
-                log.push({ step: "verify stages write after conversion", ...v });
-                if (v.stuck) {
-                  fixed = { propKey: "stages", via: `converted via ${attempt.name}` };
-                }
-                break; // converted (or at least accepted) - do not keep re-putting
-              }
+              const r = await call("POST", `/custom-fields/`, attempt.body);
+              log.push({ step: `create Stage field (${attempt.name})`, status: r.status, head: r.status < 300 ? undefined : r.head });
+              if (r.status >= 200 && r.status < 300) break;
             }
+            fields = await fetchFields();
+            newField = fields.find((f) => tail(f.fieldKey ?? f.key) === "stage") ?? null;
+          }
+          result.newField = newField
+            ? { id: newField.id, fieldKey: newField.fieldKey, dataType: newField.dataType, options: newField.options }
+            : "CREATE FAILED - see log";
+          if (!newField) throw new Error("Stage field could not be created");
+
+          // 2) VERIFY: two real writes must stick.
+          const v1 = await writeAndRead("stage", "available");
+          log.push({ step: "verify stage=available", ...v1 });
+          const v2 = await writeAndRead("stage", "reserved_locked");
+          log.push({ step: "verify stage=reserved_locked", ...v2 });
+          const verified = v1.stuck && v2.stuck;
+          result.verified = verified;
+
+          // Restore the probe record to empty.
+          await writeAndRead("stage", null);
+
+          // 3) Delete the old unwritable field only after full verification.
+          if (verified && oldStages?.id) {
+            const fid = String(oldStages.id);
+            let del = await call("DELETE", `/custom-fields/${fid}?locationId=${encodeURIComponent(locationId)}`);
+            if (del.status >= 300) {
+              del = await call("DELETE", `/locations/${locationId}/customFields/${fid}`);
+            }
+            log.push({ step: "delete old stages field", status: del.status, head: del.status < 300 ? undefined : del.head });
+            result.oldFieldDeleted = del.status >= 200 && del.status < 300;
+          } else if (oldStages?.id) {
+            result.oldFieldDeleted = "SKIPPED - verification failed";
           } else {
-            log.push({ step: "stages field id not found in Custom Fields V2 list" });
+            result.oldFieldDeleted = "already gone";
           }
-
-          // 3) Fallback: create a fresh SINGLE_OPTIONS field and verify against it.
-          if (!fixed) {
-            const options = [
-              { key: "available", label: "Available" },
-              { key: "reservedlocked", label: "Reserved/Locked" },
-              { key: "under_contract", label: "Under Contract" },
-              { key: "closedsold", label: "Closed/Sold" },
-            ];
-            const createBodies: Array<{ name: string; body: Record<string, unknown> }> = [
-              { name: "objectKey + picklistOptions objects", body: { locationId, objectKey: "custom_objects.units", name: "Stage", dataType: "SINGLE_OPTIONS", picklistOptions: options } },
-              { name: "objectKey + options strings", body: { locationId, objectKey: "custom_objects.units", name: "Stage", dataType: "SINGLE_OPTIONS", options: options.map((o) => o.label) } },
-              { name: "model + picklistOptions strings", body: { locationId, model: "custom_objects.units", name: "Stage", dataType: "SINGLE_OPTIONS", picklistOptions: options.map((o) => o.label) } },
-            ];
-            for (const attempt of createBodies) {
-              const r = await call("POST", `/custom-fields/`, "2021-07-28", attempt.body);
-              log.push({ step: `create Stage field: ${attempt.name}`, status: r.status, head: r.head });
-              if (r.status >= 200 && r.status < 300 && r.data && typeof r.data === "object") {
-                const d = r.data as Record<string, unknown>;
-                const created = (d.field && typeof d.field === "object" ? d.field : d) as Record<string, unknown>;
-                const newKey = tail(created.fieldKey ?? created.key ?? "stage") || "stage";
-                result.createdField = { id: created.id, fieldKey: created.fieldKey, key: newKey };
-                const v = await writeAndRead(newKey, "available");
-                log.push({ step: `verify write to new field "${newKey}"`, ...v });
-                if (v.stuck) fixed = { propKey: newKey, via: `new field ${attempt.name}` };
-                break;
-              }
-            }
-          }
-
-          result.fixed = fixed ?? "NOT FIXED - see log";
-
-          // Restore the probe record's stage to empty.
-          await call("PUT", `/objects/${recSchemaKey}/records/${unitId}?locationId=${encodeURIComponent(locationId)}`, "2021-07-28", {
-            properties: { stages: null, ...(fixed && fixed.propKey !== "stages" ? { [fixed.propKey]: null } : {}) },
-          });
-          result.restored = true;
         } catch (err) {
           result.error = (err instanceof Error ? err.message : String(err)).slice(0, 400);
         }
@@ -197,7 +188,7 @@ export const Route = createFileRoute("/api/public/stage-probe")({
         try {
           await supabaseAdmin.from("audit_events").insert({
             kind: "stage_probe",
-            reason: "temporary stages picklist probe round 4 (fix attempt)",
+            reason: "temporary stages picklist probe round 5 (create + verify + swap)",
             next: result as never,
           });
         } catch {
