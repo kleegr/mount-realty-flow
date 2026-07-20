@@ -50,7 +50,10 @@ export const ALLOWED = {
   projectPropertyType: ["Condo", "Rental", "Mixed Use"],
   buildingStatus: ["Active", "Coming Soon", "Partially Available", "Reserved / Locked", "Under Contract", "Sold Out", "Inactive"],
   unitAvailability: ["Available", "Not Available"],
-  unitStage: ["Reserved/Locked", "Under Contract", "Closed/Sold"],
+  // "Available" is a REAL stage now (owner decision): an available unit shows
+  // Stage = Available instead of an empty stage. The option must also exist on
+  // the Stages picklist in GHL or writes will be rejected/dropped.
+  unitStage: ["Available", "Reserved/Locked", "Under Contract", "Closed/Sold"],
   unitStyle: ["Flat", "L Flat", "Up & Down", "Walk In", "3 Story", "Other", "Unknown"],
   yesNo: ["Yes", "No"],
 } as const;
