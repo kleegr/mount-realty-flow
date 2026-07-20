@@ -30,27 +30,35 @@ interface Pipe {
 }
 interface Result {
   locationId: string;
+  syncResult: unknown;
   pipelines: Pipe[];
-  inventory: { total: number; available: number; held: number; other: number };
+  inventory: {
+    totalUnitsMapped: number;
+    stateRows: number;
+    held: number;
+    available: number;
+    noState: number;
+    other: number;
+  };
   heldOpportunities: number;
   staleHoldersCheckedFirst: number;
   staleHoldersFound: string[];
 }
 
 function AuditPage() {
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
   const [res, setRes] = useState<Result | null>(null);
 
-  async function run() {
-    setBusy(true);
+  async function run(syncFirst: boolean) {
+    setBusy(syncFirst ? "sync" : "audit");
     try {
-      const r = (await auditPipelinesAndInventory({ data: { confirm: "AUDIT" } })) as Result;
+      const r = (await auditPipelinesAndInventory({ data: { confirm: "AUDIT", syncFirst } })) as Result;
       setRes(r);
-      toast.success("Audit complete");
+      toast.success(syncFirst ? "Synced from CRM + audited" : "Audit complete");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -60,6 +68,8 @@ function AuditPage() {
         <h1 className="text-2xl font-semibold">Pipeline & inventory audit</h1>
         <p className="text-muted-foreground text-sm">
           Read-only. Confirms each pipeline&apos;s first stage and where deals sit, and that inventory holds are sound.
+          &quot;Sync from CRM first&quot; mirrors every unit&apos;s live state into the table before counting, so the
+          numbers reflect all units, not just the ones already tracked.
         </p>
       </div>
 
@@ -67,9 +77,12 @@ function AuditPage() {
         <CardHeader>
           <CardTitle>Run the audit</CardTitle>
         </CardHeader>
-        <CardContent>
-          <Button onClick={run} disabled={busy}>
-            {busy ? "Auditing..." : "Run audit"}
+        <CardContent className="flex gap-2">
+          <Button variant="outline" onClick={() => run(false)} disabled={busy !== null}>
+            {busy === "audit" ? "Auditing..." : "Audit only"}
+          </Button>
+          <Button onClick={() => run(true)} disabled={busy !== null}>
+            {busy === "sync" ? "Syncing + auditing..." : "Sync from CRM first, then audit"}
           </Button>
         </CardContent>
       </Card>
@@ -80,24 +93,35 @@ function AuditPage() {
             <CardHeader>
               <CardTitle>Inventory</CardTitle>
               <CardDescription>
-                Held units are never freed by the sweep. Stale holders should be zero.
+                Held = a unit locked to a deal (never freed by the sweep). Stale holders should be zero.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Stat label="Units tracked" value={res.inventory.total} />
-                <Stat label="Available" value={res.inventory.available} />
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                <Stat label="Units mapped" value={res.inventory.totalUnitsMapped} />
                 <Stat label="Held by a deal" value={res.inventory.held} />
-                <Stat label="Other/blank" value={res.inventory.other} />
+                <Stat label="Available" value={res.inventory.available} />
+                <Stat label="No state row yet" value={res.inventory.noState} />
+                <Stat label="Other" value={res.inventory.other} />
+                <Stat label="State rows" value={res.inventory.stateRows} />
               </div>
               <p className="text-sm">
                 {res.heldOpportunities} distinct holding opportunities. Checked first{" "}
                 {res.staleHoldersCheckedFirst}: {res.staleHoldersFound.length} stale.
               </p>
+              {res.inventory.noState > 0 && (
+                <p className="text-muted-foreground text-xs">
+                  {res.inventory.noState} units have no state row yet. Press &quot;Sync from CRM first&quot; to mirror
+                  their live availability into the table.
+                </p>
+              )}
               {res.staleHoldersFound.length > 0 && (
                 <div className="text-destructive text-xs">
                   Stale holders (deal gone, unit still marked held): {res.staleHoldersFound.join(", ")}
                 </div>
+              )}
+              {res.syncResult != null && (
+                <pre className="bg-muted rounded p-2 text-[10px]">{JSON.stringify(res.syncResult)}</pre>
               )}
             </CardContent>
           </Card>
