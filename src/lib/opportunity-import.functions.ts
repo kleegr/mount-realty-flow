@@ -5,26 +5,25 @@ import { z } from "zod";
 /**
  * OPPORTUNITY IMPORT.
  *
- * RESOLUTION. The sheet's Building column carries the unit number glued on the
- * end ("10 Chesnut Drive # 101") while GHL's building is "10 Chesnut Drive".
- * Units match BUILDING-FIRST, only possible because parent_crm_id was repaired.
+ * TWO KINDS OF ROW (owner spec):
+ *  - STATUS rows (Under Contract / Reserved / Closed): deal at the mapped
+ *    stage + unit LOCKED (Locked/Reserved association) + payment fields. The
+ *    unit's own status follows the deal.
+ *  - BLANK-STATUS rows with a client: an interested buyer, not a commitment.
+ *    Deal at New Inquiry / Initial Call + unit attached as SUGGESTED (not
+ *    locked). The unit stays Available. One inquiry deal per contact - blank
+ *    rows for the same buyer add more suggested units to the same deal, and
+ *    re-runs never duplicate it.
  *
- * THE LOCK. The Locked/Reserved association is the ON switch. Units are FIRST in
- * the definition.
+ * RE-RUNNABLE. A locked unit already held is decided by WHO holds it:
+ *  same buyer -> update in place; different live buyer -> conflict, touch
+ *  nothing; dead holder -> clear stale hold and create fresh.
  *
- * RE-RUNNABLE (spec 1). A unit already held is NOT blindly skipped. The holder
- * is read from live CRM and its CONTACT compared to this row's contact:
- *   - same buyer's opportunity holds it -> UPDATE the deal (name, payments).
- *   - a DIFFERENT buyer's live opp holds it -> CONFLICT, report both, touch none.
- *   - the holder no longer exists -> clear the stale hold, create fresh.
+ * THE NAME is "{contact name} - {phone}" from the GHL CONTACT (sheet phone as
+ * fallback), phone in US format e.g. (347) 786-0323.
  *
- * THE NAME (spec 2) is "{full name} - {phone}": sheet phone preferred, GHL
- * contact phone fallback, name-only when neither exists (flagged Missing Phone).
- * The phone is shown in US format, e.g. (347) 786-0323.
- *
- * PAYMENT FIELDS map to live GHL opportunity fields by name or alias; the first
- * write is read back - GHL 200s an unknown custom-field payload and drops it.
- * Blank cells are skipped, never erasing an existing GHL value.
+ * PAYMENT FIELDS map by name/alias; first write is read back (GHL 200s and
+ * silently drops unknown payloads). Blank cells never erase existing values.
  */
 
 async function requireImporter(userId: string) {
@@ -63,15 +62,7 @@ function normalizePhone(v: unknown): string {
   return kept.startsWith("+") ? `+${digits}` : digits;
 }
 
-/**
- * Format a normalized phone as a US number for DISPLAY on the deal name.
- *   3477860323   -> (347) 786-0323
- *   13477860323  -> (347) 786-0323   (leading US country code stripped)
- *   +13477860323 -> (347) 786-0323
- * Anything that isn't a recognizable US 10-digit number is returned intelligibly
- * (an international +44... stays +44..., a 7-digit local stays as-is), so a
- * number we don't understand is never mangled into a wrong shape.
- */
+/** US display format: 3477860323 / 13477860323 / +1347... -> (347) 786-0323. */
 function formatUsPhone(normalized: string): string {
   if (!normalized) return "";
   const hadPlus = normalized.startsWith("+");
@@ -340,7 +331,7 @@ export const getOpportunityContext = createServerFn({ method: "POST" })
 interface Maps {
   buildingByName: Map<string, string>;
   unitsByBuilding: Map<string, Array<{ id: string; name: string }>>;
-  contactByStable: Map<string, { id: string; phone: string | null }>;
+  contactByStable: Map<string, { id: string; phone: string | null; name: string | null }>;
 }
 
 async function loadMaps(): Promise<Maps> {
@@ -348,7 +339,7 @@ async function loadMaps(): Promise<Maps> {
   const [unitsRes, buildingsRes, contactsRes] = await Promise.all([
     supabaseAdmin.from("external_id_map").select("crm_record_id, display_name, parent_crm_id").eq("scope", "unit"),
     supabaseAdmin.from("external_id_map").select("crm_record_id, display_name").eq("scope", "building"),
-    supabaseAdmin.from("contact_id_map").select("stable_id, crm_contact_id, phone"),
+    supabaseAdmin.from("contact_id_map").select("stable_id, crm_contact_id, phone, display_name"),
   ]);
 
   const buildingByName = new Map<string, string>();
@@ -362,8 +353,15 @@ async function loadMaps(): Promise<Maps> {
     unitsByBuilding.set(u.parent_crm_id, arr);
   }
 
-  const contactByStable = new Map<string, { id: string; phone: string | null }>();
-  for (const c of contactsRes.data ?? []) contactByStable.set(c.stable_id, { id: c.crm_contact_id, phone: c.phone });
+  const contactByStable = new Map<string, { id: string; phone: string | null; name: string | null }>();
+  for (const c of contactsRes.data ?? []) {
+    const rec = c as Record<string, unknown>;
+    contactByStable.set(String(rec.stable_id), {
+      id: String(rec.crm_contact_id),
+      phone: (rec.phone as string | null) ?? null,
+      name: (rec.display_name as string | null) ?? null,
+    });
+  }
 
   return { buildingByName, unitsByBuilding, contactByStable };
 }
@@ -371,6 +369,7 @@ async function loadMaps(): Promise<Maps> {
 interface Resolved {
   rowNo: number;
   client: string;
+  contactName: string | null;
   status: string;
   contactId: string | null;
   sheetPhone: string;
@@ -428,6 +427,7 @@ function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeo
   return {
     rowNo,
     client: clientName,
+    contactName: c?.name ?? null,
     status: clean(H.status ? row[H.status] : ""),
     contactId: c?.id ?? null,
     sheetPhone: normalizePhone(H.phone ? row[H.phone] : ""),
@@ -442,13 +442,15 @@ function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeo
 }
 
 /**
- * Name per spec 2: sheet phone preferred, contact phone fallback, name-only
- * otherwise. The phone is displayed in US format, e.g. "Client - (347) 786-0323".
+ * Deal name = the CONTACT's name + the CONTACT's phone as they appear on the
+ * GHL contact (owner spec). Sheet values are only fallbacks for missing
+ * contact data. Phone shown in US format.
  */
 function buildName(r: Resolved): { name: string; missingPhone: boolean } {
-  const rawPhone = r.sheetPhone || r.contactPhone;
+  const displayName = (r.contactName ?? "").trim() || r.client;
+  const rawPhone = r.contactPhone || r.sheetPhone;
   const pretty = formatUsPhone(rawPhone);
-  return { name: pretty ? `${r.client} - ${pretty}` : r.client, missingPhone: !pretty };
+  return { name: pretty ? `${displayName} - ${pretty}` : displayName, missingPhone: !pretty };
 }
 
 // ---------------------------------------------------------------- preview
@@ -480,6 +482,7 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
     let unitHit = 0;
     let withPhone = 0;
     let missingPhone = 0;
+    let blankStatusInquiries = 0;
     const unresolvedUnits: Array<{ row: number; key: string; why: string }> = [];
     const unresolvedContacts: Array<{ row: number; name: string }> = [];
     const conflicts: Array<{ row: number; detail: string }> = [];
@@ -491,6 +494,7 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
       const r = resolveRow(row, i, H, m);
       if (!r) continue;
       withClient++;
+      if (!r.status) blankStatusInquiries++;
       if (r.contactId) contactHit++;
       else if (unresolvedContacts.length < 40) unresolvedContacts.push({ row: r.rowNo, name: r.client });
       const { missingPhone: mp } = buildName(r);
@@ -499,9 +503,11 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
       if (r.conflict && conflicts.length < 40) conflicts.push({ row: r.rowNo, detail: r.conflict });
       if (r.unitId) {
         unitHit++;
-        const arr = claims.get(r.unitId) ?? [];
-        arr.push(`row ${r.rowNo}: ${r.client}`);
-        claims.set(r.unitId, arr);
+        if (r.status) {
+          const arr = claims.get(r.unitId) ?? [];
+          arr.push(`row ${r.rowNo}: ${r.client}`);
+          claims.set(r.unitId, arr);
+        }
       } else if (unresolvedUnits.length < 40) {
         unresolvedUnits.push({ row: r.rowNo, key: r.unitLabel, why: r.why });
       }
@@ -521,6 +527,7 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
       unitHit,
       withPhone,
       missingPhone,
+      blankStatusInquiries,
       importable: Math.min(contactHit, unitHit),
       dealColumns,
       opportunityFieldCount: oppFields.length,
@@ -542,6 +549,9 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
         rows: z.array(RowSchema).max(5000),
         pipelineId: z.string().min(1),
         stageMap: z.record(z.string(), z.string()),
+        // Stage for blank-status client rows (New Inquiry / Initial Call).
+        // When absent, blank-status rows are skipped (legacy behaviour).
+        newInquiryStageId: z.string().optional(),
         offset: z.number().int().min(0).default(0),
         limit: z.number().int().min(1).max(15).default(10),
       })
@@ -567,17 +577,24 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
     }
     const unitIsFirst = norm(lockDef.firstObjectKey).includes("unit");
 
+    // Suggested association - the browsing label for New Inquiry rows.
+    const suggestDef = (defsRes.data?.associations ?? []).find((d) => norm(d.key).includes("suggested"));
+    const suggestUnitIsFirst = suggestDef ? norm(suggestDef.firstObjectKey).includes("unit") : true;
+
     const H = headersOf(data.rows[0] ?? {});
     const m = await loadMaps();
     const oppFields = await loadOpportunityFields(client as never).catch(() => [] as OppField[]);
     const dealColumns = mapDealColumns(Object.keys(data.rows[0] ?? {}), oppFields).filter((c) => c.fieldId);
 
-    const queue: Resolved[] = [];
+    type QueueItem = Resolved & { mode: "locked" | "inquiry" };
+    const queue: QueueItem[] = [];
     for (const [i, row] of data.rows.entries()) {
       const r = resolveRow(row, i, H, m);
       if (!r) continue;
-      if (!data.stageMap[norm(r.status)]) continue;
-      queue.push(r);
+      const stageId = data.stageMap[norm(r.status)];
+      if (stageId) queue.push({ ...r, mode: "locked" });
+      else if (!r.status && data.newInquiryStageId) queue.push({ ...r, mode: "inquiry" });
+      // Unknown non-blank statuses are skipped, as before.
     }
 
     const slice = queue.slice(data.offset, data.offset + data.limit);
@@ -600,12 +617,84 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
       return { fields, warnings };
     };
 
+    /** Find this contact's existing deal at the New Inquiry stage (re-run safety). */
+    const findExistingInquiry = async (contactId: string): Promise<string | null> => {
+      try {
+        const sr = await client.request<{ opportunities?: Array<Record<string, unknown>> }>(
+          "GET",
+          "/opportunities/search",
+          { query: { location_id: String(locationId), contact_id: contactId, limit: 20 } },
+        );
+        const opps = Array.isArray(sr.data?.opportunities) ? sr.data.opportunities : [];
+        const match = opps.find(
+          (o) =>
+            String(o.pipelineId ?? o.pipeline_id ?? "") === data.pipelineId &&
+            String(o.pipelineStageId ?? o.stageId ?? o.pipeline_stage_id ?? "") === data.newInquiryStageId,
+        );
+        return match && typeof match.id === "string" ? match.id : null;
+      } catch {
+        return null; // search failure -> create (worst case a re-run makes one duplicate inquiry, visible in report)
+      }
+    };
+
     for (const r of slice) {
       try {
         if (!r.contactId) throw new Error(`no contact for "${r.client}" - import contacts first`);
-        if (!r.unitId) throw new Error(r.why || "unit not resolved");
 
         const { name: dealName, missingPhone } = buildName(r);
+
+        // ================= INQUIRY (blank status): New Inquiry + Suggested =================
+        if (r.mode === "inquiry") {
+          let oppId = await findExistingInquiry(r.contactId);
+          let action = "Inquiry updated";
+          if (!oppId) {
+            const body: Record<string, unknown> = {
+              pipelineId: data.pipelineId,
+              locationId,
+              name: dealName,
+              pipelineStageId: data.newInquiryStageId,
+              status: "open",
+              contactId: r.contactId,
+            };
+            const res = await client.request<Record<string, unknown>>("POST", "/opportunities/", { body });
+            const d = (res.data ?? {}) as Record<string, unknown>;
+            const o = (d.opportunity && typeof d.opportunity === "object" ? d.opportunity : d) as Record<string, unknown>;
+            oppId = typeof o.id === "string" ? o.id : null;
+            if (!oppId) throw new Error("CRM did not return an opportunity id");
+            action = "Inquiry created";
+          } else {
+            await client.request("PUT", `/opportunities/${oppId}`, { body: { name: dealName } });
+          }
+
+          // Attach the unit as SUGGESTED (not locked). Duplicate relations are
+          // fine to ignore - the label either exists or gets created.
+          let suggestNote = "no unit to suggest";
+          if (r.unitId && suggestDef?.id) {
+            await client
+              .request("POST", "/associations/relations", {
+                body: {
+                  locationId,
+                  associationId: suggestDef.id,
+                  firstRecordId: suggestUnitIsFirst ? r.unitId : oppId,
+                  secondRecordId: suggestUnitIsFirst ? oppId : r.unitId,
+                },
+              })
+              .then(
+                () => { suggestNote = "suggested unit attached"; },
+                () => { suggestNote = "suggested (already attached)"; },
+              );
+          } else if (r.unitId && !suggestDef?.id) {
+            suggestNote = "NO Suggested association defined in GHL - unit not attached";
+          }
+
+          const tags = [suggestNote, ...(missingPhone ? ["Missing Phone"] : [])];
+          results.push({ row: r.rowNo, client: r.client, ok: true, action, detail: `${oppId} - ${tags.join(" - ")}` });
+          continue;
+        }
+
+        // ================= LOCKED (status rows) =================
+        if (!r.unitId) throw new Error(r.why || "unit not resolved");
+
         const { fields: customFields, warnings } = buildCustomFields(r);
 
         const { data: st } = await supabaseAdmin
@@ -615,7 +704,6 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
           .maybeSingle();
         const holder = st?.held_by_opportunity_id as string | undefined;
 
-        // ---- The unit is already held. Decide by WHO holds it (spec 1). ----
         if (holder) {
           let holderDeal: Record<string, unknown> | null = null;
           try {
@@ -756,6 +844,7 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
       succeeded: results.filter((x) => x.ok).length,
       created: results.filter((x) => x.action === "Opportunity created").length,
       updated: results.filter((x) => x.action === "Updated Existing Opportunity").length,
+      inquiries: results.filter((x) => x.action.startsWith("Inquiry")).length,
       conflicts: results.filter((x) => x.action === "Conflict").length,
       failed: results.filter((x) => !x.ok),
       results,
