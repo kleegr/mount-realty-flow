@@ -199,14 +199,23 @@ function mapDealColumns(headers: string[], fields: OppField[]): OppColumnMap[] {
     });
 }
 
-/** ISO-ify a date-ish string for a GHL DATE field. Returns null if unparseable. */
+/**
+ * ISO-ify a date-ish string for a GHL DATE field. Returns null if unparseable
+ * OR wildly out of range - sheets produce junk like "2/2/20226" which
+ * Date.parse happily turns into the year 20226 ("+020226-..."), and GHL then
+ * rejects the whole deal with "Invalid Custom Field Value". Junk dates become
+ * a per-row warning instead of a failed row.
+ */
 function toIsoDate(v: unknown): string | null {
   const s = String(v ?? "").trim();
   if (!s) return null;
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
   const t = Date.parse(s);
   if (Number.isNaN(t)) return null;
-  return new Date(t).toISOString().slice(0, 10);
+  const d = new Date(t);
+  const y = d.getUTCFullYear();
+  if (y < 1900 || y > 2100) return null;
+  return d.toISOString().slice(0, 10);
 }
 
 /** Convert a sheet value to the shape a given GHL field wants, or null to skip. */
