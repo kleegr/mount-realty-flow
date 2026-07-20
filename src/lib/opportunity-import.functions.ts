@@ -13,18 +13,19 @@ import { z } from "zod";
  * the definition.
  *
  * RE-RUNNABLE (spec 1). A unit already held is NOT blindly skipped. The holder
- * is checked against the live CRM:
- *   - same opportunity holds it  -> UPDATE the deal (name, payments) in place.
- *   - a different LIVE opp holds it -> CONFLICT, report both ids, touch nothing.
- *   - the holder no longer exists -> clear the stale hold, process normally.
- * This is what makes a second import correct existing deals instead of skipping.
+ * is read from live CRM and its CONTACT compared to this row's contact:
+ *   - same buyer's opportunity holds it -> UPDATE the deal (name, payments).
+ *   - a DIFFERENT buyer's live opp holds it -> CONFLICT, report both, touch none.
+ *   - the holder no longer exists -> clear the stale hold, create fresh.
+ * This is what makes a second import correct existing deals instead of skipping,
+ * WITHOUT overwriting one buyer's deal with another buyer's data.
  *
- * THE NAME (spec 2) is "{full name} {phone}": sheet phone preferred, GHL contact
- * phone as fallback, name-only when neither exists (reported as Missing Phone).
+ * THE NAME (spec 2) is "{full name} - {phone}": sheet phone preferred, GHL
+ * contact phone fallback, name-only when neither exists (flagged Missing Phone).
  *
- * PAYMENT FIELDS map to live GHL opportunity fields by name or alias, and the
- * first write is read back - GHL 200s an unknown custom-field payload and drops
- * it silently.
+ * PAYMENT FIELDS map to live GHL opportunity fields by name or alias; the first
+ * write is read back - GHL 200s an unknown custom-field payload and drops it.
+ * Blank cells are skipped, never erasing an existing GHL value.
  */
 
 async function requireImporter(userId: string) {
@@ -59,7 +60,7 @@ function normalizePhone(v: unknown): string {
   if (!s) return "";
   const kept = s.replace(/[^\d+]/g, "");
   const digits = kept.replace(/\D/g, "");
-  if (digits.length < 7) return ""; // not a real phone
+  if (digits.length < 7) return "";
   return kept.startsWith("+") ? `+${digits}` : digits;
 }
 
@@ -156,11 +157,6 @@ export interface OppColumnMap {
   dataType: string | null;
 }
 
-/**
- * Sheet-header -> GHL-opportunity-field-NAME aliases. The Lazers sheet has
- * "REMANING D" (typo) and ALL-CAPS headers. Sale Price is intentionally absent -
- * it is STRUCTURAL and flows in as monetaryValue, not a custom field.
- */
 const DEAL_ALIASES: Record<string, string> = {
   remaningd: "Remaining Payment",
   remaining: "Remaining Payment",
@@ -193,6 +189,17 @@ function mapDealColumns(headers: string[], fields: OppField[]): OppColumnMap[] {
     });
 }
 
+/** ISO-ify a date-ish string for a GHL DATE field. Returns null if unparseable. */
+function toIsoDate(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  // Already ISO?
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const t = Date.parse(s);
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
 /** Convert a sheet value to the shape a given GHL field wants, or null to skip. */
 function fieldValueFor(f: OppField, v: unknown): unknown | null {
   if (isJunk(v)) return null;
@@ -201,9 +208,12 @@ function fieldValueFor(f: OppField, v: unknown): unknown | null {
     if (!exact) return null;
     return f.dataType === "MULTIPLE_OPTIONS" ? [exact] : exact;
   }
+  if (/date/i.test(f.dataType)) {
+    return toIsoDate(v); // null if the cell isn't a real date -> skipped, not sent
+  }
   if (/monet/i.test(f.dataType) || /numer/i.test(f.dataType)) {
     const n = Number(String(v).replace(/[$,\s]/g, ""));
-    return Number.isFinite(n) ? n : String(v).trim();
+    return Number.isFinite(n) ? n : null;
   }
   return String(v).trim();
 }
@@ -281,8 +291,11 @@ export const getOpportunityContext = createServerFn({ method: "POST" })
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "unit"),
     ]);
 
-    // Also surface the FIRST stage of each pipeline, for spec-4 confirmation.
-    const firstStages = pipelines.map((p) => ({ pipelineId: p.id, pipelineName: p.name, firstStage: p.stages[0] ?? null }));
+    const firstStages = pipelines.map((p) => ({
+      pipelineId: p.id,
+      pipelineName: p.name,
+      firstStage: p.stages[0] ?? null,
+    }));
 
     return {
       locationId: String(locationId ?? ""),
@@ -410,7 +423,7 @@ function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeo
   };
 }
 
-/** The name per spec 2: sheet phone preferred, contact phone fallback, name-only otherwise. */
+/** Name per spec 2: sheet phone preferred, contact phone fallback, name-only otherwise. */
 function buildName(r: Resolved): { name: string; missingPhone: boolean } {
   const phone = r.sheetPhone || r.contactPhone;
   return { name: phone ? `${r.client} - ${phone}` : r.client, missingPhone: !phone };
@@ -549,7 +562,6 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
     const results: Array<{ row: number; client: string; ok: boolean; action: string; detail: string }> = [];
     let verified = data.offset > 0;
 
-    // Build the custom-field payload for a row against the live schema.
     const buildCustomFields = (r: Resolved): { fields: Array<{ id: string; value: unknown }>; warnings: string[] } => {
       const fields: Array<{ id: string; value: unknown }> = [];
       const warnings: string[] = [];
@@ -558,8 +570,8 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
         if (!f) continue;
         const val = fieldValueFor(f, r.raw[col.header]);
         if (val === null) {
-          if (!isJunk(r.raw[col.header])) warnings.push(`${f.name}: could not convert "${String(r.raw[col.header])}"`);
-          continue; // blank stays blank - never erase an existing GHL value
+          if (!isJunk(r.raw[col.header])) warnings.push(`${f.name}: could not use "${String(r.raw[col.header])}"`);
+          continue;
         }
         fields.push({ id: f.id, value: val });
       }
@@ -583,19 +595,42 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
 
         // ---- The unit is already held. Decide by WHO holds it (spec 1). ----
         if (holder) {
-          // Is that holder still alive?
-          let holderExists = true;
+          let holderDeal: Record<string, unknown> | null = null;
           try {
-            await client.request("GET", `/opportunities/${holder}`, {});
+            const hRes = await client.request<Record<string, unknown>>("GET", `/opportunities/${holder}`, {});
+            const hd = (hRes.data ?? {}) as Record<string, unknown>;
+            holderDeal = (hd.opportunity && typeof hd.opportunity === "object" ? hd.opportunity : hd) as Record<
+              string,
+              unknown
+            >;
           } catch (err) {
             const status = (err as { status?: number })?.status;
-            if (status === 404 || status === 400) holderExists = false;
-            else throw err;
+            if (status !== 404 && status !== 400) throw err;
+            holderDeal = null;
           }
 
-          if (holderExists) {
-            // UPDATE the existing deal in place: name + payments. No new deal,
-            // no association change, inventory status untouched here.
+          if (holderDeal) {
+            const holderContact =
+              (typeof holderDeal.contactId === "string" && holderDeal.contactId) ||
+              (typeof holderDeal.contact_id === "string" && holderDeal.contact_id) ||
+              (holderDeal.contact && typeof holderDeal.contact === "object"
+                ? String((holderDeal.contact as Record<string, unknown>).id ?? "")
+                : "");
+
+            // A DIFFERENT active buyer holds this unit -> CONFLICT, touch nothing.
+            if (holderContact && holderContact !== r.contactId) {
+              results.push({
+                row: r.rowNo,
+                client: r.client,
+                ok: false,
+                action: "Conflict",
+                detail: `unit held by a DIFFERENT opportunity ${holder} (contact ${holderContact}); this row is contact ${r.contactId}. Manual resolution required.`,
+              });
+              continue;
+            }
+
+            // Same buyer -> UPDATE in place: name + payments. No new deal, no
+            // association change, inventory status untouched.
             const body: Record<string, unknown> = { name: dealName };
             if (r.price) body.monetaryValue = r.price;
             if (customFields.length) body.customFields = customFields;
@@ -616,15 +651,14 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
             continue;
           }
 
-          // Stale holder: the deal is gone. Clear the hold and fall through to
-          // create a fresh deal for this row.
+          // Stale holder: deal gone. Clear the hold, fall through to create.
           await supabaseAdmin
             .from("unit_state")
             .update({ held_by_opportunity_id: null })
             .eq("unit_crm_id", r.unitId);
         }
 
-        // ---- Create a new deal + lock (first time for this unit). ----
+        // ---- Create a new deal + lock. ----
         const body: Record<string, unknown> = {
           pipelineId: data.pipelineId,
           locationId,
@@ -704,6 +738,7 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
       succeeded: results.filter((x) => x.ok).length,
       created: results.filter((x) => x.action === "Opportunity created").length,
       updated: results.filter((x) => x.action === "Updated Existing Opportunity").length,
+      conflicts: results.filter((x) => x.action === "Conflict").length,
       failed: results.filter((x) => !x.ok),
       results,
       dealFieldsMapped: dealColumns.length,
