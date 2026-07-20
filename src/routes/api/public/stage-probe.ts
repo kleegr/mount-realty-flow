@@ -1,11 +1,12 @@
 /**
- * TEMPORARY diagnostic endpoint - DELETE AFTER USE.
- * Empirically discovers which value GHL's option matcher accepts for the
- * unit "stages" picklist by writing candidate values to ONE unit and reading
- * each back. Restores the original value at the end. Results are returned in
- * the response AND stored in audit_events (kind 'stage_probe') so they
- * survive even if the HTTP caller times out.
- * Auth: ?token=<PROBE_TOKEN> (single-purpose random string).
+ * TEMPORARY diagnostic endpoint - DELETE AFTER USE. Round 2.
+ * Round 1 proved: with Version 2021-07-28, EVERY bare string (including the
+ * schema's own option keys and labels) is accepted-and-dropped on PUT, and
+ * the array shape 422s. The field is MULTIPLE_OPTIONS. This round tests the
+ * write matrix: Version header (2021-07-28 / 2023-02-21) x body shape
+ * (array, bare string, nested options, flat body, PATCH). Restores at end.
+ * Results returned AND stored in audit_events (kind 'stage_probe').
+ * Auth: ?token=<PROBE_TOKEN>.
  */
 import { createFileRoute } from "@tanstack/react-router";
 
@@ -22,41 +23,16 @@ export const Route = createFileRoute("/api/public/stage-probe")({
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         const { createCrmClient } = await import("@/lib/kleegr/client.server");
-        const { requestObject } = await import("@/lib/kleegr/object-config.server");
+        const { requestObject, objectKey } = await import("@/lib/kleegr/object-config.server");
         const client = await createCrmClient();
         const locationId = String(client.config.location_id ?? "");
+        const bearer = process.env.KLEEGR_CRM_TOKEN ?? "";
+        const base = String(client.config.api_base_url ?? "https://services.leadconnectorhq.com").replace(/\/$/, "");
+        const schemaKey = objectKey(client, "unit");
 
-        const result: Record<string, unknown> = { startedAt: new Date().toISOString() };
+        const result: Record<string, unknown> = { round: 2, startedAt: new Date().toISOString(), schemaKey };
 
         try {
-          // 1) Full live schema for the stages field, every option container.
-          const schema = await requestObject<{ fields?: Array<Record<string, unknown>> }>(client, "GET", "unit", "", {
-            query: { locationId, fetchProperties: "true" },
-          });
-          const stagesField = (schema.data?.fields ?? []).find(
-            (f) => String(f.fieldKey ?? f.key ?? "").replace(/^custom_objects\.[^.]+\./, "") === "stages",
-          );
-          const containers: Record<string, unknown> = {};
-          if (stagesField) {
-            for (const c of ["picklistOptions", "picklistOptionValues", "options", "picklist"]) {
-              if (c in stagesField) containers[c] = (stagesField as Record<string, unknown>)[c];
-            }
-          }
-          result.stagesField = stagesField
-            ? { name: stagesField.name, dataType: stagesField.dataType, fieldKey: stagesField.fieldKey, containers }
-            : "NOT FOUND";
-
-          const optionObjects: Array<Record<string, unknown>> = [];
-          for (const c of Object.values(containers)) {
-            if (!Array.isArray(c)) continue;
-            for (const o of c) {
-              if (o && typeof o === "object") optionObjects.push(o as Record<string, unknown>);
-              else if (typeof o === "string") optionObjects.push({ _string: o });
-            }
-          }
-          result.optionObjects = optionObjects;
-
-          // 2) Probe unit = first mapped unit (the same one the sweep hits first).
           const { data: u } = await supabaseAdmin
             .from("external_id_map")
             .select("crm_record_id, display_name")
@@ -80,65 +56,62 @@ export const Route = createFileRoute("/api/public/stage-probe")({
           const original = await readStage();
           result.original = original ?? null;
 
-          // 3) Candidates: every string property of the Available option, the
-          //    obvious literals, one array shape, and calibration writes using
-          //    the original options' keys and labels to learn the matcher rule.
-          const isAvail = (o: Record<string, unknown>) =>
-            Object.values(o).some((v) => typeof v === "string" && /available/i.test(v));
-          const availOpt = optionObjects.find(isAvail) ?? null;
-          result.availableOption = availOpt ?? "NOT IN API SCHEMA";
-
-          const seen = new Set<string>();
-          const candidates: Array<{ from: string; value: unknown }> = [];
-          const add = (from: string, value: unknown) => {
-            const sig = JSON.stringify(value);
-            if (seen.has(sig)) return;
-            seen.add(sig);
-            candidates.push({ from, value });
+          const rawWrite = async (
+            method: "PUT" | "PATCH" | "POST",
+            version: string,
+            body: unknown,
+            pathSuffix = `/records/${unitId}`,
+            withLocationQuery = true,
+          ): Promise<{ status: number; text: string }> => {
+            const q = withLocationQuery ? `?locationId=${encodeURIComponent(locationId)}` : "";
+            const res = await fetch(`${base}/objects/${schemaKey}${pathSuffix}${q}`, {
+              method,
+              headers: {
+                Authorization: `Bearer ${bearer}`,
+                "Content-Type": "application/json",
+                Accept: "application/json",
+                Version: version,
+              },
+              body: JSON.stringify(body),
+            });
+            const text = await res.text();
+            return { status: res.status, text: text.slice(0, 220) };
           };
-          if (availOpt) {
-            for (const [k, v] of Object.entries(availOpt)) {
-              if (typeof v === "string" && v.trim()) add(`available.${k}`, v);
-            }
-          }
-          add("literal label", "Available");
-          add("lowercase", "available");
-          add("uppercase", "AVAILABLE");
-          const availLabel = availOpt && typeof availOpt.label === "string" ? availOpt.label : "Available";
-          add("array label", [availLabel]);
-          for (const o of optionObjects) {
-            if (o === availOpt) continue;
-            if (typeof o.key === "string" && o.key.trim()) add(`calib key ${o.key}`, o.key);
-            if (typeof o.label === "string" && o.label.trim()) add(`calib label ${o.label}`, o.label);
-          }
 
-          // 4) Write each candidate, read back after each.
+          type Cand = { name: string; method: "PUT" | "PATCH"; version: string; body: unknown };
+          const A = "available";
+          const candidates: Cand[] = [
+            { name: "PUT v2021 props array (baseline)", method: "PUT", version: "2021-07-28", body: { properties: { stages: [A] } } },
+            { name: "PUT v2023 props array", method: "PUT", version: "2023-02-21", body: { properties: { stages: [A] } } },
+            { name: "PUT v2023 props string", method: "PUT", version: "2023-02-21", body: { properties: { stages: A } } },
+            { name: "PUT v2021 props label array", method: "PUT", version: "2021-07-28", body: { properties: { stages: ["Available"] } } },
+            { name: "PUT v2021 nested options", method: "PUT", version: "2021-07-28", body: { properties: { stages: { options: [A] } } } },
+            { name: "PUT v2021 flat body array", method: "PUT", version: "2021-07-28", body: { stages: [A], locationId } },
+            { name: "PUT v2023 flat body array", method: "PUT", version: "2023-02-21", body: { stages: [A], locationId } },
+            { name: "PUT v2021 props array + body locationId", method: "PUT", version: "2021-07-28", body: { locationId, properties: { stages: [A] } } },
+            { name: "PUT v2021 option objects", method: "PUT", version: "2021-07-28", body: { properties: { stages: [{ key: A }] } } },
+            { name: "PATCH v2021 props array", method: "PATCH", version: "2021-07-28", body: { properties: { stages: [A] } } },
+            { name: "PATCH v2023 props array", method: "PATCH", version: "2023-02-21", body: { properties: { stages: [A] } } },
+          ];
+
           const attempts: Array<Record<string, unknown>> = [];
-          for (const cand of candidates) {
+          let winner: string | null = null;
+          for (const c of candidates) {
             try {
-              await requestObject(client, "PUT", "unit", `/records/${unitId}`, {
-                body: { properties: { stages: cand.value } },
-              });
-              const back = await readStage();
+              const w = await rawWrite(c.method, c.version, c.body);
+              const back = w.status >= 200 && w.status < 300 ? await readStage() : undefined;
               const stuck = back != null && back !== "" && JSON.stringify(back) !== "[]";
-              attempts.push({ from: cand.from, sent: cand.value, readBack: back ?? null, stuck });
+              attempts.push({ name: c.name, status: w.status, response: w.text, readBack: back ?? null, stuck });
+              if (stuck && !winner) winner = c.name;
             } catch (err) {
-              attempts.push({
-                from: cand.from,
-                sent: cand.value,
-                error: (err instanceof Error ? err.message : String(err)).slice(0, 180),
-                stuck: false,
-              });
+              attempts.push({ name: c.name, error: (err instanceof Error ? err.message : String(err)).slice(0, 180), stuck: false });
             }
           }
           result.attempts = attempts;
-          result.winners = attempts.filter((a) => a.stuck === true);
+          result.winner = winner ?? "NONE";
 
-          // 5) Restore the original value.
           try {
-            await requestObject(client, "PUT", "unit", `/records/${unitId}`, {
-              body: { properties: { stages: original == null || original === "" ? null : original } },
-            });
+            await rawWrite("PUT", "2021-07-28", { properties: { stages: original == null || original === "" ? null : original } });
             result.restored = true;
           } catch (err) {
             result.restored = (err instanceof Error ? err.message : String(err)).slice(0, 180);
@@ -152,7 +125,7 @@ export const Route = createFileRoute("/api/public/stage-probe")({
         try {
           await supabaseAdmin.from("audit_events").insert({
             kind: "stage_probe",
-            reason: "temporary stages picklist probe",
+            reason: "temporary stages picklist probe round 2",
             next: result as never,
           });
         } catch {
