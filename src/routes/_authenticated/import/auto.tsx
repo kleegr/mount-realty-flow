@@ -42,7 +42,7 @@ const INITIAL_STEPS: StepState[] = [
   { key: "holds", label: "Clear holds for deleted deals", status: "pending", detail: "" },
   { key: "available", label: "Set free units to Available", status: "pending", detail: "" },
   { key: "recalc", label: "Recalculate building & project counts", status: "pending", detail: "" },
-  { key: "import", label: "Import opportunities (name, payments, lock)", status: "pending", detail: "" },
+  { key: "import", label: "Import opportunities (name, payments, lock / inquiry)", status: "pending", detail: "" },
 ];
 
 function AutoRunPage() {
@@ -61,7 +61,6 @@ function AutoRunPage() {
   const [summary, setSummary] = useState<Record<string, number> | null>(null);
   const [pct, setPct] = useState(0);
 
-  // Pipeline selection is surfaced so the wrong one can never be used silently.
   const [pipes, setPipes] = useState<Pipe[]>([]);
   const [chosenPipe, setChosenPipe] = useState<string>("");
 
@@ -80,13 +79,11 @@ function AutoRunPage() {
     setLog([]);
     setPct(0);
 
-    // Load pipelines now so the user can see/choose which one will be targeted.
     try {
       const ctx = await contextFn({ data: { confirm: "LOOK" as const } });
       const governed = ctx.pipelines.filter((p) => p.governed);
       const ranked = [...governed].sort((a, b) => (b.openDeals ?? 0) - (a.openDeals ?? 0));
       setPipes(ranked);
-      // Default: the governed pipeline that already holds the most deals.
       setChosenPipe(ranked[0]?.id ?? governed[0]?.id ?? "");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -114,6 +111,7 @@ function AutoRunPage() {
       setAvailable: 0,
       dealsCreated: 0,
       dealsUpdated: 0,
+      inquiries: 0,
       dealsFailed: 0,
     };
 
@@ -125,7 +123,7 @@ function AutoRunPage() {
       const pipeline = ctx.pipelines.find((p) => p.id === chosenPipe);
       if (!pipeline) throw new Error("Chosen pipeline not found in CRM.");
       if (!pipeline.governed)
-        say(`  WARNING: "${pipeline.name}" has no stage rules - units will not change status.`);
+        say(`  WARNING: \"${pipeline.name}\" has no stage rules - units will not change status.`);
       const find = (re: RegExp) => pipeline.stages.find((s) => re.test(s.name))?.id ?? "";
       const stageMap: Record<string, string> = {
         undercontract: find(/contract signed|unit locked/i),
@@ -135,12 +133,18 @@ function AutoRunPage() {
       const missing = Object.entries(stageMap).filter(([, v]) => !v).map(([k]) => k);
       if (missing.length) say(`  warning: no stage matched for ${missing.join(", ")} - those rows will be skipped.`);
 
+      // Blank-status client rows become inquiries at the FIRST stage.
+      const newInquiryStageId = find(/new inquiry|initial call/i) || pipeline.stages[0]?.id || "";
+      if (newInquiryStageId) say(`  Blank-status rows -> New Inquiry stage + suggested unit (units stay Available).`);
+      else say("  warning: no New Inquiry stage found - blank-status rows will be skipped.");
+
       const preview = await previewFn({ data: { rows } });
       say(
-        `  TARGET PIPELINE: "${pipeline.name}" (${pipeline.openDeals ?? 0} existing deals). ` +
+        `  TARGET PIPELINE: \"${pipeline.name}\" (${pipeline.openDeals ?? 0} existing deals). ` +
           `${ctx.opportunityFields.length} payment fields, ` +
           `${preview.contactHit}/${preview.withClient} contacts, ${preview.unitHit} units, ` +
-          `${preview.withPhone} with phone / ${preview.missingPhone} missing.`,
+          `${preview.withPhone} with phone / ${preview.missingPhone} missing, ` +
+          `${preview.blankStatusInquiries ?? 0} blank-status inquiries.`,
       );
       if (ctx.opportunityFields.length === 0)
         say("  warning: GHL has no opportunity payment fields - payment data cannot import.");
@@ -198,17 +202,26 @@ function AutoRunPage() {
       setStep("recalc", { status: "done", detail: "counts rebuilt" });
       setPct(55);
 
-      // ---- Step 5: import opportunities.
+      // ---- Step 5: import opportunities (locked rows + inquiries).
       setStep("import", { status: "running", detail: "starting..." });
       let io = 0;
       let total = 0;
-      for (let pass = 0; pass < 80; pass++) {
+      for (let pass = 0; pass < 100; pass++) {
         const r = await runFn({
-          data: { confirm: "IMPORT" as const, rows, pipelineId: pipeline.id, stageMap, offset: io, limit: 10 },
+          data: {
+            confirm: "IMPORT" as const,
+            rows,
+            pipelineId: pipeline.id,
+            stageMap,
+            newInquiryStageId: newInquiryStageId || undefined,
+            offset: io,
+            limit: 10,
+          },
         });
         total = r.totalDeals;
         totals.dealsCreated += r.created;
         totals.dealsUpdated += r.updated;
+        totals.inquiries += (r as { inquiries?: number }).inquiries ?? 0;
         for (const res of r.results) {
           if (!res.ok) {
             totals.dealsFailed++;
@@ -225,16 +238,17 @@ function AutoRunPage() {
         if (r.remaining === 0 || r.processed === 0) break;
       }
       say(
-        `Import done: ${totals.dealsCreated} created, ${totals.dealsUpdated} updated, ${totals.dealsFailed} failed.`,
+        `Import done: ${totals.dealsCreated} created, ${totals.dealsUpdated} updated, ` +
+          `${totals.inquiries} inquiries, ${totals.dealsFailed} failed.`,
       );
       setStep("import", {
         status: "done",
-        detail: `${totals.dealsCreated} created, ${totals.dealsUpdated} updated, ${totals.dealsFailed} failed`,
+        detail: `${totals.dealsCreated} created, ${totals.dealsUpdated} updated, ${totals.inquiries} inquiries, ${totals.dealsFailed} failed`,
       });
       setPct(100);
 
       setSummary(totals);
-      toast.success(`Done: ${totals.dealsCreated} created, ${totals.dealsUpdated} updated`);
+      toast.success(`Done: ${totals.dealsCreated} created, ${totals.dealsUpdated} updated, ${totals.inquiries} inquiries`);
     } catch (err) {
       say(`STOPPED: ${err instanceof Error ? err.message : String(err)}`);
       toast.error(err instanceof Error ? err.message : String(err));
@@ -249,8 +263,8 @@ function AutoRunPage() {
         <h1 className="text-3xl font-bold tracking-tight">Run everything</h1>
         <p className="mt-1 text-muted-foreground">
           Upload the sheet, choose the pipeline, press one button. Clears old holds, sets inventory to Available,
-          recalculates counts, then creates new deals and updates existing ones - with the buyer&apos;s name and phone,
-          the payment fields, and the unit lock. Safe to run twice. Stops if any write does not land.
+          recalculates counts, then imports: status rows lock their unit with payments; blank-status buyers become New
+          Inquiry deals with a suggested unit. Safe to run twice. Stops if any write does not land.
         </p>
       </div>
 
@@ -300,7 +314,8 @@ function AutoRunPage() {
         <CardHeader>
           <CardTitle className="text-lg">3 - Run</CardTitle>
           <CardDescription>
-            Safe to run more than once. Held units for live deals are updated in place, never duplicated.
+            Safe to run more than once. Held units for live deals are updated in place, never duplicated. One inquiry
+            deal per buyer - re-runs never duplicate inquiries either.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -332,9 +347,10 @@ function AutoRunPage() {
           <CardHeader>
             <CardTitle className="text-lg">Summary</CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat label="Deals created" value={summary.dealsCreated} />
             <Stat label="Deals updated" value={summary.dealsUpdated} />
+            <Stat label="Inquiries" value={summary.inquiries} />
             <Stat label="Units Available" value={summary.setAvailable} />
             <Stat label="Stale holds cleared" value={summary.staleCleared} />
             <Stat label="Deals failed" value={summary.dealsFailed} danger={summary.dealsFailed > 0} />
@@ -347,9 +363,7 @@ function AutoRunPage() {
         <Alert>
           <AlertTriangle className="h-4 w-4" />
           <AlertDescription className="text-sm">
-            Some rows failed - almost always a contact or building that is not in GHL (the missing people and the
-            Yoely Katz / Indigo / 319 Lake Shore buildings). Those must be added to GHL, then run again. Everything
-            else is done.
+            Some rows failed - see the log for the exact reason per row.
           </AlertDescription>
         </Alert>
       )}
