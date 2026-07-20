@@ -10,6 +10,12 @@ import { z } from "zod";
  * every unit's status first, so those units are left BLANK, not "Available".
  * "Left over" only equals "Available" if something writes the word. Nothing did.
  *
+ * AVAILABLE IS A REAL STAGE (owner decision): the sweep writes BOTH
+ * Availability="Available" AND Stage="Available" so a free unit's stage list
+ * shows the word instead of sitting empty. The "Available" option must exist
+ * on the Stages picklist in GHL - the first write is read back and the run
+ * aborts if either value did not land.
+ *
  * ORDER. Free holds -> set Available -> recalc. A unit still associated to a
  * live deal would get repainted by the engine, so we only free holds whose deal
  * is verified gone.
@@ -76,7 +82,7 @@ export const showUnitFieldResolution = createServerFn({ method: "POST" })
       const map = (FIELDS as Record<string, Record<string, string>>)[scope] ?? {};
       for (const [logical, key] of Object.entries(map)) {
         const hit = live.get(key);
-        resolution[`${logical} -> "${key}"`] = hit
+        resolution[`${logical} -> \"${key}\"`] = hit
           ? { writes: true, ghlName: hit.name, dataType: hit.dataType, options: hit.options }
           : { writes: false, WARNING: "KEY NOT IN LIVE SCHEMA - WRITES HERE ARE SILENTLY DROPPED" };
       }
@@ -345,17 +351,19 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
     for (const u of slice) {
       const label = u.display_name ?? u.crm_record_id;
       try {
+        // Availability AND Stage both say "Available" (owner decision). The
+        // stage goes through normalizeRecordProperties so a MULTIPLE_OPTIONS
+        // picklist gets the list shape it demands.
         const props = (await normalizeRecordProperties(
           client,
           "unit",
           {
             [FIELDS.unit.availability]: "Available",
             [FIELDS.unit.inventory_deducted]: "No",
+            [FIELDS.unit.stage]: "Available",
           },
           { forUpdate: true },
         )) as Record<string, unknown>;
-
-        props[FIELDS.unit.stage] = null;
 
         await requestObject(client, "PUT", "unit", `/records/${u.crm_record_id}`, {
           body: { properties: props },
@@ -372,12 +380,21 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
           const b = (back.data ?? {}) as Record<string, unknown>;
           const rec = (b.record && typeof b.record === "object" ? b.record : b) as Record<string, unknown>;
           const p = (rec.properties ?? {}) as Record<string, unknown>;
-          const got = String(p[FIELDS.unit.availability] ?? "");
-          if (!/available/i.test(got)) {
+          const gotAvail = String(p[FIELDS.unit.availability] ?? "");
+          const gotStage = String(p[FIELDS.unit.stage] ?? "");
+          if (!/available/i.test(gotAvail)) {
             throw new Error(
-              `ABORTED AFTER ONE UNIT. Sent availability="Available" to key "${FIELDS.unit.availability}"; ` +
-                `GHL returned 200 but read back "${got}". The key is wrong or "Available" is not a valid option. ` +
-                `Run "Show unit field resolution" to see the real key. Read back: ${JSON.stringify(p).slice(0, 300)}`,
+              `ABORTED AFTER ONE UNIT. Sent availability=\"Available\" to key \"${FIELDS.unit.availability}\"; ` +
+                `GHL returned 200 but read back \"${gotAvail}\". The key is wrong or \"Available\" is not a valid option. ` +
+                `Run \"Show unit field resolution\" to see the real key. Read back: ${JSON.stringify(p).slice(0, 300)}`,
+            );
+          }
+          if (!/available/i.test(gotStage)) {
+            throw new Error(
+              `ABORTED AFTER ONE UNIT. Sent Stage=\"Available\" to key \"${FIELDS.unit.stage}\"; ` +
+                `GHL returned 200 but read back \"${gotStage}\". ` +
+                `Most likely \"Available\" is missing from the Stages picklist options in GHL - add it, then run again. ` +
+                `Read back: ${JSON.stringify(p).slice(0, 300)}`,
             );
           }
           verified = true;
@@ -386,11 +403,17 @@ export const sweepAvailableUnits = createServerFn({ method: "POST" })
         await supabaseAdmin
           .from("unit_state")
           .upsert(
-            { unit_crm_id: u.crm_record_id, status: "available", held_by_opportunity_id: null },
+            {
+              unit_crm_id: u.crm_record_id,
+              status: "available",
+              availability: "Available",
+              stage: "Available",
+              held_by_opportunity_id: null,
+            },
             { onConflict: "unit_crm_id" },
           );
 
-        results.push({ unit: label, ok: true, detail: "Available" });
+        results.push({ unit: label, ok: true, detail: "Available (availability + stage)" });
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
         results.push({ unit: label, ok: false, detail: shortErr(err) });
