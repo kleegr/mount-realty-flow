@@ -124,7 +124,7 @@ export interface UnitStateSyncResult {
   skipped: string | null;
 }
 
-/** Property lookup that tolerates both "stages" and "custom_objects.units.stages". */
+/** Property lookup that tolerates both "stage" and "custom_objects.units.stage". */
 function readProp(props: Record<string, unknown>, key: string): unknown {
   if (key in props) return props[key];
   const suffix = `.${key}`;
@@ -147,6 +147,7 @@ function propsOf(record: Record<string, unknown>): Record<string, unknown> | nul
 function normalizeUnitStage(value: unknown): string {
   const raw = Array.isArray(value) ? String(value[0] ?? "") : String(value ?? "");
   const key = raw.trim().toLowerCase().replace(/[\s_/-]+/g, "");
+  if (key === "available") return "Available";
   if (key === "reservedlocked") return "Reserved/Locked";
   if (key === "undercontract") return "Under Contract";
   if (key === "closedsold") return "Closed/Sold";
