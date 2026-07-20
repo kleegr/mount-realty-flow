@@ -2,7 +2,7 @@ import { CrmError, type CrmClient } from "./client.server";
 
 export type CrmObjectScope = "project" | "building" | "unit";
 
-const OPTION_FIELDS = new Set(["availablenot_available", "unit_status", "stages", "style", "property_type", "project_status", "building_status", "movein_ready", "inventory_deducted", "recalc_requested"]);
+const OPTION_FIELDS = new Set(["availablenot_available", "unit_status", "stage", "stages", "style", "property_type", "project_status", "building_status", "movein_ready", "inventory_deducted", "recalc_requested"]);
 
 const FALLBACK_OPTION_KEYS: Record<string, Record<string, string>> = {
   availablenot_available: {
@@ -13,6 +13,17 @@ const FALLBACK_OPTION_KEYS: Record<string, Record<string, string>> = {
     available: "available",
     notavailable: "not_available",
   },
+  // The live SINGLE_OPTIONS unit stage field, keyed "stage". Option keys are
+  // exactly these values (created 2026-07-20); writes of these bare strings
+  // are verified to stick via read-back.
+  stage: {
+    available: "available",
+    reservedlocked: "reserved_locked",
+    undercontract: "under_contract",
+    closedsold: "closed_sold",
+  },
+  // Retired MULTIPLE_OPTIONS field — kept only so stray legacy writes don't
+  // produce garbage keys.
   stages: {
     reservedlocked: "reserved_locked",
     undercontract: "under_contract",
@@ -77,7 +88,7 @@ function schemaOptionEntries(field: SchemaField): Array<{ canonical: string; ali
  *      proven to stick for the original options; these must never regress;
  *   2. the LIVE schema's stored option value — fixes options added later
  *      through the GHL UI, whose stored value GHL invents and no local guess
- *      can predict (e.g. the "Available" stage);
+ *      can predict;
  *   3. a snake_case guess from the label (legacy last resort).
  */
 function resolveOptionValue(prop: string, value: unknown, liveMap?: Map<string, string>): string | null {
@@ -319,7 +330,11 @@ function isMultiSelectType(schemaType: string): boolean {
  * MULTIPLE_OPTIONS on update only.
  *
  * Known limitation: because update takes a bare string, a MULTIPLE_OPTIONS
- * field can only be updated to a SINGLE value through this path.
+ * field can only be updated to a SINGLE value through this path — and as
+ * measured 2026-07-20 on the retired `stages` field, even the bare string is
+ * silently dropped by GHL on update. MULTIPLE_OPTIONS fields are effectively
+ * un-writable through PUT /records; use SINGLE_OPTIONS fields for anything
+ * this engine must write.
  */
 function needsArrayWrap(schemaType: string, forUpdate: boolean): boolean {
   if (!isMultiSelectType(schemaType)) return false;

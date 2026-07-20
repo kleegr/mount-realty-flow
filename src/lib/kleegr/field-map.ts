@@ -50,9 +50,11 @@ export const ALLOWED = {
   projectPropertyType: ["Condo", "Rental", "Mixed Use"],
   buildingStatus: ["Active", "Coming Soon", "Partially Available", "Reserved / Locked", "Under Contract", "Sold Out", "Inactive"],
   unitAvailability: ["Available", "Not Available"],
-  // "Available" is a REAL stage now (owner decision): an available unit shows
-  // Stage = Available instead of an empty stage. The option must also exist on
-  // the Stages picklist in GHL or writes will be rejected/dropped.
+  // "Available" is a REAL stage (owner decision): an available unit shows
+  // Stage = Available instead of an empty stage. The unit stage lives in the
+  // SINGLE_OPTIONS field keyed "stage" (created 2026-07-20). The original
+  // "stages" field was MULTIPLE_OPTIONS, which GHL's records API can never
+  // write on update (silently drops strings, 422s arrays) — it was retired.
   unitStage: ["Available", "Reserved/Locked", "Under Contract", "Closed/Sold"],
   unitStyle: ["Flat", "L Flat", "Up & Down", "Walk In", "3 Story", "Other", "Unknown"],
   yesNo: ["Yes", "No"],
@@ -91,7 +93,9 @@ export const FIELDS = {
     name: "unit_name",
     number: "unit_number",
     availability: "availablenot_available",
-    stage: "stages",
+    // SINGLE_OPTIONS field "Stage" (options: available, reserved_locked,
+    // under_contract, closed_sold). NOT the retired MULTIPLE_OPTIONS "stages".
+    stage: "stage",
     rooms: "rooms",
     bedrooms: "bedrooms",
     floor: "floor",
