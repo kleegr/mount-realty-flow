@@ -5,16 +5,22 @@ import { z } from "zod";
 /**
  * INVENTORY + PIPELINE AUDIT (spec 7).
  *
- * Read-only. Answers two questions the spec requires confirmed from live data:
+ * Read-only except for an optional CRM->mirror sync that only ever fills in
+ * missing unit_state rows (never deletes). Answers two questions the spec
+ * requires confirmed from live data:
  *
- * 1) PIPELINE first-stage + deal placement: for every governed pipeline, the
- *    real first stage (id + name) and how many deals sit in each stage. This is
- *    also how we spot the stray deal a wrong-pipeline run created.
+ * 1) PIPELINE first-stage + deal placement: for every pipeline, the real first
+ *    stage (id + name) and how many deals sit in each stage. Also surfaces a
+ *    stray deal a wrong-pipeline run may have created.
  *
- * 2) INVENTORY safety: the current unit_state distribution (available / held),
- *    and any unit that is held by an opportunity that no longer exists (which
- *    should have been cleared). Confirms the Available sweep did not free a
- *    legitimately held unit.
+ * 2) INVENTORY safety: the true unit_state distribution. IMPORTANT - two columns
+ *    matter and mean different things:
+ *      held_by_opportunity_id  -> the importer's lock (this is "held")
+ *      availability / stage     -> mirrored from the CRM by syncUnitStatesFromCrm
+ *    A held unit is one with a non-null held_by_opportunity_id. An earlier audit
+ *    read the wrong column and reported zero. This reads held_by_opportunity_id,
+ *    and (optionally) runs the CRM mirror first so the table is complete rather
+ *    than sparse.
  */
 
 async function requireImporter(userId: string) {
@@ -26,14 +32,28 @@ async function requireImporter(userId: string) {
 
 export const auditPipelinesAndInventory = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ confirm: z.literal("AUDIT") }).parse(d))
-  .handler(async ({ context }) => {
+  .inputValidator((d: unknown) =>
+    z.object({ confirm: z.literal("AUDIT"), syncFirst: z.boolean().default(false) }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
     await requireImporter(context.userId);
 
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { createCrmClient } = await import("./kleegr/client.server");
     const client = await createCrmClient();
     const locationId = String(client.config.location_id);
+
+    // Optionally mirror every unit's live CRM state into unit_state first, so the
+    // inventory counts below reflect all units, not just the sparse subset.
+    let syncResult: unknown = null;
+    if (data.syncFirst) {
+      try {
+        const { syncUnitStatesFromCrm } = await import("./kleegr/live-records.server");
+        syncResult = await syncUnitStatesFromCrm(client);
+      } catch (err) {
+        syncResult = { error: err instanceof Error ? err.message : String(err) };
+      }
+    }
 
     // ---- Pipelines: first stage + per-stage deal counts. ----
     const pipeRes = await client.request<{ pipelines?: Array<Record<string, unknown>> }>(
@@ -58,7 +78,6 @@ export const auditPipelinesAndInventory = createServerFn({ method: "POST" })
         ? (p.stages as Array<Record<string, unknown>>).map((s) => ({ id: String(s.id ?? ""), name: String(s.name ?? "") }))
         : [];
 
-      // Pull deals (first page) to count by stage and sample names.
       let deals: Array<Record<string, unknown>> = [];
       let total = 0;
       try {
@@ -95,25 +114,39 @@ export const auditPipelinesAndInventory = createServerFn({ method: "POST" })
       });
     }
 
-    // ---- Inventory: unit_state distribution + stale holds. ----
-    const { data: states } = await supabaseAdmin
-      .from("unit_state")
-      .select("unit_crm_id, status, held_by_opportunity_id, availability, stage");
+    // ---- Inventory: from external_id_map (all units) LEFT-JOINed to state. ----
+    const [{ data: allUnits }, { data: states }] = await Promise.all([
+      supabaseAdmin.from("external_id_map").select("crm_record_id").eq("scope", "unit"),
+      supabaseAdmin.from("unit_state").select("unit_crm_id, held_by_opportunity_id, availability, stage"),
+    ]);
 
-    const inv = { total: states?.length ?? 0, available: 0, held: 0, other: 0 };
-    const heldIds: string[] = [];
+    const stateById = new Map<string, { held: string | null; availability: string; stage: string }>();
     for (const s of states ?? []) {
-      if (s.held_by_opportunity_id) {
+      stateById.set(s.unit_crm_id, {
+        held: (s.held_by_opportunity_id as string | null) ?? null,
+        availability: (s.availability as string) ?? "",
+        stage: (s.stage as string) ?? "",
+      });
+    }
+
+    const inv = { totalUnitsMapped: allUnits?.length ?? 0, stateRows: states?.length ?? 0, held: 0, available: 0, noState: 0, other: 0 };
+    const heldIds: string[] = [];
+    for (const u of allUnits ?? []) {
+      const st = stateById.get(u.crm_record_id);
+      if (!st) {
+        inv.noState++;
+        continue;
+      }
+      if (st.held) {
         inv.held++;
-        heldIds.push(s.held_by_opportunity_id as string);
-      } else if ((s.status ?? "").toLowerCase() === "available" || (s.availability ?? "").toLowerCase() === "available") {
+        heldIds.push(st.held);
+      } else if (!st.stage && /available/i.test(st.availability)) {
         inv.available++;
       } else {
         inv.other++;
       }
     }
 
-    // Check a sample of held opportunities still exist (stale-hold detection).
     const uniqueHolders = [...new Set(heldIds)];
     const staleHolders: string[] = [];
     let checked = 0;
@@ -129,6 +162,7 @@ export const auditPipelinesAndInventory = createServerFn({ method: "POST" })
 
     return {
       locationId,
+      syncResult,
       pipelines,
       inventory: inv,
       heldOpportunities: uniqueHolders.length,
