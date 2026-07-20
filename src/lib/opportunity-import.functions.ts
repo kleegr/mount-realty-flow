@@ -382,6 +382,50 @@ interface Resolved {
   raw: Record<string, unknown>;
 }
 
+/** "Yoely Katz/Accord" -> ["Yoely Katz/Accord", "Yoely Katz", "Accord"]. */
+function devAliases(dev: string): string[] {
+  const parts = dev.split("/").map((p) => p.trim()).filter(Boolean);
+  return parts.length > 1 ? [dev, ...parts] : [dev];
+}
+
+/**
+ * Find a building for a sheet row. The sheet and the CRM frequently disagree
+ * about naming, so this tries, in order:
+ *   1. "{developer} - {building}" exactly (with and without any "# unit"
+ *      suffix on the building cell);
+ *   2. the same, for each "/"-separated alias in the developer cell
+ *      ("Yoely Katz/Accord - 73 Duelk" -> "Yoely Katz - 73 Duelk",
+ *       "Indigo/diamond circle - Building 1" -> "Indigo - Building 1");
+ *   3. the building cell alone ("319 Lake Shore - 319 Lake Shore" -> the CRM
+ *      building named just "319 Lake Shore");
+ *   4. a UNIQUE ends-with match on the building part, optionally narrowed by
+ *      developer alias.
+ * Ambiguity always fails - a deal must never attach to the wrong building.
+ */
+function resolveBuildingId(dev: string, bldName: string, rawBuilding: string, m: Maps): string | null {
+  const keys: string[] = [];
+  for (const d of devAliases(dev)) {
+    keys.push(`${d} - ${bldName}`, `${d} - ${rawBuilding}`);
+  }
+  keys.push(bldName, rawBuilding);
+  for (const k of keys) {
+    const hit = m.buildingByName.get(norm(k));
+    if (hit) return hit;
+  }
+
+  const want = norm(bldName);
+  if (want.length >= 4) {
+    const suffix = [...m.buildingByName.entries()].filter(([name]) => name.endsWith(want));
+    if (suffix.length === 1) return suffix[0][1];
+    if (suffix.length > 1) {
+      const aliasNorms = devAliases(dev).map(norm).filter(Boolean);
+      const narrowed = suffix.filter(([name]) => aliasNorms.some((a) => name.startsWith(a)));
+      if (narrowed.length === 1) return narrowed[0][1];
+    }
+  }
+  return null;
+}
+
 function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeof headersOf>, m: Maps): Resolved | null {
   const rowNo = i + 2;
   const clientName = clean(H.client ? row[H.client] : "");
@@ -392,8 +436,7 @@ function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeo
   const unitCol = clean(H.unit ? row[H.unit] : "");
   const { building: bldName, unit: bldUnit } = stripUnitSuffix(rawBuilding);
 
-  const buildingId =
-    m.buildingByName.get(norm(`${dev} - ${bldName}`)) ?? m.buildingByName.get(norm(`${dev} - ${rawBuilding}`)) ?? null;
+  const buildingId = resolveBuildingId(dev, bldName, rawBuilding, m);
 
   let unitRef: string | null = null;
   let conflict: string | null = null;
