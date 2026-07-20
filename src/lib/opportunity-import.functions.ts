@@ -7,28 +7,24 @@ import { z } from "zod";
  *
  * RESOLUTION. The sheet's Building column carries the unit number glued on the
  * end ("10 Chesnut Drive # 101") while GHL's building is "10 Chesnut Drive".
+ * Units match BUILDING-FIRST, only possible because parent_crm_id was repaired.
  *
- * Units match BUILDING-FIRST: unit names are
- * "{DEVELOPER} - {BUILDING} - {UNIT} {NUMBER}". Resolving the building narrows
- * to that building's ~4 units. Only possible because parent_crm_id was repaired.
+ * THE LOCK. The Locked/Reserved association is the ON switch. Units are FIRST in
+ * the definition.
  *
- * THE LOCK. The Locked/Reserved association is the ON switch - the stage map
- * does nothing without it. Units are FIRST in the definition.
+ * RE-RUNNABLE (spec 1). A unit already held is NOT blindly skipped. The holder
+ * is checked against the live CRM:
+ *   - same opportunity holds it  -> UPDATE the deal (name, payments) in place.
+ *   - a different LIVE opp holds it -> CONFLICT, report both ids, touch nothing.
+ *   - the holder no longer exists -> clear the stale hold, process normally.
+ * This is what makes a second import correct existing deals instead of skipping.
  *
- * IDEMPOTENCY. A unit locks to exactly ONE opportunity, so
- * unit_state.held_by_opportunity_id IS the resume state: held means done.
+ * THE NAME (spec 2) is "{full name} {phone}": sheet phone preferred, GHL contact
+ * phone as fallback, name-only when neither exists (reported as Missing Phone).
  *
- * ATOMIC PER ROW. If the lock fails after the deal is created, the deal is
- * DELETED, so a retry never orphans a card.
- *
- * THE NAME is the contact's full name plus their full phone. No unit - it lives
- * on the association.
- *
- * PAYMENT FIELDS ARE SCHEMA-DRIVEN. Deal-level columns map to live GHL
- * opportunity fields by name or explicit alias (see DEAL_ALIASES), and the FIRST
- * write is read back: GHL 200s an unknown custom-field payload and silently
- * drops it, so without the check the happy path is "deals imported" with no
- * payment data on any of them.
+ * PAYMENT FIELDS map to live GHL opportunity fields by name or alias, and the
+ * first write is read back - GHL 200s an unknown custom-field payload and drops
+ * it silently.
  */
 
 async function requireImporter(userId: string) {
@@ -57,6 +53,16 @@ function money(v: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/** Digits-and-plus phone, for comparison and display. Empty if nothing usable. */
+function normalizePhone(v: unknown): string {
+  const s = String(v ?? "").trim();
+  if (!s) return "";
+  const kept = s.replace(/[^\d+]/g, "");
+  const digits = kept.replace(/\D/g, "");
+  if (digits.length < 7) return ""; // not a real phone
+  return kept.startsWith("+") ? `+${digits}` : digits;
+}
+
 /** "10 Chesnut Drive # 101" -> { building: "10 Chesnut Drive", unit: "101" } */
 function stripUnitSuffix(raw: string): { building: string; unit: string | null } {
   const m = /^(.*?)\s*#\s*(\S+)\s*$/.exec(raw);
@@ -69,7 +75,6 @@ function pickHeader(headers: string[], aliases: string[]): string | null {
   return headers.find((h) => wanted.includes(norm(h))) ?? null;
 }
 
-/** Columns that identify the row rather than describe the deal. */
 const STRUCTURAL = new Set([
   "developer", "project", "builder", "building", "buildingname", "unit", "unitnumber", "unitno", "apt",
   "status", "unitstatus", "clientname", "client", "buyer", "buyername", "phone", "email", "father",
@@ -84,6 +89,7 @@ function headersOf(row: Record<string, unknown>) {
     unit: pickHeader(headers, ["unit", "unitnumber", "unitno", "apt"]),
     status: pickHeader(headers, ["status", "unitstatus"]),
     client: pickHeader(headers, ["clientname", "client", "buyer", "buyername"]),
+    phone: pickHeader(headers, ["phone", "phonenumber", "cell", "mobile"]),
     price: pickHeader(headers, ["saleprice", "price", "askingprice", "askingsaleprice"]),
   };
 }
@@ -151,14 +157,9 @@ export interface OppColumnMap {
 }
 
 /**
- * Explicit sheet-header -> GHL-opportunity-field-NAME aliases, for columns whose
- * names don't match GHL by luck. Keyed by normalized header. The Lazers sheet
- * has "REMANING D" (a typo for Remaining) and ALL-CAPS payment headers; without
- * these, that data would silently not map. The right side is the exact GHL field
- * name, matched case/punctuation-insensitively downstream.
- *
- * Note: Sale Price is intentionally NOT here - it is in STRUCTURAL and flows in
- * as the deal's monetaryValue, not as a custom field.
+ * Sheet-header -> GHL-opportunity-field-NAME aliases. The Lazers sheet has
+ * "REMANING D" (typo) and ALL-CAPS headers. Sale Price is intentionally absent -
+ * it is STRUCTURAL and flows in as monetaryValue, not a custom field.
  */
 const DEAL_ALIASES: Record<string, string> = {
   remaningd: "Remaining Payment",
@@ -172,7 +173,6 @@ const DEAL_ALIASES: Record<string, string> = {
   duedate: "Due Date",
 };
 
-/** Map every non-structural column onto a live opportunity field, by name or alias. */
 function mapDealColumns(headers: string[], fields: OppField[]): OppColumnMap[] {
   return headers
     .filter((h) => !STRUCTURAL.has(norm(h)) && norm(h))
@@ -191,6 +191,21 @@ function mapDealColumns(headers: string[], fields: OppField[]): OppColumnMap[] {
         dataType: f?.dataType ?? null,
       };
     });
+}
+
+/** Convert a sheet value to the shape a given GHL field wants, or null to skip. */
+function fieldValueFor(f: OppField, v: unknown): unknown | null {
+  if (isJunk(v)) return null;
+  if (f.options.length > 0) {
+    const exact = resolveOption(f, v);
+    if (!exact) return null;
+    return f.dataType === "MULTIPLE_OPTIONS" ? [exact] : exact;
+  }
+  if (/monet/i.test(f.dataType) || /numer/i.test(f.dataType)) {
+    const n = Number(String(v).replace(/[$,\s]/g, ""));
+    return Number.isFinite(n) ? n : String(v).trim();
+  }
+  return String(v).trim();
 }
 
 // ---------------------------------------------------------------- context
@@ -266,8 +281,13 @@ export const getOpportunityContext = createServerFn({ method: "POST" })
       supabaseAdmin.from("external_id_map").select("crm_record_id", { count: "exact", head: true }).eq("scope", "unit"),
     ]);
 
+    // Also surface the FIRST stage of each pipeline, for spec-4 confirmation.
+    const firstStages = pipelines.map((p) => ({ pipelineId: p.id, pipelineName: p.name, firstStage: p.stages[0] ?? null }));
+
     return {
+      locationId: String(locationId ?? ""),
       pipelines,
+      firstStages,
       crmError,
       opportunityFields: oppFields.map((f) => ({
         id: f.id,
@@ -322,7 +342,8 @@ interface Resolved {
   client: string;
   status: string;
   contactId: string | null;
-  phone: string | null;
+  sheetPhone: string;
+  contactPhone: string;
   unitId: string | null;
   unitLabel: string;
   price: number | null;
@@ -378,7 +399,8 @@ function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeo
     client: clientName,
     status: clean(H.status ? row[H.status] : ""),
     contactId: c?.id ?? null,
-    phone: c?.phone ?? null,
+    sheetPhone: normalizePhone(H.phone ? row[H.phone] : ""),
+    contactPhone: normalizePhone(c?.phone ?? ""),
     unitId,
     unitLabel: `${bldName} ${unitRef ?? ""}`.trim(),
     price: H.price ? money(row[H.price]) : null,
@@ -386,6 +408,12 @@ function resolveRow(row: Record<string, unknown>, i: number, H: ReturnType<typeo
     conflict,
     raw: row,
   };
+}
+
+/** The name per spec 2: sheet phone preferred, contact phone fallback, name-only otherwise. */
+function buildName(r: Resolved): { name: string; missingPhone: boolean } {
+  const phone = r.sheetPhone || r.contactPhone;
+  return { name: phone ? `${r.client} - ${phone}` : r.client, missingPhone: !phone };
 }
 
 // ---------------------------------------------------------------- preview
@@ -416,6 +444,7 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
     let contactHit = 0;
     let unitHit = 0;
     let withPhone = 0;
+    let missingPhone = 0;
     const unresolvedUnits: Array<{ row: number; key: string; why: string }> = [];
     const unresolvedContacts: Array<{ row: number; name: string }> = [];
     const conflicts: Array<{ row: number; detail: string }> = [];
@@ -428,15 +457,17 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
       if (!r) continue;
       withClient++;
       if (r.contactId) contactHit++;
-      else if (unresolvedContacts.length < 30) unresolvedContacts.push({ row: r.rowNo, name: r.client });
-      if (r.phone) withPhone++;
-      if (r.conflict && conflicts.length < 30) conflicts.push({ row: r.rowNo, detail: r.conflict });
+      else if (unresolvedContacts.length < 40) unresolvedContacts.push({ row: r.rowNo, name: r.client });
+      const { missingPhone: mp } = buildName(r);
+      if (mp) missingPhone++;
+      else withPhone++;
+      if (r.conflict && conflicts.length < 40) conflicts.push({ row: r.rowNo, detail: r.conflict });
       if (r.unitId) {
         unitHit++;
         const arr = claims.get(r.unitId) ?? [];
         arr.push(`row ${r.rowNo}: ${r.client}`);
         claims.set(r.unitId, arr);
-      } else if (unresolvedUnits.length < 30) {
+      } else if (unresolvedUnits.length < 40) {
         unresolvedUnits.push({ row: r.rowNo, key: r.unitLabel, why: r.why });
       }
     }
@@ -444,7 +475,7 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
     const doubleClaimed = [...claims.entries()]
       .filter(([, rs]) => rs.length > 1)
       .map(([unitId, rows]) => ({ unitId, rows }))
-      .slice(0, 20);
+      .slice(0, 30);
 
     return {
       totalRows: data.rows.length,
@@ -454,6 +485,7 @@ export const previewOpportunityImport = createServerFn({ method: "POST" })
       contactHit,
       unitHit,
       withPhone,
+      missingPhone,
       importable: Math.min(contactHit, unitHit),
       dealColumns,
       opportunityFieldCount: oppFields.length,
@@ -514,55 +546,89 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
     }
 
     const slice = queue.slice(data.offset, data.offset + data.limit);
-    const results: Array<{ row: number; client: string; ok: boolean; detail: string }> = [];
+    const results: Array<{ row: number; client: string; ok: boolean; action: string; detail: string }> = [];
     let verified = data.offset > 0;
+
+    // Build the custom-field payload for a row against the live schema.
+    const buildCustomFields = (r: Resolved): { fields: Array<{ id: string; value: unknown }>; warnings: string[] } => {
+      const fields: Array<{ id: string; value: unknown }> = [];
+      const warnings: string[] = [];
+      for (const col of dealColumns) {
+        const f = oppFields.find((x) => x.id === col.fieldId);
+        if (!f) continue;
+        const val = fieldValueFor(f, r.raw[col.header]);
+        if (val === null) {
+          if (!isJunk(r.raw[col.header])) warnings.push(`${f.name}: could not convert "${String(r.raw[col.header])}"`);
+          continue; // blank stays blank - never erase an existing GHL value
+        }
+        fields.push({ id: f.id, value: val });
+      }
+      return { fields, warnings };
+    };
 
     for (const r of slice) {
       try {
         if (!r.contactId) throw new Error(`no contact for "${r.client}" - import contacts first`);
         if (!r.unitId) throw new Error(r.why || "unit not resolved");
 
+        const { name: dealName, missingPhone } = buildName(r);
+        const { fields: customFields, warnings } = buildCustomFields(r);
+
         const { data: st } = await supabaseAdmin
           .from("unit_state")
           .select("held_by_opportunity_id")
           .eq("unit_crm_id", r.unitId)
           .maybeSingle();
-        if (st?.held_by_opportunity_id) {
-          results.push({
-            row: r.rowNo,
-            client: r.client,
-            ok: true,
-            detail: `skipped - unit already held by ${st.held_by_opportunity_id}`,
-          });
-          continue;
-        }
+        const holder = st?.held_by_opportunity_id as string | undefined;
 
-        // ---- payment / deal fields, against the REAL schema
-        const customFields: Array<{ id: string; value: unknown }> = [];
-        const warnings: string[] = [];
-        for (const col of dealColumns) {
-          const v = r.raw[col.header];
-          if (isJunk(v)) continue;
-          const f = oppFields.find((x) => x.id === col.fieldId);
-          if (!f) continue;
-          if (f.options.length > 0) {
-            const exact = resolveOption(f, v);
-            if (!exact) {
-              warnings.push(`${f.name}: "${String(v)}" not in [${f.options.join(", ")}]`);
-              continue;
-            }
-            customFields.push({ id: f.id, value: f.dataType === "MULTIPLE_OPTIONS" ? [exact] : exact });
-          } else {
-            customFields.push({ id: f.id, value: String(v).trim() });
+        // ---- The unit is already held. Decide by WHO holds it (spec 1). ----
+        if (holder) {
+          // Is that holder still alive?
+          let holderExists = true;
+          try {
+            await client.request("GET", `/opportunities/${holder}`, {});
+          } catch (err) {
+            const status = (err as { status?: number })?.status;
+            if (status === 404 || status === 400) holderExists = false;
+            else throw err;
           }
+
+          if (holderExists) {
+            // UPDATE the existing deal in place: name + payments. No new deal,
+            // no association change, inventory status untouched here.
+            const body: Record<string, unknown> = { name: dealName };
+            if (r.price) body.monetaryValue = r.price;
+            if (customFields.length) body.customFields = customFields;
+            await client.request("PUT", `/opportunities/${holder}`, { body });
+
+            const tags = [
+              ...(missingPhone ? ["Missing Phone"] : []),
+              ...(r.conflict ? [`WARNING ${r.conflict}`] : []),
+              ...warnings,
+            ];
+            results.push({
+              row: r.rowNo,
+              client: r.client,
+              ok: true,
+              action: "Updated Existing Opportunity",
+              detail: `${holder} -> "${dealName}"${tags.length ? ` - ${tags.join(" - ")}` : ""}`,
+            });
+            continue;
+          }
+
+          // Stale holder: the deal is gone. Clear the hold and fall through to
+          // create a fresh deal for this row.
+          await supabaseAdmin
+            .from("unit_state")
+            .update({ held_by_opportunity_id: null })
+            .eq("unit_crm_id", r.unitId);
         }
 
-        // Name = full contact name + full phone. No unit: it lives on the association.
-        const namePhone = r.phone ? ` ${r.phone}` : "";
+        // ---- Create a new deal + lock (first time for this unit). ----
         const body: Record<string, unknown> = {
           pipelineId: data.pipelineId,
           locationId,
-          name: `${r.client}${namePhone}`,
+          name: dealName,
           pipelineStageId: data.stageMap[norm(r.status)],
           status: "open",
           contactId: r.contactId,
@@ -576,8 +642,6 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
         const oppId = typeof o.id === "string" ? o.id : null;
         if (!oppId) throw new Error("CRM did not return an opportunity id");
 
-        // An unlocked deal is worse than no deal: a retry would create a second
-        // one and orphan this card. So roll back rather than leave it.
         try {
           await client.request("POST", "/associations/relations", {
             body: {
@@ -594,8 +658,6 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
           );
         }
 
-        // VERIFY THE FIRST WRITE. GHL 200s an unknown custom-field payload and
-        // drops it silently - without this, deals import with no payment data.
         if (!verified && customFields.length > 0) {
           const back = await client.request<Record<string, unknown>>("GET", `/opportunities/${oppId}`);
           const bd = (back.data ?? {}) as Record<string, unknown>;
@@ -608,19 +670,30 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
           if (landed.length === 0) {
             throw new Error(
               `ABORTED AFTER ONE ROW. Sent ${customFields.length} payment fields; GHL returned 200 but stored none. ` +
-                `Fix the payload shape first. Read back: ${JSON.stringify(got).slice(0, 250)}`,
+                `Read back: ${JSON.stringify(got).slice(0, 250)}`,
             );
           }
           verified = true;
         }
 
         const applied = await applyOpportunityStageToUnit(client, oppId, r.unitId);
-        const notes = [applied.outcome, ...(r.conflict ? [`WARNING ${r.conflict}`] : []), ...warnings];
-        results.push({ row: r.rowNo, client: r.client, ok: true, detail: `${oppId} - ${notes.join(" - ")}` });
+        const tags = [
+          applied.outcome,
+          ...(missingPhone ? ["Missing Phone"] : []),
+          ...(r.conflict ? [`WARNING ${r.conflict}`] : []),
+          ...warnings,
+        ];
+        results.push({
+          row: r.rowNo,
+          client: r.client,
+          ok: true,
+          action: "Opportunity created",
+          detail: `${oppId} - ${tags.join(" - ")}`,
+        });
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
         const msg = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw)?.[1] ?? raw;
-        results.push({ row: r.rowNo, client: r.client, ok: false, detail: msg.slice(0, 240) });
+        results.push({ row: r.rowNo, client: r.client, ok: false, action: "Failed", detail: msg.slice(0, 240) });
         if (/ABORTED AFTER ONE ROW/.test(raw)) break;
       }
     }
@@ -629,6 +702,8 @@ export const runOpportunityImportChunk = createServerFn({ method: "POST" })
     return {
       processed: slice.length,
       succeeded: results.filter((x) => x.ok).length,
+      created: results.filter((x) => x.action === "Opportunity created").length,
+      updated: results.filter((x) => x.action === "Updated Existing Opportunity").length,
       failed: results.filter((x) => !x.ok),
       results,
       dealFieldsMapped: dealColumns.length,
