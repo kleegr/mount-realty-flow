@@ -22,6 +22,14 @@ export const Route = createFileRoute("/_authenticated/import/auto")({
 
 type Row = Record<string, unknown>;
 
+interface Pipe {
+  id: string;
+  name: string;
+  governed: boolean;
+  openDeals: number | null;
+  stages: Array<{ id: string; name: string }>;
+}
+
 interface StepState {
   key: string;
   label: string;
@@ -53,6 +61,10 @@ function AutoRunPage() {
   const [summary, setSummary] = useState<Record<string, number> | null>(null);
   const [pct, setPct] = useState(0);
 
+  // Pipeline selection is surfaced so the wrong one can never be used silently.
+  const [pipes, setPipes] = useState<Pipe[]>([]);
+  const [chosenPipe, setChosenPipe] = useState<string>("");
+
   const say = (line: string) => setLog((l) => [...l, line]);
   const setStep = (key: string, patch: Partial<StepState>) =>
     setSteps((s) => s.map((st) => (st.key === key ? { ...st, ...patch } : st)));
@@ -67,11 +79,27 @@ function AutoRunPage() {
     setSummary(null);
     setLog([]);
     setPct(0);
+
+    // Load pipelines now so the user can see/choose which one will be targeted.
+    try {
+      const ctx = await contextFn({ data: { confirm: "LOOK" as const } });
+      const governed = ctx.pipelines.filter((p) => p.governed);
+      const ranked = [...governed].sort((a, b) => (b.openDeals ?? 0) - (a.openDeals ?? 0));
+      setPipes(ranked);
+      // Default: the governed pipeline that already holds the most deals.
+      setChosenPipe(ranked[0]?.id ?? governed[0]?.id ?? "");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function runAll() {
     if (!rows.length) {
       toast.error("Upload the sheet first.");
+      return;
+    }
+    if (!chosenPipe) {
+      toast.error("No pipeline selected.");
       return;
     }
     setRunning(true);
@@ -90,14 +118,14 @@ function AutoRunPage() {
     };
 
     try {
-      // ---- Step 1: read context, pick pipeline + stage map.
+      // ---- Step 1: read context, resolve the CHOSEN pipeline + stage map.
       setStep("read", { status: "running" });
       say("Reading the CRM: pipelines, stages, payment fields...");
       const ctx = await contextFn({ data: { confirm: "LOOK" as const } });
-      const pipeline =
-        ctx.pipelines.find((p) => p.governed && (p.openDeals ?? 0) === 0) ??
-        ctx.pipelines.find((p) => p.governed);
-      if (!pipeline) throw new Error("No governed pipeline found - cannot map statuses to stages.");
+      const pipeline = ctx.pipelines.find((p) => p.id === chosenPipe);
+      if (!pipeline) throw new Error("Chosen pipeline not found in CRM.");
+      if (!pipeline.governed)
+        say(`  WARNING: "${pipeline.name}" has no stage rules - units will not change status.`);
       const find = (re: RegExp) => pipeline.stages.find((s) => re.test(s.name))?.id ?? "";
       const stageMap: Record<string, string> = {
         undercontract: find(/contract signed|unit locked/i),
@@ -109,15 +137,16 @@ function AutoRunPage() {
 
       const preview = await previewFn({ data: { rows } });
       say(
-        `  pipeline "${pipeline.name}", ${ctx.opportunityFields.length} payment fields, ` +
-          `${preview.contactHit}/${preview.withClient} contacts matched, ${preview.unitHit} units matched, ` +
+        `  TARGET PIPELINE: "${pipeline.name}" (${pipeline.openDeals ?? 0} existing deals). ` +
+          `${ctx.opportunityFields.length} payment fields, ` +
+          `${preview.contactHit}/${preview.withClient} contacts, ${preview.unitHit} units, ` +
           `${preview.withPhone} with phone / ${preview.missingPhone} missing.`,
       );
       if (ctx.opportunityFields.length === 0)
         say("  warning: GHL has no opportunity payment fields - payment data cannot import.");
       setStep("read", {
         status: "done",
-        detail: `${pipeline.name}, ${preview.contactHit} contacts, ${preview.unitHit} units matched`,
+        detail: `${pipeline.name} (${pipeline.openDeals ?? 0} deals), ${preview.unitHit} units`,
       });
       setPct(10);
 
@@ -169,8 +198,7 @@ function AutoRunPage() {
       setStep("recalc", { status: "done", detail: "counts rebuilt" });
       setPct(55);
 
-      // ---- Step 5: import opportunities. Created vs Updated come from the
-      // server counts now (held units are updated in place, not skipped).
+      // ---- Step 5: import opportunities.
       setStep("import", { status: "running", detail: "starting..." });
       let io = 0;
       let total = 0;
@@ -220,9 +248,9 @@ function AutoRunPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Run everything</h1>
         <p className="mt-1 text-muted-foreground">
-          Upload the sheet, press one button. Clears old holds, sets inventory to Available, recalculates counts, then
-          imports every deal - creating new ones and updating existing ones - with the buyer&apos;s name and phone, the
-          payment fields, and the unit lock. Safe to run twice. Stops if any write does not land.
+          Upload the sheet, choose the pipeline, press one button. Clears old holds, sets inventory to Available,
+          recalculates counts, then creates new deals and updates existing ones - with the buyer&apos;s name and phone,
+          the payment fields, and the unit lock. Safe to run twice. Stops if any write does not land.
         </p>
       </div>
 
@@ -244,15 +272,39 @@ function AutoRunPage() {
         </CardContent>
       </Card>
 
+      {pipes.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">2 - Pipeline</CardTitle>
+            <CardDescription>
+              Target the pipeline that holds your deals. Default is the one with the most existing deals.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-wrap gap-1">
+            {pipes.map((p) => (
+              <Button
+                key={p.id}
+                size="sm"
+                variant={chosenPipe === p.id ? "default" : "outline"}
+                disabled={running}
+                onClick={() => setChosenPipe(p.id)}
+              >
+                {p.name} ({p.openDeals ?? 0})
+              </Button>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">2 - Run</CardTitle>
+          <CardTitle className="text-lg">3 - Run</CardTitle>
           <CardDescription>
             Safe to run more than once. Held units for live deals are updated in place, never duplicated.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Button onClick={runAll} disabled={running || rows.length === 0}>
+          <Button onClick={runAll} disabled={running || rows.length === 0 || !chosenPipe}>
             <Play className="mr-2 h-4 w-4" />
             {running ? "Running..." : "Run everything"}
           </Button>
