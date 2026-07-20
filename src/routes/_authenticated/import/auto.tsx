@@ -85,7 +85,7 @@ function AutoRunPage() {
       liveKept: 0,
       setAvailable: 0,
       dealsCreated: 0,
-      dealsSkipped: 0,
+      dealsUpdated: 0,
       dealsFailed: 0,
     };
 
@@ -110,7 +110,8 @@ function AutoRunPage() {
       const preview = await previewFn({ data: { rows } });
       say(
         `  pipeline "${pipeline.name}", ${ctx.opportunityFields.length} payment fields, ` +
-          `${preview.contactHit}/${preview.withClient} contacts matched, ${preview.unitHit} units matched.`,
+          `${preview.contactHit}/${preview.withClient} contacts matched, ${preview.unitHit} units matched, ` +
+          `${preview.withPhone} with phone / ${preview.missingPhone} missing.`,
       );
       if (ctx.opportunityFields.length === 0)
         say("  warning: GHL has no opportunity payment fields - payment data cannot import.");
@@ -135,8 +136,7 @@ function AutoRunPage() {
       setStep("holds", { status: "done", detail: `${totals.staleCleared} cleared, ${totals.liveKept} kept` });
       setPct(25);
 
-      // ---- Step 3: set Available. Reports progress every batch so it never
-      // looks frozen while grinding through hundreds of units.
+      // ---- Step 3: set Available.
       setStep("available", { status: "running", detail: "starting..." });
       let so = 0;
       let aborted = false;
@@ -169,7 +169,8 @@ function AutoRunPage() {
       setStep("recalc", { status: "done", detail: "counts rebuilt" });
       setPct(55);
 
-      // ---- Step 5: import opportunities.
+      // ---- Step 5: import opportunities. Created vs Updated come from the
+      // server counts now (held units are updated in place, not skipped).
       setStep("import", { status: "running", detail: "starting..." });
       let io = 0;
       let total = 0;
@@ -178,14 +179,12 @@ function AutoRunPage() {
           data: { confirm: "IMPORT" as const, rows, pipelineId: pipeline.id, stageMap, offset: io, limit: 10 },
         });
         total = r.totalDeals;
+        totals.dealsCreated += r.created;
+        totals.dealsUpdated += r.updated;
         for (const res of r.results) {
           if (!res.ok) {
             totals.dealsFailed++;
             say(`  row ${res.row} ${res.client}: ${res.detail}`);
-          } else if (/skipped/.test(res.detail)) {
-            totals.dealsSkipped++;
-          } else {
-            totals.dealsCreated++;
           }
         }
         if (r.results.some((x) => /ABORTED AFTER ONE ROW/.test(x.detail))) {
@@ -197,15 +196,17 @@ function AutoRunPage() {
         setPct(55 + Math.round((io / Math.max(1, total)) * 45));
         if (r.remaining === 0 || r.processed === 0) break;
       }
-      say(`Import done: ${totals.dealsCreated} created, ${totals.dealsSkipped} skipped, ${totals.dealsFailed} failed.`);
+      say(
+        `Import done: ${totals.dealsCreated} created, ${totals.dealsUpdated} updated, ${totals.dealsFailed} failed.`,
+      );
       setStep("import", {
         status: "done",
-        detail: `${totals.dealsCreated} created, ${totals.dealsFailed} failed`,
+        detail: `${totals.dealsCreated} created, ${totals.dealsUpdated} updated, ${totals.dealsFailed} failed`,
       });
       setPct(100);
 
       setSummary(totals);
-      toast.success(`Done: ${totals.dealsCreated} deals, ${totals.setAvailable} units Available`);
+      toast.success(`Done: ${totals.dealsCreated} created, ${totals.dealsUpdated} updated`);
     } catch (err) {
       say(`STOPPED: ${err instanceof Error ? err.message : String(err)}`);
       toast.error(err instanceof Error ? err.message : String(err));
@@ -220,8 +221,8 @@ function AutoRunPage() {
         <h1 className="text-3xl font-bold tracking-tight">Run everything</h1>
         <p className="mt-1 text-muted-foreground">
           Upload the sheet, press one button. Clears old holds, sets inventory to Available, recalculates counts, then
-          imports every deal with the buyer&apos;s name and phone, the payment fields, and the unit lock. Stops if any
-          write does not land.
+          imports every deal - creating new ones and updating existing ones - with the buyer&apos;s name and phone, the
+          payment fields, and the unit lock. Safe to run twice. Stops if any write does not land.
         </p>
       </div>
 
@@ -246,7 +247,9 @@ function AutoRunPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">2 - Run</CardTitle>
-          <CardDescription>Safe to run more than once. Held units for live deals are never touched.</CardDescription>
+          <CardDescription>
+            Safe to run more than once. Held units for live deals are updated in place, never duplicated.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Button onClick={runAll} disabled={running || rows.length === 0}>
@@ -279,9 +282,9 @@ function AutoRunPage() {
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <Stat label="Deals created" value={summary.dealsCreated} />
+            <Stat label="Deals updated" value={summary.dealsUpdated} />
             <Stat label="Units Available" value={summary.setAvailable} />
             <Stat label="Stale holds cleared" value={summary.staleCleared} />
-            <Stat label="Deals skipped" value={summary.dealsSkipped} />
             <Stat label="Deals failed" value={summary.dealsFailed} danger={summary.dealsFailed > 0} />
             <Stat label="Live holds kept" value={summary.liveKept} />
           </CardContent>
@@ -292,7 +295,7 @@ function AutoRunPage() {
         <Alert>
           <AlertTriangle className="h-4 w-4" />
           <AlertDescription className="text-sm">
-            Some rows failed - almost always a contact or building that is not in GHL (the 6 missing people and the
+            Some rows failed - almost always a contact or building that is not in GHL (the missing people and the
             Yoely Katz / Indigo / 319 Lake Shore buildings). Those must be added to GHL, then run again. Everything
             else is done.
           </AlertDescription>
