@@ -25,6 +25,7 @@ function SalesTasksPage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [fileName, setFileName] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [resolutions, setResolutions] = useState<Record<string, string>>({});
   const [running, setRunning] = useState(false);
   const [pct, setPct] = useState(0);
   const [log, setLog] = useState<string[]>([]);
@@ -38,6 +39,7 @@ function SalesTasksPage() {
     setRows(parsed);
     setFileName(`${file.name} - ${parsed.length} rows`);
     setPreview(null);
+    setResolutions({});
     setSummary(null);
     setLog([]);
     setPct(0);
@@ -59,7 +61,7 @@ function SalesTasksPage() {
     try {
       let offset = 0;
       for (let pass = 0; pass < 200; pass++) {
-        const r = await runFn({ data: { confirm: "IMPORT" as const, rows, offset, limit: 8 } });
+        const r = await runFn({ data: { confirm: "IMPORT" as const, rows, resolutions, offset, limit: 8 } });
         totals.created += r.created;
         totals.updated += r.updated;
         totals.failed += r.failed;
@@ -82,6 +84,7 @@ function SalesTasksPage() {
   }
 
   const c = preview?.counts;
+  const decided = Object.values(resolutions).filter((v) => v && v !== "skip").length;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
@@ -90,8 +93,8 @@ function SalesTasksPage() {
         <p className="mt-1 text-muted-foreground">
           Upload the sales team's task export (ClickUp CSV). Every person becomes a deal in the Local Market Pipeline:
           "groveview pending" rows lock their units at Under Contract, priorities set the Priority dropdown, everything
-          else lands in the first stage. Existing customers are updated in place - never duplicated. Ambiguous names are
-          left out for your review. Safe to run twice.
+          else lands in the first stage. Existing customers are updated in place - never duplicated. Rows the matcher
+          isn't sure about wait for YOUR decision below. Safe to run twice.
         </p>
       </div>
 
@@ -114,30 +117,49 @@ function SalesTasksPage() {
       {c && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">2 - Preview</CardTitle>
+            <CardTitle className="text-lg">2 - Preview & decide</CardTitle>
             <CardDescription>Nothing has been written yet. This is what the run will do.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Stat label="Will import" value={c.locked + c.firstStage} />
+              <Stat label="Will import" value={c.locked + c.firstStage + decided} />
               <Stat label="Locked Under Contract" value={c.locked} sub={`${c.lockedUnits} units`} />
               <Stat label="First stage" value={c.firstStage} />
               <Stat label="Existing customers (update)" value={c.existing} />
               <Stat label="New contacts (create)" value={c.newContacts} />
-              <Stat label="Left for review" value={c.ambiguous} danger={c.ambiguous > 0} />
+              <Stat label="Waiting for you" value={c.ambiguous - decided} danger={c.ambiguous - decided > 0} />
               <Stat label="Ignored (rentel/listings)" value={c.skipped} />
-              <Stat label="Missing phone" value={c.missingPhone} />
+              <Stat label="With email" value={c.withEmail} />
             </div>
 
             {preview!.ambiguousList.length > 0 && (
               <div>
                 <div className="mb-1 flex items-center gap-1.5 text-sm font-semibold">
-                  <Users className="h-4 w-4" /> Needs your review (not imported)
+                  <Users className="h-4 w-4" /> Your call - pick what each one is ({decided}/{preview!.ambiguousList.length} decided)
                 </div>
-                <div className="max-h-48 overflow-auto rounded border p-2 text-xs">
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Rows left on “Leave out” are not imported and can be run again later.
+                </p>
+                <div className="max-h-80 space-y-1.5 overflow-auto rounded border p-2">
                   {preview!.ambiguousList.map((a) => (
-                    <div key={a.row}>
-                      row {a.row}: <b>{a.name}</b> ~ could be {a.candidates.join(" / ")}
+                    <div key={a.row} className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="min-w-40 flex-1">
+                        row {a.row}: <b>{a.name}</b>
+                      </span>
+                      <select
+                        className="h-7 rounded border bg-card px-1.5 text-xs"
+                        value={resolutions[String(a.row)] ?? "skip"}
+                        disabled={running}
+                        onChange={(e) => setResolutions((prev) => ({ ...prev, [String(a.row)]: e.target.value }))}
+                      >
+                        <option value="skip">Leave out</option>
+                        <option value="new">Import as NEW person</option>
+                        {a.candidates.map((cand) => (
+                          <option key={cand} value={`same:${cand}`}>
+                            Same as {cand}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   ))}
                 </div>
@@ -150,7 +172,10 @@ function SalesTasksPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">3 - Run</CardTitle>
-          <CardDescription>Re-runs update in place; one deal per person; notes are never duplicated.</CardDescription>
+          <CardDescription>
+            Re-runs update in place; one deal per person; notes are never duplicated. Rows left on “Leave out” are
+            untouched - decide them later and run again.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Button onClick={run} disabled={running || !preview}>

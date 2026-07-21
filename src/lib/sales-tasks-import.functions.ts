@@ -6,27 +6,24 @@ import { z } from "zod";
  * SALES TASKS IMPORT (ClickUp export -> opportunities).
  *
  * The sheet is a ClickUp task export: one task per person, the buyer's name
- * in "Task Name" (often with unit codes embedded, e.g. "Avrum Lax CC-202" or
- * "Friedman A2-301-302-303"), phones in three possible columns, emails in
- * "Buyers Email", and ClickUp workflow buckets in "Status".
+ * in "Task Name" (often with unit codes or street addresses embedded, e.g.
+ * "Avrum Lax CC-202" or "Yidel Rubinstein - 16 Houston unit 102"), phones in
+ * three possible columns, emails in "Buyers Email", and ClickUp workflow
+ * buckets in "Status".
  *
  * OWNER RULES:
  *  - status "groveview pending" WITH unit code(s) -> deal at Under Contract,
  *    ALL listed units locked under the one deal
  *  - statuses "rentel" and "listings" -> ignored
- *  - EVERYTHING else (priorities, groveview, pending, meeting, complete,
- *    closed 2026, etc.), and any row without a readable unit code -> FIRST
- *    stage of the Local Market Pipeline
+ *  - EVERYTHING else -> FIRST stage of the Local Market Pipeline
  *  - the four priority statuses also set the "Priority" dropdown on the deal
  *  - deal name = "{contact name} - {(xxx) xxx-xxxx}" like every other import
- *  - existing customers (phone or exact-name match) are UPDATED in place -
- *    name, priority, note, missing email - never duplicated
- *  - ambiguous last-name-only rows (could be several existing customers) are
- *    NEVER imported; they land on a review list
- *  - EVERYTHING of value on the task follows the person as a note: latest
- *    comment, task content, summary, progress updates, assignee, due date,
- *    and the rare legal/attorney/address/down-payment cells (deduped on
- *    re-run); the buyer's email lands on the contact record itself
+ *  - existing customers are UPDATED in place - never duplicated
+ *  - ambiguous rows are NEVER imported blind; the page shows them with a
+ *    per-row decision (same-as / new person / leave out) which the run
+ *    receives as `resolutions`
+ *  - everything of value on the task follows the person as one deduped note;
+ *    the buyer's email lands on the contact record
  */
 
 function norm(s: unknown): string {
@@ -69,11 +66,24 @@ function parseCodes(name: string): Array<{ b: string; u: string }> {
   }
   return out;
 }
-function stripCodes(name: string): string {
+
+/**
+ * Street addresses embedded in task names ("57 Fort Worth 101",
+ * "16 Houston unit 102") wreck contact matching and would create ugly
+ * contact names. Strip the known street patterns and stray "unit NNN"
+ * fragments before matching.
+ */
+const ADDR_RE = new RegExp(
+  "\\b\\d{1,4}\\s+(?:fort\\s*worth|houston|dallas|duelk|lake\\s*shore|mangin|virginia|chesnut(?:\\s*drive)?|alamo|san\\s*marcos|hawthorne|roanoke|merri\\w*wold(?:\\s+(?:ln|lane)\\s*[ns]?)?|lone\\s*oak|kingsville|arlington|prospect|cook\\s*st\\w*|grove\\s*view)\\b(?:\\s*(?:unit\\s*)?\\d{1,4})?",
+  "gi",
+);
+function stripNoise(name: string): string {
   return name
     .replace(CODE_RE, " ")
-    .replace(/[\s\-/,]+$/g, "")
-    .replace(/^[\s\-/,]+/g, "")
+    .replace(ADDR_RE, " ")
+    .replace(/\bunit\s*\d{1,4}\b/gi, " ")
+    .replace(/(?:\s*[-,/]\s*){2,}/g, " ")
+    .replace(/^[\s\-/,]+|[\s\-/,]+$/g, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 }
@@ -103,7 +113,7 @@ function parseTask(row: Record<string, unknown>, idx: number): ParsedTask | null
   const email =
     cleanEmail(row["Buyers Email (email)"]) || cleanEmail(row["Buyers Email 2 (email)"]) || cleanEmail(row["buyers email (email)"]);
   const codes = parseCodes(name);
-  const displayName = stripCodes(name) || name;
+  const displayName = stripNoise(name) || name;
 
   let mode: ParsedTask["mode"];
   let skipWhy: string | undefined;
@@ -198,6 +208,29 @@ function matchContact(t: ParsedTask, contacts: ContactRec[], byPhone: Map<string
   return { kind: "new" };
 }
 
+/**
+ * A per-row decision from the review UI:
+ *   "new"          -> import as a brand-new person
+ *   "same:<name>"  -> this is the existing contact with that display name
+ *   anything else  -> leave the row out
+ */
+function applyResolution(
+  m: Match,
+  rowNo: number,
+  resolutions: Record<string, string> | undefined,
+  contacts: ContactRec[],
+): Match | null {
+  if (m.kind !== "ambiguous") return m;
+  const dec = resolutions?.[String(rowNo)] ?? "";
+  if (dec === "new") return { kind: "new" };
+  if (dec.startsWith("same:")) {
+    const want = dec.slice(5);
+    const c = contacts.find((x) => x.name === want);
+    if (c) return { kind: "name", contact: c };
+  }
+  return null; // leave out
+}
+
 const RowSchema = z.record(z.string(), z.unknown());
 
 export const previewSalesTasks = createServerFn({ method: "POST" })
@@ -237,7 +270,7 @@ export const previewSalesTasks = createServerFn({ method: "POST" })
       const m = matchContact(t, contacts, byPhone, byName);
       if (m.kind === "ambiguous") {
         counts.ambiguous++;
-        if (ambiguousList.length < 60) ambiguousList.push({ row: t.rowNo, name: t.displayName, candidates: m.candidates });
+        if (ambiguousList.length < 100) ambiguousList.push({ row: t.rowNo, name: t.displayName, candidates: m.candidates });
         continue;
       }
       if (m.kind === "new") counts.newContacts++;
@@ -264,6 +297,7 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
       .object({
         confirm: z.literal("IMPORT"),
         rows: z.array(RowSchema).max(5000),
+        resolutions: z.record(z.string(), z.string()).optional(),
         offset: z.number().int().min(0).default(0),
         limit: z.number().int().min(1).max(10).default(8),
       })
@@ -365,13 +399,15 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
     const byPhone = new Map(contacts.filter((c) => c.p).map((c) => [c.p, c]));
     const byName = new Map(contacts.filter((c) => c.n).map((c) => [c.n, c]));
 
-    // --- Build the processing queue (ambiguous + skip rows never enter it).
+    // --- Build the processing queue. Ambiguous rows enter ONLY with an
+    //     explicit decision from the review UI; skip rows never do.
     const queue: Array<{ t: ParsedTask; match: Match }> = [];
     for (const [i, row] of data.rows.entries()) {
       const t = parseTask(row, i);
       if (!t || t.mode === "skip") continue;
-      const m = matchContact(t, contacts, byPhone, byName);
-      if (m.kind === "ambiguous") continue;
+      const m0 = matchContact(t, contacts, byPhone, byName);
+      const m = applyResolution(m0, t.rowNo, data.resolutions, contacts);
+      if (!m) continue;
       queue.push({ t, match: m });
     }
 
