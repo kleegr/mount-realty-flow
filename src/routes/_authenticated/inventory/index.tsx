@@ -60,8 +60,13 @@ function crmBase(): string {
 function contactUrl(locationId: string, contactId: string): string {
   return `${crmBase()}/v2/location/${locationId}/contacts/detail/${contactId}`;
 }
+/**
+ * GHL's official deep-link for one opportunity (changelog "Dynamic routing
+ * for the Opportunities modal"): the id is a PATH segment plus
+ * ?tab=OpportunityDetails - a query-param form only opens the board.
+ */
 function opportunityUrl(locationId: string, oppId: string): string {
-  return `${crmBase()}/v2/location/${locationId}/opportunities/list?opportunityId=${oppId}`;
+  return `${crmBase()}/v2/location/${locationId}/opportunities/list/${oppId}?tab=OpportunityDetails`;
 }
 
 function money(n: number): string {
