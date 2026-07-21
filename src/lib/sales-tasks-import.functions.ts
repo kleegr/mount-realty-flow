@@ -7,8 +7,8 @@ import { z } from "zod";
  *
  * The sheet is a ClickUp task export: one task per person, the buyer's name
  * in "Task Name" (often with unit codes embedded, e.g. "Avrum Lax CC-202" or
- * "Friedman A2-301-302-303"), phones in three possible columns, and ClickUp
- * workflow buckets in "Status".
+ * "Friedman A2-301-302-303"), phones in three possible columns, emails in
+ * "Buyers Email", and ClickUp workflow buckets in "Status".
  *
  * OWNER RULES:
  *  - status "groveview pending" WITH unit code(s) -> deal at Under Contract,
@@ -20,11 +20,13 @@ import { z } from "zod";
  *  - the four priority statuses also set the "Priority" dropdown on the deal
  *  - deal name = "{contact name} - {(xxx) xxx-xxxx}" like every other import
  *  - existing customers (phone or exact-name match) are UPDATED in place -
- *    name, priority, note - never duplicated
+ *    name, priority, note, missing email - never duplicated
  *  - ambiguous last-name-only rows (could be several existing customers) are
  *    NEVER imported; they land on a review list
- *  - the task's latest comment is copied to the contact as a note (deduped
- *    on re-run)
+ *  - EVERYTHING of value on the task follows the person as a note: latest
+ *    comment, task content, summary, progress updates, assignee, due date,
+ *    and the rare legal/attorney/address/down-payment cells (deduped on
+ *    re-run); the buyer's email lands on the contact record itself
  */
 
 function norm(s: unknown): string {
@@ -41,6 +43,10 @@ function normPhone(v: unknown): string {
 function prettyPhone(d: string): string {
   if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
   return d;
+}
+function cleanEmail(v: unknown): string {
+  const s = clean(v);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? s : "";
 }
 
 const SKIP_STATUSES = new Set(["rentel", "listings"]);
@@ -81,7 +87,9 @@ interface ParsedTask {
   priorityLabel: string | null;
   phoneNorm: string;
   phoneRaw: string;
-  comment: string;
+  email: string;
+  note: string;
+  noteProbe: string;
   codes: Array<{ b: string; u: string }>;
 }
 
@@ -92,6 +100,8 @@ function parseTask(row: Record<string, unknown>, idx: number): ParsedTask | null
   const status = clean(row["Status"]).toLowerCase();
   const phoneRaw =
     clean(row["Buyer's Number (phone)"]) || clean(row["Wife Buyer number (phone)"]) || clean(row["Wife Number (phone)"]);
+  const email =
+    cleanEmail(row["Buyers Email (email)"]) || cleanEmail(row["Buyers Email 2 (email)"]) || cleanEmail(row["buyers email (email)"]);
   const codes = parseCodes(name);
   const displayName = stripCodes(name) || name;
 
@@ -109,6 +119,29 @@ function parseTask(row: Record<string, unknown>, idx: number): ParsedTask | null
     mode = "first";
   }
 
+  // Compose ONE note carrying everything of value on the task.
+  const comment = clean(row["Latest Comment"]).slice(0, 900);
+  const lines: string[] = [];
+  if (comment) lines.push(comment);
+  const add = (label: string, v: unknown, max = 300) => {
+    const s = clean(v).slice(0, max);
+    if (s && s !== "[]") lines.push(`${label}: ${s}`);
+  };
+  add("Details", row["Task Content"], 500);
+  add("Summary", row["Summary (text)"], 500);
+  add("Progress", row["Progress Updates (text)"], 500);
+  add("Assignee", String(row["Assignee"] ?? "").replace(/[\[\]]/g, ""));
+  add("Follow up due", row["Due Date"]);
+  add("Meeting", row["Meeting Date (date)"]);
+  add("Contact method", row["Client Contact Method (drop down)"]);
+  add("Legal name", row["Buyers Legal Name (short text)"]);
+  add("Address", row["Buyers Address  (location)"]);
+  add("Attorney", row["Buyers Attorney Name  (short text)"]);
+  add("Attorney #", row["Buyers Attorney Number (phone)"]);
+  add("Down payment", row["Down Payment  (currency)"]);
+  const note = lines.length ? `Sales sheet [${status || "no status"}]:\n${lines.join("\n")}`.slice(0, 1800) : "";
+  const noteProbe = (comment || lines[0] || "").slice(0, 60);
+
   return {
     rowNo: idx + 2,
     displayName,
@@ -118,7 +151,9 @@ function parseTask(row: Record<string, unknown>, idx: number): ParsedTask | null
     priorityLabel: PRIORITY_LABELS[status] ?? null,
     phoneNorm: normPhone(phoneRaw),
     phoneRaw,
-    comment: clean(row["Latest Comment"]).slice(0, 900),
+    email,
+    note,
+    noteProbe,
     codes: mode === "locked" ? codes : [],
   };
 }
@@ -185,6 +220,7 @@ export const previewSalesTasks = createServerFn({ method: "POST" })
       missingPhone: 0,
       withPriority: 0,
       withComment: 0,
+      withEmail: 0,
     };
     const ambiguousList: Array<{ row: number; name: string; candidates: string[] }> = [];
     const skippedList: Array<{ row: number; name: string; why: string }> = [];
@@ -214,7 +250,8 @@ export const previewSalesTasks = createServerFn({ method: "POST" })
       }
       if (!t.phoneNorm) counts.missingPhone++;
       if (t.priorityLabel) counts.withPriority++;
-      if (t.comment) counts.withComment++;
+      if (t.note) counts.withComment++;
+      if (t.email) counts.withEmail++;
     }
 
     return { counts, ambiguousList, skippedList };
@@ -343,13 +380,15 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
 
     for (const { t, match } of slice) {
       try {
-        // ---- Contact: reuse or create.
+        // ---- Contact: reuse or create (email included where known).
         let contactId: string;
         let contactName: string;
         let contactPhone: string;
+        const tags: string[] = [];
         if (match.kind === "new") {
           const body: Record<string, unknown> = { locationId, name: t.displayName };
           if (t.phoneRaw) body.phone = t.phoneRaw;
+          if (t.email) body.email = t.email;
           const cRes = await client.request<Record<string, unknown>>("POST", "/contacts/upsert", { body });
           const cd = (cRes.data ?? {}) as Record<string, unknown>;
           const c = (cd.contact && typeof cd.contact === "object" ? cd.contact : cd) as Record<string, unknown>;
@@ -368,6 +407,20 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
           contactId = match.contact.id;
           contactName = match.contact.name || t.displayName;
           contactPhone = match.contact.p || t.phoneNorm;
+          // Fill a missing email on the existing contact - never overwrite one.
+          if (t.email) {
+            try {
+              const gRes = await client.request<Record<string, unknown>>("GET", `/contacts/${contactId}`, {});
+              const gd = (gRes.data ?? {}) as Record<string, unknown>;
+              const gc = (gd.contact && typeof gd.contact === "object" ? gd.contact : gd) as Record<string, unknown>;
+              if (!String(gc.email ?? "").trim()) {
+                await client.request("PUT", `/contacts/${contactId}`, { body: { email: t.email } });
+                tags.push("email filled");
+              }
+            } catch {
+              /* best effort */
+            }
+          }
         }
 
         const pretty = prettyPhone(contactPhone);
@@ -375,13 +428,12 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
 
         // ---- Priority custom field payload.
         const customFields: Array<{ id: string; value: string }> = [];
-        let priorityNote = "";
         if (t.priorityLabel) {
           if (priorityField) {
             const resolved = priorityField.options.get(norm(t.priorityLabel)) ?? t.priorityLabel;
             customFields.push({ id: priorityField.id, value: resolved });
           } else {
-            priorityNote = "no Priority field in CRM";
+            tags.push("no Priority field in CRM");
           }
         }
 
@@ -424,8 +476,6 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
         }
 
         // ---- Lock every listed unit under this one deal.
-        const tags: string[] = [];
-        if (priorityNote) tags.push(priorityNote);
         if (t.mode === "locked") {
           for (const code of t.codes) {
             const r = resolveUnit(code);
@@ -474,15 +524,14 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
           }
         }
 
-        // ---- Note with the task's latest comment (deduped on re-run).
-        if (t.comment) {
+        // ---- One note carrying the task's comment + assignee + dates + extras.
+        if (t.note) {
           try {
             const nRes = await client.request<{ notes?: Array<Record<string, unknown>> }>("GET", `/contacts/${contactId}/notes`, {});
             const existing = Array.isArray(nRes.data?.notes) ? nRes.data.notes : [];
-            const probe = t.comment.slice(0, 60);
-            const already = existing.some((n) => String(n.body ?? "").includes(probe));
+            const already = t.noteProbe && existing.some((n) => String(n.body ?? "").includes(t.noteProbe));
             if (!already) {
-              await client.request("POST", `/contacts/${contactId}/notes`, { body: { body: `Sales sheet: ${t.comment}` } });
+              await client.request("POST", `/contacts/${contactId}/notes`, { body: { body: t.note } });
               tags.push("note added");
             }
           } catch {
