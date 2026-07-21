@@ -15,7 +15,7 @@ export const Route = createFileRoute("/auth")({
   ssr: false,
   beforeLoad: async () => {
     const { data } = await supabase.auth.getUser();
-    if (data.user) throw redirect({ to: "/dashboard" });
+    if (data.user) throw redirect({ to: "/inventory" });
   },
   component: AuthPage,
 });
@@ -45,7 +45,7 @@ function AuthPage() {
         setPin("");
         return;
       }
-      router.navigate({ to: "/dashboard" });
+      router.navigate({ to: "/inventory" });
     } finally {
       setLoading(false);
     }
@@ -57,7 +57,7 @@ function AuthPage() {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) return toast.error(error.message);
-    router.navigate({ to: "/dashboard" });
+    router.navigate({ to: "/inventory" });
   }
 
   return (
