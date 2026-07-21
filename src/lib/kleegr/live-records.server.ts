@@ -28,7 +28,7 @@ function extractRecords(data: unknown): Array<Record<string, unknown>> {
 }
 
 /** Page through every record of a scope, returning the raw record objects. */
-async function listLiveRecords(scope: Scope, client?: CrmClient): Promise<Array<Record<string, unknown>>> {
+export async function listLiveRecords(scope: Scope, client?: CrmClient): Promise<Array<Record<string, unknown>>> {
   const c = client ?? (await createCrmClient());
   const locationId = c.config.location_id;
   const out: Array<Record<string, unknown>> = [];
@@ -125,7 +125,7 @@ export interface UnitStateSyncResult {
 }
 
 /** Property lookup that tolerates both "stage" and "custom_objects.units.stage". */
-function readProp(props: Record<string, unknown>, key: string): unknown {
+export function readProp(props: Record<string, unknown>, key: string): unknown {
   if (key in props) return props[key];
   const suffix = `.${key}`;
   for (const [k, v] of Object.entries(props)) {
@@ -134,7 +134,7 @@ function readProp(props: Record<string, unknown>, key: string): unknown {
   return undefined;
 }
 
-function propsOf(record: Record<string, unknown>): Record<string, unknown> | null {
+export function propsOf(record: Record<string, unknown>): Record<string, unknown> | null {
   const direct = record.properties;
   if (direct && typeof direct === "object") return direct as Record<string, unknown>;
   const nested = record.record as Record<string, unknown> | undefined;

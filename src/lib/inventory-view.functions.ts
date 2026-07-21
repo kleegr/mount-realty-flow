@@ -7,7 +7,11 @@ import { z } from "zod";
  *
  * getInventoryTree: everything the page needs in one fast local read -
  * projects/buildings/units from external_id_map, live state from unit_state,
- * and per-unit interest (suggested + locked people) from unit_interest.
+ * unit properties from unit_details, and per-unit interest (suggested +
+ * locked people) from unit_interest.
+ *
+ * syncUnitDetails: mirrors every unit's CRM properties (rooms, SF, price...)
+ * into unit_details in one pass, and refreshes unit_state on the way.
  *
  * syncUnitInterestChunk: rebuilds unit_interest from GHL association
  * relations, walking every opportunity in chunks (each deal's relations tell
@@ -19,22 +23,35 @@ function norm(s: unknown): string {
   return String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+export interface UnitDetailProps {
+  rooms: number | null;
+  bedrooms: number | null;
+  floor: string | null;
+  style: string | null;
+  sf: number | null;
+  price: number | null;
+  psf: number | null;
+  moveIn: string | null;
+}
+
 export const getInventoryTree = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async () => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-    const [mapRes, stateRes, interestRes, cfgRes] = await Promise.all([
+    const [mapRes, stateRes, interestRes, detailRes, cfgRes] = await Promise.all([
       supabaseAdmin.from("external_id_map").select("scope, crm_record_id, display_name, parent_crm_id"),
       supabaseAdmin.from("unit_state").select("unit_crm_id, availability, stage, held_by_opportunity_id"),
       supabaseAdmin
         .from("unit_interest")
         .select("unit_crm_id, opportunity_id, kind, contact_id, contact_name, opportunity_name, stage_name, synced_at"),
+      supabaseAdmin.from("unit_details").select("unit_crm_id, props"),
       supabaseAdmin.from("crm_config").select("location_id").limit(1).maybeSingle(),
     ]);
 
     const rows = mapRes.data ?? [];
     const states = new Map((stateRes.data ?? []).map((s) => [s.unit_crm_id, s]));
+    const details = new Map((detailRes.data ?? []).map((d) => [d.unit_crm_id, d.props as unknown as UnitDetailProps]));
 
     const projects = rows
       .filter((r) => r.scope === "project")
@@ -57,6 +74,7 @@ export const getInventoryTree = createServerFn({ method: "POST" })
           availability: st?.availability ?? "",
           stage: st?.stage ?? "",
           heldBy: st?.held_by_opportunity_id ?? null,
+          details: details.get(r.crm_record_id) ?? null,
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
@@ -84,6 +102,66 @@ export const getInventoryTree = createServerFn({ method: "POST" })
       interest,
       lastSyncedAt,
     };
+  });
+
+function toNum(v: unknown): number | null {
+  if (v && typeof v === "object" && "value" in (v as Record<string, unknown>)) {
+    return toNum((v as Record<string, unknown>).value);
+  }
+  const n = Number(String(v ?? "").replace(/[$,\s]/g, ""));
+  return Number.isFinite(n) && n !== 0 ? n : null;
+}
+function toStr(v: unknown): string | null {
+  const raw = Array.isArray(v) ? v[0] : v;
+  const s = String(raw ?? "").trim();
+  return s ? s : null;
+}
+
+export const syncUnitDetails = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async () => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { listLiveRecords, propsOf, readProp, syncUnitStatesFromCrm } = await import("./kleegr/live-records.server");
+    const { FIELDS } = await import("./kleegr/field-map");
+
+    // Refresh availability/stage too, so the tree is fully current.
+    const stateResult = await syncUnitStatesFromCrm().catch(() => null);
+
+    let records: Array<Record<string, unknown>>;
+    try {
+      records = await listLiveRecords("unit");
+    } catch (err) {
+      return { units: 0, skipped: err instanceof Error ? err.message.slice(0, 200) : String(err) };
+    }
+    if (records.length === 0) return { units: 0, skipped: "CRM returned no unit records" };
+
+    const F = FIELDS.unit;
+    const out: Array<{ unit_crm_id: string; props: UnitDetailProps }> = [];
+    for (const record of records) {
+      const id = typeof record.id === "string" ? record.id : null;
+      const props = id ? propsOf(record) : null;
+      if (!id || !props) continue;
+      out.push({
+        unit_crm_id: id,
+        props: {
+          rooms: toNum(readProp(props, F.rooms)),
+          bedrooms: toNum(readProp(props, F.bedrooms)),
+          floor: toStr(readProp(props, F.floor)),
+          style: toStr(readProp(props, F.style)),
+          sf: toNum(readProp(props, F.total_sf)),
+          price: toNum(readProp(props, F.price)),
+          psf: toNum(readProp(props, F.price_per_sf)),
+          moveIn: toStr(readProp(props, F.movein_ready)),
+        },
+      });
+    }
+    if (out.length > 0) {
+      await supabaseAdmin.from("unit_details").upsert(
+        out.map((o) => ({ ...o, synced_at: new Date().toISOString() })) as never[],
+        { onConflict: "unit_crm_id" },
+      );
+    }
+    return { units: out.length, stateUpdated: stateResult?.updated ?? 0, skipped: null };
   });
 
 const CHUNK = 40;
