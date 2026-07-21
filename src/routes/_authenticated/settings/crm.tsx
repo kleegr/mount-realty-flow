@@ -62,8 +62,8 @@ function Settings() {
   }
 
   const webhookUrl = typeof window !== "undefined"
-    ? `${window.location.origin}/api/public/webhooks/ghl/opportunity-stage`
-    : "/api/public/webhooks/ghl/opportunity-stage";
+    ? `${window.location.origin}/api/public/webhooks/crm/opportunity-stage`
+    : "/api/public/webhooks/crm/opportunity-stage";
 
   return (
     <div className="space-y-6">
