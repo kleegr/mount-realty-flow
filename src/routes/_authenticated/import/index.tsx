@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Download, Upload, FileText, Info, Sparkles, ChevronDown } from "lucide-react";
+import { Download, Upload, FileText, Info, Sparkles, ChevronDown, ClipboardList } from "lucide-react";
 import { IMPORT_COLUMNS, ALLOWED } from "@/lib/kleegr/field-map";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -69,17 +69,32 @@ function ImportCenter() {
         </p>
       </div>
 
-      <Card className="border-primary/30 bg-primary/5">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4" />Flexible Import (new)</CardTitle>
-          <CardDescription>
-            Import Projects, Buildings, or Units — independently or together. Map any CSV columns, choose how to handle duplicates and missing parents, and download failed rows after the run.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button asChild size="lg"><Link to="/import/flex">Start a flexible import</Link></Button>
-        </CardContent>
-      </Card>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card className="border-primary/30 bg-primary/5">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4" />Flexible Import</CardTitle>
+            <CardDescription>
+              Import Projects, Buildings, or Units — independently or together. Map any CSV columns, choose how to handle duplicates and missing parents, and download failed rows after the run.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild size="lg"><Link to="/import/flex">Start a flexible import</Link></Button>
+          </CardContent>
+        </Card>
+
+        <Card className="border-accent/40 bg-accent/5">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><ClipboardList className="h-4 w-4" />Sales Tasks Import</CardTitle>
+            <CardDescription>
+              Upload the sales team's task export (ClickUp CSV). Buyers become deals in the Local Market Pipeline —
+              existing customers updated in place, units locked from the task names, ambiguous names left for review.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild size="lg" variant="outline"><Link to="/import/sales-tasks">Import sales tasks</Link></Button>
+          </CardContent>
+        </Card>
+      </div>
 
       {!cfg?.tokenConfigured && (
         <Alert variant="destructive">
