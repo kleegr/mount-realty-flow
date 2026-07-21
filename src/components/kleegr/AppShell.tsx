@@ -7,11 +7,8 @@ import {
   Building2,
   Settings,
   LogOut,
-  RefreshCw,
-  Search,
   BarChart3,
   ShieldCheck,
-  Monitor,
   FlaskConical,
   Menu as MenuIcon,
   ChevronDown,
@@ -35,27 +32,29 @@ import { cn } from "@/lib/utils";
  * Top-ribbon app shell, built for running INSIDE GoHighLevel as an embedded
  * custom link. GHL already draws its own dark/purple chrome above the iframe,
  * so this ribbon is deliberately LIGHT — white bar, navy text, amber accents —
- * to avoid two stacked dark bars fighting each other. Customers see three
- * simple tabs; everything operational lives in one "Menu" dropdown, with the
- * Admin Panel grouped under settings.
+ * to avoid two stacked dark bars fighting each other.
+ *
+ * INVENTORY is the front door (owner decision): it's the first tab, the brand
+ * link, and where every sign-in lands. Day-to-day operations (Dashboard,
+ * reports, history, settings) live in the Menu dropdown; rarely-used
+ * technical tools were removed from the menu on purpose — their routes still
+ * exist for direct links.
  */
 
 const PRIMARY_NAV = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, match: (p: string) => p === "/dashboard" },
+  { to: "/inventory", label: "Inventory", icon: Building2, match: (p: string) => p.startsWith("/inventory") },
   {
     to: "/import",
     label: "Import Center",
     icon: Upload,
     match: (p: string) => p === "/import" || (p.startsWith("/import/") && !p.startsWith("/import/history")),
   },
-  { to: "/import/history", label: "Import History", icon: History, match: (p: string) => p.startsWith("/import/history") },
 ] as const;
 
 const MENU_NAV = [
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/report", label: "Unit Report", icon: BarChart3 },
-  { to: "/inventory", label: "Inventory", icon: Building2 },
-  { to: "/tools/id-lookup", label: "CRM ID Lookup", icon: Search },
-  { to: "/settings/sync", label: "Sync from CRM", icon: RefreshCw },
+  { to: "/import/history", label: "Import History", icon: History },
   { to: "/settings/crm", label: "Settings", icon: Settings },
 ] as const;
 
@@ -83,7 +82,7 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
       <header className="sticky top-0 z-40 border-b border-border bg-card/95 backdrop-blur">
         <div className="mx-auto flex h-12 max-w-7xl items-center gap-2 px-3 sm:gap-4 sm:px-5">
           {/* Brand — navy square, amber-free so the underline is the only accent */}
-          <Link to="/dashboard" className="flex shrink-0 items-center gap-2">
+          <Link to="/inventory" className="flex shrink-0 items-center gap-2">
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
               <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" xmlns="http://www.w3.org/2000/svg">
                 <path d="M4 10 12 3l8 7v10a1 1 0 0 1-1 1h-5v-7h-4v7H5a1 1 0 0 1-1-1V10Z" fill="currentColor" opacity="0.9" />
@@ -147,21 +146,6 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
                   </DropdownMenuItem>
                 );
               })}
-
-              <DropdownMenuSeparator />
-              {/* Opens in its own tab on purpose: the wall is a full-screen TV
-                  view, and inside the GHL iframe it would be a postage stamp. */}
-              <DropdownMenuItem asChild>
-                <a
-                  href="/wall"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex w-full cursor-pointer items-center gap-2"
-                >
-                  <Monitor className="h-4 w-4" />
-                  Wall Monitor
-                </a>
-              </DropdownMenuItem>
 
               <DropdownMenuSeparator />
               {userEmail && (

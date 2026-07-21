@@ -5,7 +5,7 @@ export const Route = createFileRoute("/")({
   beforeLoad: async () => {
     const { supabase } = await import("@/integrations/supabase/client");
     const { data } = await supabase.auth.getUser();
-    if (data.user) throw redirect({ to: "/dashboard" });
+    if (data.user) throw redirect({ to: "/inventory" });
     throw redirect({ to: "/auth" });
   },
 });
