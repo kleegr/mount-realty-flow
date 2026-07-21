@@ -1,12 +1,10 @@
 /**
- * LEGACY alias for the opportunity-stage webhook. The CRM workflows that were
- * configured before the rename still point here — keep this route working.
- * Canonical URL: /api/public/webhooks/crm/opportunity-stage.
+ * Canonical opportunity-stage webhook URL (whitelabel-clean, no vendor name).
  * All logic lives in opportunity-stage-webhook.server.ts.
  */
 import { createFileRoute } from "@tanstack/react-router";
 
-export const Route = createFileRoute("/api/public/webhooks/ghl/opportunity-stage")({
+export const Route = createFileRoute("/api/public/webhooks/crm/opportunity-stage")({
   server: {
     handlers: {
       POST: async ({ request }) => {
