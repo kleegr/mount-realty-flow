@@ -10,6 +10,7 @@ import {
   BarChart3,
   ShieldCheck,
   FlaskConical,
+  Monitor,
   Menu as MenuIcon,
   ChevronDown,
 } from "lucide-react";
@@ -36,9 +37,9 @@ import { cn } from "@/lib/utils";
  *
  * INVENTORY is the front door (owner decision): it's the first tab, the brand
  * link, and where every sign-in lands. Day-to-day operations (Dashboard,
- * reports, history, settings) live in the Menu dropdown; rarely-used
- * technical tools were removed from the menu on purpose — their routes still
- * exist for direct links.
+ * reports, history, settings) live in the Menu dropdown, along with the Wall
+ * Monitor (owner uses it - keep it). Rarely-used technical tools were removed
+ * from the menu on purpose — their routes still exist for direct links.
  */
 
 const PRIMARY_NAV = [
@@ -146,6 +147,15 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
                   </DropdownMenuItem>
                 );
               })}
+
+              <DropdownMenuSeparator />
+              {/* Wall Monitor — full-screen live board for a TV / big display */}
+              <DropdownMenuItem asChild>
+                <Link to="/wall" className="flex w-full cursor-pointer items-center gap-2">
+                  <Monitor className="h-4 w-4" />
+                  Wall Monitor
+                </Link>
+              </DropdownMenuItem>
 
               <DropdownMenuSeparator />
               {userEmail && (
