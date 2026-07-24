@@ -18,10 +18,11 @@ import { z } from "zod";
  *  - EVERYTHING else -> FIRST stage of the Local Market Pipeline
  *  - the four priority statuses also set the "Priority" dropdown on the deal
  *  - deal name = "{contact name} - {(xxx) xxx-xxxx}" like every other import
- *  - existing customers are UPDATED in place - never duplicated
- *  - ambiguous rows are NEVER imported blind; the page shows them with a
- *    per-row decision (same-as / new person / leave out) which the run
- *    receives as `resolutions`
+ *  - existing customers (phone or exact-name match) are UPDATED in place -
+ *    never duplicated
+ *  - a name the system does not recognize is imported as a NEW contact by
+ *    default (owner decision); the review UI can override any row to
+ *    "same as {existing}" or "leave out", passed to the run as `resolutions`
  *  - everything of value on the task follows the person as one deduped note;
  *    the buyer's email lands on the contact record
  */
@@ -209,10 +210,11 @@ function matchContact(t: ParsedTask, contacts: ContactRec[], byPhone: Map<string
 }
 
 /**
- * A per-row decision from the review UI:
- *   "new"          -> import as a brand-new person
+ * A per-row decision from the review UI. OWNER DEFAULT: anything the system
+ * does not recognize is imported as a NEW contact.
+ *   "skip"         -> leave the row out
  *   "same:<name>"  -> this is the existing contact with that display name
- *   anything else  -> leave the row out
+ *   "new" / unset  -> import as a brand-new person (the default)
  */
 function applyResolution(
   m: Match,
@@ -221,14 +223,14 @@ function applyResolution(
   contacts: ContactRec[],
 ): Match | null {
   if (m.kind !== "ambiguous") return m;
-  const dec = resolutions?.[String(rowNo)] ?? "";
-  if (dec === "new") return { kind: "new" };
+  const dec = resolutions?.[String(rowNo)] ?? "new";
+  if (dec === "skip") return null;
   if (dec.startsWith("same:")) {
     const want = dec.slice(5);
     const c = contacts.find((x) => x.name === want);
     if (c) return { kind: "name", contact: c };
   }
-  return null; // leave out
+  return { kind: "new" };
 }
 
 const RowSchema = z.record(z.string(), z.unknown());
@@ -271,9 +273,8 @@ export const previewSalesTasks = createServerFn({ method: "POST" })
       if (m.kind === "ambiguous") {
         counts.ambiguous++;
         if (ambiguousList.length < 100) ambiguousList.push({ row: t.rowNo, name: t.displayName, candidates: m.candidates });
-        continue;
       }
-      if (m.kind === "new") counts.newContacts++;
+      if (m.kind === "new" || m.kind === "ambiguous") counts.newContacts++;
       else counts.existing++;
       if (t.mode === "locked") {
         counts.locked++;
@@ -399,8 +400,8 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
     const byPhone = new Map(contacts.filter((c) => c.p).map((c) => [c.p, c]));
     const byName = new Map(contacts.filter((c) => c.n).map((c) => [c.n, c]));
 
-    // --- Build the processing queue. Ambiguous rows enter ONLY with an
-    //     explicit decision from the review UI; skip rows never do.
+    // --- Build the processing queue. Undecided ambiguous rows default to NEW
+    //     (owner rule); explicit "skip" decisions stay out.
     const queue: Array<{ t: ParsedTask; match: Match }> = [];
     for (const [i, row] of data.rows.entries()) {
       const t = parseTask(row, i);
@@ -414,6 +415,11 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
     const slice = queue.slice(data.offset, data.offset + data.limit);
     const results: Array<{ row: number; name: string; ok: boolean; action: string; detail: string }> = [];
 
+    // Two tasks for the same unknown person in one chunk must share ONE new
+    // contact (e.g. two "Schwartz" rows) - across chunks contact_id_map
+    // handles it, inside a chunk this cache does.
+    const createdThisChunk = new Map<string, { id: string; name: string; p: string }>();
+
     for (const { t, match } of slice) {
       try {
         // ---- Contact: reuse or create (email included where known).
@@ -422,23 +428,33 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
         let contactPhone: string;
         const tags: string[] = [];
         if (match.kind === "new") {
-          const body: Record<string, unknown> = { locationId, name: t.displayName };
-          if (t.phoneRaw) body.phone = t.phoneRaw;
-          if (t.email) body.email = t.email;
-          const cRes = await client.request<Record<string, unknown>>("POST", "/contacts/upsert", { body });
-          const cd = (cRes.data ?? {}) as Record<string, unknown>;
-          const c = (cd.contact && typeof cd.contact === "object" ? cd.contact : cd) as Record<string, unknown>;
-          contactId = String(c.id ?? "");
-          if (!contactId) throw new Error("CRM did not return a contact id");
-          contactName = t.displayName;
-          contactPhone = t.phoneNorm;
-          await supabaseAdmin
-            .from("contact_id_map")
-            .upsert(
-              { stable_id: `name:${norm(t.displayName)}`, crm_contact_id: contactId, display_name: t.displayName, phone: t.phoneRaw || null } as never,
-              { onConflict: "stable_id" },
-            )
-            .then(() => undefined, () => undefined);
+          const cacheKey = norm(t.displayName);
+          const cached = createdThisChunk.get(cacheKey);
+          if (cached) {
+            contactId = cached.id;
+            contactName = cached.name;
+            contactPhone = cached.p || t.phoneNorm;
+            tags.push("same new person as earlier row");
+          } else {
+            const body: Record<string, unknown> = { locationId, name: t.displayName };
+            if (t.phoneRaw) body.phone = t.phoneRaw;
+            if (t.email) body.email = t.email;
+            const cRes = await client.request<Record<string, unknown>>("POST", "/contacts/upsert", { body });
+            const cd = (cRes.data ?? {}) as Record<string, unknown>;
+            const c = (cd.contact && typeof cd.contact === "object" ? cd.contact : cd) as Record<string, unknown>;
+            contactId = String(c.id ?? "");
+            if (!contactId) throw new Error("CRM did not return a contact id");
+            contactName = t.displayName;
+            contactPhone = t.phoneNorm;
+            createdThisChunk.set(cacheKey, { id: contactId, name: contactName, p: contactPhone });
+            await supabaseAdmin
+              .from("contact_id_map")
+              .upsert(
+                { stable_id: `name:${cacheKey}`, crm_contact_id: contactId, display_name: t.displayName, phone: t.phoneRaw || null } as never,
+                { onConflict: "stable_id" },
+              )
+              .then(() => undefined, () => undefined);
+          }
         } else {
           contactId = match.contact.id;
           contactName = match.contact.name || t.displayName;

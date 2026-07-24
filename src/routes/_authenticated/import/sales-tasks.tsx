@@ -84,7 +84,8 @@ function SalesTasksPage() {
   }
 
   const c = preview?.counts;
-  const decided = Object.values(resolutions).filter((v) => v && v !== "skip").length;
+  const skippedByChoice = Object.values(resolutions).filter((v) => v === "skip").length;
+  const matchedByChoice = Object.values(resolutions).filter((v) => v.startsWith("same:")).length;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
@@ -93,8 +94,9 @@ function SalesTasksPage() {
         <p className="mt-1 text-muted-foreground">
           Upload the sales team's task export (ClickUp CSV). Every person becomes a deal in the Local Market Pipeline:
           "groveview pending" rows lock their units at Under Contract, priorities set the Priority dropdown, everything
-          else lands in the first stage. Existing customers are updated in place - never duplicated. Rows the matcher
-          isn't sure about wait for YOUR decision below. Safe to run twice.
+          else lands in the first stage. Existing customers are updated in place - never duplicated. A name the system
+          doesn't recognize is imported as a NEW contact - use the list below only to correct the ones you know.
+          Safe to run twice.
         </p>
       </div>
 
@@ -117,17 +119,17 @@ function SalesTasksPage() {
       {c && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">2 - Preview & decide</CardTitle>
+            <CardTitle className="text-lg">2 - Preview & correct</CardTitle>
             <CardDescription>Nothing has been written yet. This is what the run will do.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Stat label="Will import" value={c.locked + c.firstStage + decided} />
+              <Stat label="Will import" value={c.locked + c.firstStage - skippedByChoice} />
               <Stat label="Locked Under Contract" value={c.locked} sub={`${c.lockedUnits} units`} />
               <Stat label="First stage" value={c.firstStage} />
-              <Stat label="Existing customers (update)" value={c.existing} />
-              <Stat label="New contacts (create)" value={c.newContacts} />
-              <Stat label="Waiting for you" value={c.ambiguous - decided} danger={c.ambiguous - decided > 0} />
+              <Stat label="Existing customers (update)" value={c.existing + matchedByChoice} />
+              <Stat label="New contacts (create)" value={c.newContacts - matchedByChoice - skippedByChoice} />
+              <Stat label="Unrecognized (import as new)" value={c.ambiguous} />
               <Stat label="Ignored (rentel/listings)" value={c.skipped} />
               <Stat label="With email" value={c.withEmail} />
             </div>
@@ -135,10 +137,11 @@ function SalesTasksPage() {
             {preview!.ambiguousList.length > 0 && (
               <div>
                 <div className="mb-1 flex items-center gap-1.5 text-sm font-semibold">
-                  <Users className="h-4 w-4" /> Your call - pick what each one is ({decided}/{preview!.ambiguousList.length} decided)
+                  <Users className="h-4 w-4" /> Names the system doesn't recognize — imported as NEW unless you correct them
                 </div>
                 <p className="mb-2 text-xs text-muted-foreground">
-                  Rows left on “Leave out” are not imported and can be run again later.
+                  If one of these is really an existing customer, pick “Same as …” so it updates them instead of creating a
+                  second person. Pick “Leave out” to hold a row back.
                 </p>
                 <div className="max-h-80 space-y-1.5 overflow-auto rounded border p-2">
                   {preview!.ambiguousList.map((a) => (
@@ -148,17 +151,17 @@ function SalesTasksPage() {
                       </span>
                       <select
                         className="h-7 rounded border bg-card px-1.5 text-xs"
-                        value={resolutions[String(a.row)] ?? "skip"}
+                        value={resolutions[String(a.row)] ?? "new"}
                         disabled={running}
                         onChange={(e) => setResolutions((prev) => ({ ...prev, [String(a.row)]: e.target.value }))}
                       >
-                        <option value="skip">Leave out</option>
                         <option value="new">Import as NEW person</option>
                         {a.candidates.map((cand) => (
                           <option key={cand} value={`same:${cand}`}>
                             Same as {cand}
                           </option>
                         ))}
+                        <option value="skip">Leave out</option>
                       </select>
                     </div>
                   ))}
@@ -173,8 +176,7 @@ function SalesTasksPage() {
         <CardHeader>
           <CardTitle className="text-lg">3 - Run</CardTitle>
           <CardDescription>
-            Re-runs update in place; one deal per person; notes are never duplicated. Rows left on “Leave out” are
-            untouched - decide them later and run again.
+            Re-runs update in place; one deal per person; notes are never duplicated.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
