@@ -8,8 +8,8 @@ import { z } from "zod";
  * The sheet is a ClickUp task export: one task per person, the buyer's name
  * in "Task Name" (often with unit codes or street addresses embedded, e.g.
  * "Avrum Lax CC-202" or "Yidel Rubinstein - 16 Houston unit 102"), phones in
- * three possible columns, emails in "Buyers Email", and ClickUp workflow
- * buckets in "Status".
+ * three possible columns, emails in "Buyers Email", the owning salesperson in
+ * "Assignee", and ClickUp workflow buckets in "Status".
  *
  * OWNER RULES:
  *  - status "groveview pending" WITH unit code(s) -> deal at Under Contract,
@@ -17,6 +17,8 @@ import { z } from "zod";
  *  - statuses "rentel" and "listings" -> ignored
  *  - EVERYTHING else -> FIRST stage of the Local Market Pipeline
  *  - the four priority statuses also set the "Priority" dropdown on the deal
+ *  - the sheet's Assignee becomes the deal's OWNER (matched to a CRM user;
+ *    tolerant of typos and first-name-only like "Malky")
  *  - deal name = "{contact name} - {(xxx) xxx-xxxx}" like every other import
  *  - existing customers (phone or exact-name match) are UPDATED in place -
  *    never duplicated
@@ -99,6 +101,7 @@ interface ParsedTask {
   phoneNorm: string;
   phoneRaw: string;
   email: string;
+  assignee: string;
   note: string;
   noteProbe: string;
   codes: Array<{ b: string; u: string }>;
@@ -113,6 +116,7 @@ function parseTask(row: Record<string, unknown>, idx: number): ParsedTask | null
     clean(row["Buyer's Number (phone)"]) || clean(row["Wife Buyer number (phone)"]) || clean(row["Wife Number (phone)"]);
   const email =
     cleanEmail(row["Buyers Email (email)"]) || cleanEmail(row["Buyers Email 2 (email)"]) || cleanEmail(row["buyers email (email)"]);
+  const assignee = clean(String(row["Assignee"] ?? "").replace(/[\[\]]/g, "").split(",")[0] ?? "");
   const codes = parseCodes(name);
   const displayName = stripNoise(name) || name;
 
@@ -163,6 +167,7 @@ function parseTask(row: Record<string, unknown>, idx: number): ParsedTask | null
     phoneNorm: normPhone(phoneRaw),
     phoneRaw,
     email,
+    assignee,
     note,
     noteProbe,
     codes: mode === "locked" ? codes : [],
@@ -359,6 +364,46 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
       priorityField = null;
     }
 
+    // --- CRM users, so the sheet's Assignee becomes the deal's OWNER.
+    let usersList: Array<{ id: string; n: string; first: string; label: string }> = [];
+    try {
+      const uRes = await client.request<{ users?: Array<Record<string, unknown>> }>("GET", "/users/", {
+        query: { locationId },
+      });
+      usersList = (uRes.data?.users ?? [])
+        .map((u) => {
+          const first = String(u.firstName ?? "").trim();
+          const last = String(u.lastName ?? "").trim();
+          const label = String(u.name ?? `${first} ${last}`).trim();
+          return { id: String(u.id ?? ""), n: norm(`${first} ${last}`) || norm(label), first: norm(first), label };
+        })
+        .filter((u) => u.id);
+    } catch {
+      usersList = [];
+    }
+    const ownerCache = new Map<string, { id: string; label: string } | null>();
+    const resolveOwner = (assignee: string): { id: string; label: string } | null => {
+      const key = norm(assignee);
+      if (!key || usersList.length === 0) return null;
+      const cached = ownerCache.get(key);
+      if (cached !== undefined) return cached;
+      let hit = usersList.find((u) => u.n === key) ?? null;
+      if (!hit && key.length >= 4) {
+        const contains = usersList.filter((u) => u.n.length >= 4 && (u.n.includes(key) || key.includes(u.n)));
+        if (contains.length === 1) hit = contains[0];
+      }
+      if (!hit) {
+        // First-name fallback: covers "Malky" and typo'd last names like
+        // "Mindy Shaffer" vs the real "Mindy Schaffer".
+        const firstTok = norm(assignee.split(/\s+/)[0] ?? "");
+        const firsts = usersList.filter((u) => u.first && u.first === firstTok);
+        if (firsts.length === 1) hit = firsts[0];
+      }
+      const out = hit ? { id: hit.id, label: hit.label } : null;
+      ownerCache.set(key, out);
+      return out;
+    };
+
     // --- Lock association.
     const defsRes = await client.request<{ associations?: Array<Record<string, unknown>> }>("GET", "/associations/", {
       query: { locationId, skip: 0, limit: 100 },
@@ -489,6 +534,10 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
           }
         }
 
+        // ---- Owner from the sheet's Assignee.
+        const owner = t.assignee ? resolveOwner(t.assignee) : null;
+        if (t.assignee && !owner) tags.push(`owner not matched: ${t.assignee}`);
+
         // ---- Deal: reuse (update) or create.
         let oppId: string | null = null;
         try {
@@ -507,6 +556,7 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
           const body: Record<string, unknown> = { name: dealName };
           if (customFields.length) body.customFields = customFields;
           if (t.mode === "locked") body.pipelineStageId = ucStageId;
+          if (owner) body.assignedTo = owner.id;
           await client.request("PUT", `/opportunities/${oppId}`, { body });
           action = "Updated";
         } else {
@@ -519,6 +569,7 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
             contactId,
           };
           if (customFields.length) body.customFields = customFields;
+          if (owner) body.assignedTo = owner.id;
           const res = await client.request<Record<string, unknown>>("POST", "/opportunities/", { body });
           const d = (res.data ?? {}) as Record<string, unknown>;
           const o = (d.opportunity && typeof d.opportunity === "object" ? d.opportunity : d) as Record<string, unknown>;
@@ -526,6 +577,7 @@ export const runSalesTasksChunk = createServerFn({ method: "POST" })
           if (!oppId) throw new Error("CRM did not return an opportunity id");
           action = "Created";
         }
+        if (owner) tags.push(`owner ${owner.label}`);
 
         // ---- Lock every listed unit under this one deal.
         if (t.mode === "locked") {
