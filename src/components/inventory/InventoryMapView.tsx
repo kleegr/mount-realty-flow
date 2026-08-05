@@ -6,17 +6,19 @@ import { RefreshCw } from "lucide-react";
 import { getRecordLocations, saveGeocodes, syncRecordAddresses } from "@/lib/inventory-map.functions";
 
 /**
- * MAP VIEW - one pin per building (falling back to the project address when a
- * building has none), colored by that building's unit stages:
+ * MAP VIEW - one pin per building, colored by that building's unit stages:
  * green if anything is Available, amber if only Reserved, blue if Under
  * Contract, gray if Sold out. The pin's number = available units, and the
- * street address is written right under the pin. Clicking either opens the
- * building card listing every unit with its stage and holder.
+ * street address is written right under the pin.
  *
- * All properties are in the Blooming Grove / Monroe NY area, so geocoding is
- * biased there, ", NY" is appended to bare addresses, and any result landing
- * outside the area is rejected (listed under the map instead of mis-pinned).
- * Cached coordinates that fall outside the area are re-geocoded once.
+ * All properties are in the Blooming Grove / Monroe NY area. Stored addresses
+ * are often bare street lines ("49 Fort worth", "12 Hawthorne"), so lookups
+ * run a LADDER: the address is tried with each local town appended - Monroe,
+ * South Blooming Grove, Blooming Grove, Kiryas Joel, Highland Mills, then
+ * plain NY - and the first STREET-LEVEL hit inside the area wins. Town-center
+ * fuzzy matches (Google returning just "Monroe, NY") are rejected. If a
+ * building's own address can't be located, the project's address is tried
+ * before giving up. Found coordinates are cached in record_locations.
  */
 
 const STAGE_COLOR: Record<string, string> = {
@@ -39,6 +41,20 @@ const ACCEPT = { south: 41.1, north: 41.65, west: -74.55, east: -73.85 };
 function inArea(lat: number, lng: number): boolean {
   return lat >= ACCEPT.south && lat <= ACCEPT.north && lng >= ACCEPT.west && lng <= ACCEPT.east;
 }
+
+// Towns tried, in order, when an address has no city of its own.
+const LOCAL_TOWNS = ["Monroe, NY", "South Blooming Grove, NY", "Blooming Grove, NY", "Kiryas Joel, NY", "Highland Mills, NY"];
+// Only these Google result types count as a real street-level hit.
+const OK_TYPES = new Set([
+  "street_address",
+  "premise",
+  "subpremise",
+  "route",
+  "intersection",
+  "establishment",
+  "point_of_interest",
+  "plus_code",
+]);
 
 interface MapPerson {
   oppId: string;
@@ -118,10 +134,13 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
   const mapRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const autoSynced = useRef(false);
+  // Addresses that failed the full ladder this session - don't retry on every filter change.
+  const failedThisSession = useRef<Set<string>>(new Set());
 
   async function runSync() {
     setSyncing(true);
     try {
+      failedThisSession.current.clear();
       await syncFn();
       await qc.invalidateQueries({ queryKey: ["record-locations"] });
     } finally {
@@ -167,65 +186,93 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
       const posCount = new Map<string, number>();
       let plotted = 0;
 
-      // Bias to home turf; add ", NY" when the stored address doesn't say so.
-      const geocodeOne = (address: string) =>
-        new Promise<{ lat: number; lng: number } | null>((resolve) => {
-          const query = /\bny\b|new york/i.test(address) ? address : `${address}, NY`;
-          geocoder.geocode({ address: query, bounds: biasBounds, region: "us" }, (results: any, st: string) => {
+      const geocodeRaw = (q: string) =>
+        new Promise<{ lat: number; lng: number; types: string[] } | null>((resolve) => {
+          geocoder.geocode({ address: q, bounds: biasBounds, region: "us" }, (results: any, st: string) => {
             if (st === "OK" && results?.[0]) {
               const l = results[0].geometry.location;
-              const lat = l.lat();
-              const lng = l.lng();
-              resolve(inArea(lat, lng) ? { lat, lng } : null);
+              resolve({ lat: l.lat(), lng: l.lng(), types: results[0].types ?? [] });
             } else resolve(null);
           });
         });
+
+      /**
+       * The ladder: try the address with each local town appended (or as-is if
+       * it already names a town/NY), and accept the first STREET-LEVEL result
+       * inside the area. "Monroe, NY" town-center fuzz is rejected.
+       */
+      const geocodeSmart = async (address: string): Promise<{ lat: number; lng: number } | null> => {
+        const base = address.replace(/\s+/g, " ").trim();
+        if (!base || failedThisSession.current.has(base)) return null;
+        const mentionsLocal = /monroe|blooming grove|kiryas|palm tree|highland mills|\bny\b|new york/i.test(base);
+        const tries: string[] = [];
+        if (mentionsLocal) tries.push(/\bny\b|new york/i.test(base) ? base : `${base}, NY`);
+        for (const town of LOCAL_TOWNS) tries.push(`${base}, ${town}`);
+        if (!mentionsLocal) tries.push(`${base}, NY`);
+        for (const q of tries) {
+          if (cancelled) return null;
+          const r = await geocodeRaw(q);
+          await new Promise((res) => setTimeout(res, 120));
+          if (!r) continue;
+          if (!inArea(r.lat, r.lng)) continue;
+          if (!r.types.some((t) => OK_TYPES.has(t))) continue; // town-center fuzz, not a street
+          return { lat: r.lat, lng: r.lng };
+        }
+        failedThisSession.current.add(base);
+        return null;
+      };
 
       for (const p of model.projects) {
         for (const b of p.buildings) {
           if (cancelled) return;
           if (b.units.length === 0 || b.id === "__loose__") continue;
-          let ownerId = b.id;
-          let loc = locById.get(b.id);
-          if (!loc?.address) {
-            const pl = locById.get(p.id);
-            if (pl?.address) {
-              loc = pl;
-              ownerId = p.id;
-            }
-          }
-          if (!loc?.address) {
-            missing.push(`${p.name} · ${b.label}`);
+
+          // Candidates in order: the building's own address, then the project's.
+          const bLoc = locById.get(b.id);
+          const pLoc = locById.get(p.id);
+          const candidates: Array<{ ownerId: string; loc: any }> = [];
+          if (bLoc?.address) candidates.push({ ownerId: b.id, loc: bLoc });
+          if (pLoc?.address && pLoc !== bLoc) candidates.push({ ownerId: p.id, loc: pLoc });
+          if (candidates.length === 0) {
+            missing.push(`${p.name} · ${b.label} — no address on file`);
             continue;
           }
-          let lat = loc.lat;
-          let lng = loc.lng;
-          // A cached point outside the area was a bad geocode - redo it.
-          if (lat != null && lng != null && !inArea(Number(lat), Number(lng))) {
-            lat = null;
-            lng = null;
-          }
-          if (lat == null || lng == null) {
-            setStatus(`Locating ${b.label}…`);
-            const r = await geocodeOne(loc.address);
-            if (!r) {
-              missing.push(`${p.name} · ${b.label} (not found near Blooming Grove/Monroe: ${loc.address})`);
-              continue;
+
+          let placed: { lat: number; lng: number } | null = null;
+          let usedLoc: any = null;
+          for (const cand of candidates) {
+            let lat = cand.loc.lat;
+            let lng = cand.loc.lng;
+            // A cached point outside the area was a bad geocode - redo it.
+            if (lat != null && lng != null && !inArea(Number(lat), Number(lng))) {
+              lat = null;
+              lng = null;
             }
-            lat = r.lat;
-            lng = r.lng;
-            loc.lat = lat;
-            loc.lng = lng; // in-session cache so a shared project address geocodes once
-            toSave.push({ id: ownerId, lat, lng });
-            await new Promise((res) => setTimeout(res, 150));
+            if (lat == null || lng == null) {
+              setStatus(`Locating ${b.label}…`);
+              const r = await geocodeSmart(String(cand.loc.address));
+              if (!r) continue;
+              lat = r.lat;
+              lng = r.lng;
+              cand.loc.lat = lat;
+              cand.loc.lng = lng; // in-session cache so a shared address geocodes once
+              toSave.push({ id: cand.ownerId, lat, lng });
+            }
+            placed = { lat: Number(lat), lng: Number(lng) };
+            usedLoc = cand.loc;
+            break;
+          }
+          if (!placed || !usedLoc) {
+            missing.push(`${p.name} · ${b.label} — couldn't locate "${candidates[0].loc.address}" near Monroe/Blooming Grove`);
+            continue;
           }
 
           // Buildings sharing one address (project fallback) fan out slightly.
-          const key = `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`;
+          const key = `${placed.lat.toFixed(6)},${placed.lng.toFixed(6)}`;
           const n = posCount.get(key) ?? 0;
           posCount.set(key, n + 1);
-          const aLat = Number(lat) + n * 0.00035;
-          const aLng = Number(lng) + n * 0.00035;
+          const aLat = placed.lat + n * 0.00035;
+          const aLng = placed.lng + n * 0.00035;
 
           const c = b.counts;
           const color =
@@ -254,7 +301,7 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
               c.available > 0
                 ? { text: String(c.available), color: "#ffffff", fontSize: "11px", fontWeight: "700" }
                 : undefined,
-            title: `${p.name} · ${b.label} — ${loc.address}`,
+            title: `${p.name} · ${b.label} — ${usedLoc.address}`,
           });
 
           // The street address, written on the map just under the pin.
@@ -263,13 +310,13 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
             position: { lat: aLat - 0.0011, lng: aLng },
             icon: { path: g.maps.SymbolPath.CIRCLE, scale: 0 },
             label: {
-              text: shortAddress(loc.address),
+              text: shortAddress(String(usedLoc.address)),
               color: "#1d2939",
               fontSize: "11px",
               fontWeight: "600",
             },
             clickable: true,
-            title: `${p.name} · ${b.label} — ${loc.address}`,
+            title: `${p.name} · ${b.label} — ${usedLoc.address}`,
           });
 
           const unitsHtml = b.units
@@ -285,7 +332,7 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
             .join("");
           const openCard = () => {
             info.setContent(
-              `<div style="font:13px/1.5 system-ui;max-width:280px"><div style="font-size:14px;font-weight:700">${esc(b.label)}</div><div style="color:#667085">${esc(p.name)} · ${esc(loc.address)}</div><div style="margin-top:6px">${unitsHtml}</div></div>`,
+              `<div style="font:13px/1.5 system-ui;max-width:280px"><div style="font-size:14px;font-weight:700">${esc(b.label)}</div><div style="color:#667085">${esc(p.name)} · ${esc(usedLoc.address)}</div><div style="margin-top:6px">${unitsHtml}</div></div>`,
             );
             info.open(map, marker);
           };
@@ -352,7 +399,7 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
       <div ref={mapEl} className="h-[70vh] w-full overflow-hidden rounded-lg border" />
       {noAddress.length > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-          <b>Not on the map — no address on file (fill Building Address in the CRM, then Sync addresses):</b>
+          <b>Not on the map — fix these addresses in the CRM (building or project), then hit Sync addresses:</b>
           <div className="mt-1 space-y-0.5">
             {noAddress.map((n) => (
               <div key={n}>{n}</div>
