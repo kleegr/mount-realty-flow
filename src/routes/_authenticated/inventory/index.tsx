@@ -7,8 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Building2, ChevronRight, Flame, FolderOpen, Home, RefreshCw, Search, UserRound, Lock } from "lucide-react";
+import { Building2, ChevronRight, Flame, FolderOpen, Home, MapPin, RefreshCw, Search, UserRound, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { InventoryMapView } from "@/components/inventory/InventoryMapView";
 
 export const Route = createFileRoute("/_authenticated/inventory/")({
   component: InventoryPage,
@@ -95,7 +96,7 @@ function InventoryPage() {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [syncing, setSyncing] = useState<string | null>(null);
-  const [view, setView] = useState<"browse" | "top">("browse");
+  const [view, setView] = useState<"browse" | "top" | "map">("browse");
   const [stageFilter, setStageFilter] = useState<Set<string>>(new Set());
   const [sortMode, setSortMode] = useState<"default" | "interest" | "priceDesc" | "priceAsc">("default");
   const autoRan = useRef(false);
@@ -215,6 +216,12 @@ function InventoryPage() {
           >
             <Flame className="h-3.5 w-3.5" /> Top interest
           </button>
+          <button
+            className={cn("inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium", view === "map" ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:text-foreground")}
+            onClick={() => setView("map")}
+          >
+            <MapPin className="h-3.5 w-3.5" /> Map
+          </button>
         </div>
         {view === "browse" && (
           <select
@@ -233,6 +240,8 @@ function InventoryPage() {
       {isLoading && <p className="py-10 text-center text-muted-foreground">Loading inventory…</p>}
 
       {model && view === "top" && <TopInterest model={model} locationId={data?.locationId ?? ""} />}
+
+      {model && view === "map" && <InventoryMapView model={model} locationId={data?.locationId ?? ""} />}
 
       {model && view === "browse" && model.projects.length === 0 && (
         <p className="py-10 text-center text-muted-foreground">Nothing matches.</p>
