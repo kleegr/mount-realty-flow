@@ -9,12 +9,14 @@ import { getRecordLocations, saveGeocodes, syncRecordAddresses } from "@/lib/inv
  * MAP VIEW - one pin per building (falling back to the project address when a
  * building has none), colored by that building's unit stages:
  * green if anything is Available, amber if only Reserved, blue if Under
- * Contract, gray if Sold out. The pin's number = available units. Clicking a
- * pin lists every unit with its stage and holder, deep-linking into the CRM.
+ * Contract, gray if Sold out. The pin's number = available units, and the
+ * street address is written right under the pin. Clicking either opens the
+ * building card listing every unit with its stage and holder.
  *
- * Respects the page's search + stage filters (it renders the same filtered
- * model the Browse view uses). Geocodes are cached in record_locations so
- * only new/changed addresses ever hit the geocoder.
+ * All properties are in the Blooming Grove / Monroe NY area, so geocoding is
+ * biased there, ", NY" is appended to bare addresses, and any result landing
+ * outside the area is rejected (listed under the map instead of mis-pinned).
+ * Cached coordinates that fall outside the area are re-geocoded once.
  */
 
 const STAGE_COLOR: Record<string, string> = {
@@ -25,6 +27,18 @@ const STAGE_COLOR: Record<string, string> = {
 };
 
 const GKEY = (import.meta.env.VITE_GOOGLE_MAPS_KEY as string | undefined) || "AIzaSyBjnAKmoD8mmxO3xhNImshrDqzH2yg423k";
+
+// Home turf: Blooming Grove / Monroe, Orange County NY.
+const AREA_CENTER = { lat: 41.36, lng: -74.17 };
+const AREA_ZOOM = 12;
+// Geocoder bias box (tight around Blooming Grove + Monroe).
+const BIAS_SW = { lat: 41.25, lng: -74.35 };
+const BIAS_NE = { lat: 41.5, lng: -74.05 };
+// Acceptance box (a bit wider); results outside are treated as not found.
+const ACCEPT = { south: 41.1, north: 41.65, west: -74.55, east: -73.85 };
+function inArea(lat: number, lng: number): boolean {
+  return lat >= ACCEPT.south && lat <= ACCEPT.north && lng >= ACCEPT.west && lng <= ACCEPT.east;
+}
 
 interface MapPerson {
   oppId: string;
@@ -64,6 +78,11 @@ function opportunityUrl(locationId: string, oppId: string): string {
 }
 function esc(s: unknown): string {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+/** "15 Perlman Dr, Monroe, NY 10950" -> "15 Perlman Dr" for the on-map label. */
+function shortAddress(addr: string): string {
+  const first = addr.split(",")[0]?.trim() ?? addr;
+  return first.length > 28 ? first.slice(0, 27) + "…" : first;
 }
 
 let gmapsPromise: Promise<unknown> | null = null;
@@ -128,8 +147,8 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
       if (!g || cancelled || !mapEl.current) return;
       if (!mapRef.current) {
         mapRef.current = new g.maps.Map(mapEl.current, {
-          center: { lat: 41.1, lng: -74.05 },
-          zoom: 9,
+          center: AREA_CENTER,
+          zoom: AREA_ZOOM,
           streetViewControl: false,
           mapTypeControl: false,
         });
@@ -141,18 +160,23 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
       const locById = new Map<string, any>(locData.rows.map((r: any) => [r.crm_record_id, { ...r }]));
       const geocoder = new g.maps.Geocoder();
       const info = new g.maps.InfoWindow();
+      const biasBounds = new g.maps.LatLngBounds(BIAS_SW, BIAS_NE);
       const toSave: Array<{ id: string; lat: number; lng: number }> = [];
       const bounds = new g.maps.LatLngBounds();
       const missing: string[] = [];
       const posCount = new Map<string, number>();
       let plotted = 0;
 
+      // Bias to home turf; add ", NY" when the stored address doesn't say so.
       const geocodeOne = (address: string) =>
         new Promise<{ lat: number; lng: number } | null>((resolve) => {
-          geocoder.geocode({ address }, (results: any, st: string) => {
+          const query = /\bny\b|new york/i.test(address) ? address : `${address}, NY`;
+          geocoder.geocode({ address: query, bounds: biasBounds, region: "us" }, (results: any, st: string) => {
             if (st === "OK" && results?.[0]) {
               const l = results[0].geometry.location;
-              resolve({ lat: l.lat(), lng: l.lng() });
+              const lat = l.lat();
+              const lng = l.lng();
+              resolve(inArea(lat, lng) ? { lat, lng } : null);
             } else resolve(null);
           });
         });
@@ -176,11 +200,16 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
           }
           let lat = loc.lat;
           let lng = loc.lng;
+          // A cached point outside the area was a bad geocode - redo it.
+          if (lat != null && lng != null && !inArea(Number(lat), Number(lng))) {
+            lat = null;
+            lng = null;
+          }
           if (lat == null || lng == null) {
             setStatus(`Locating ${b.label}…`);
             const r = await geocodeOne(loc.address);
             if (!r) {
-              missing.push(`${p.name} · ${b.label} (address not found: ${loc.address})`);
+              missing.push(`${p.name} · ${b.label} (not found near Blooming Grove/Monroe: ${loc.address})`);
               continue;
             }
             lat = r.lat;
@@ -228,6 +257,21 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
             title: `${p.name} · ${b.label} — ${loc.address}`,
           });
 
+          // The street address, written on the map just under the pin.
+          const textMarker = new g.maps.Marker({
+            map,
+            position: { lat: aLat - 0.0011, lng: aLng },
+            icon: { path: g.maps.SymbolPath.CIRCLE, scale: 0 },
+            label: {
+              text: shortAddress(loc.address),
+              color: "#1d2939",
+              fontSize: "11px",
+              fontWeight: "600",
+            },
+            clickable: true,
+            title: `${p.name} · ${b.label} — ${loc.address}`,
+          });
+
           const unitsHtml = b.units
             .map((u) => {
               const col = STAGE_COLOR[u.stage] ?? "#64748b";
@@ -239,13 +283,15 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
               return `<div style="margin:2px 0"><b>${esc(u.label)}</b> — <span style="color:${col};font-weight:600">${esc(u.stage || "—")}</span>${holder}${interest}</div>`;
             })
             .join("");
-          marker.addListener("click", () => {
+          const openCard = () => {
             info.setContent(
               `<div style="font:13px/1.5 system-ui;max-width:280px"><div style="font-size:14px;font-weight:700">${esc(b.label)}</div><div style="color:#667085">${esc(p.name)} · ${esc(loc.address)}</div><div style="margin-top:6px">${unitsHtml}</div></div>`,
             );
             info.open(map, marker);
-          });
-          markersRef.current.push(marker);
+          };
+          marker.addListener("click", openCard);
+          textMarker.addListener("click", openCard);
+          markersRef.current.push(marker, textMarker);
           bounds.extend({ lat: aLat, lng: aLng });
           plotted++;
         }
@@ -257,7 +303,17 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
       if (cancelled) return;
       setNoAddress(missing);
       setStatus(`${plotted} building${plotted === 1 ? "" : "s"} on the map`);
-      if (!bounds.isEmpty()) map.fitBounds(bounds, 60);
+      if (!bounds.isEmpty()) {
+        map.fitBounds(bounds, 60);
+        // Stay zoomed in on the area - never zoom out past it, never in past street level.
+        g.maps.event.addListenerOnce(map, "idle", () => {
+          if (map.getZoom() > 16) map.setZoom(16);
+          if (map.getZoom() < AREA_ZOOM) {
+            map.setZoom(AREA_ZOOM);
+            map.setCenter(AREA_CENTER);
+          }
+        });
+      }
     })();
     return () => {
       cancelled = true;
