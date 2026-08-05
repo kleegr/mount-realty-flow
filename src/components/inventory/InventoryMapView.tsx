@@ -6,19 +6,20 @@ import { RefreshCw } from "lucide-react";
 import { getRecordLocations, saveGeocodes, syncRecordAddresses } from "@/lib/inventory-map.functions";
 
 /**
- * MAP VIEW - one pin per building, colored by that building's unit stages:
- * green if anything is Available, amber if only Reserved, blue if Under
- * Contract, gray if Sold out. The pin's number = available units, and the
- * street address is written right under the pin.
+ * MAP VIEW - one pin per building, colored by that building's unit stages;
+ * the pin's number = available units; the street address sits pixel-anchored
+ * right under the pin at every zoom level.
  *
- * All properties are in the Blooming Grove / Monroe NY area. Stored addresses
- * are often bare street lines ("49 Fort worth", "12 Hawthorne"), so lookups
- * run a LADDER: the address is tried with each local town appended - Monroe,
- * South Blooming Grove, Blooming Grove, Kiryas Joel, Highland Mills, then
- * plain NY - and the first STREET-LEVEL hit inside the area wins. Town-center
- * fuzzy matches (Google returning just "Monroe, NY") are rejected. If a
- * building's own address can't be located, the project's address is tried
- * before giving up. Found coordinates are cached in record_locations.
+ * Geocoding is a LADDER tuned for this inventory's bare street lines
+ * ("49 Fort worth", "35 Virginia"): each address is tried with the local
+ * towns appended (Monroe, South Blooming Grove, Blooming Grove, Kiryas Joel,
+ * Highland Mills), and when it has no street suffix, again with
+ * Avenue/Road/Drive/Lane/Place/Court inserted ("35 Virginia Avenue, Monroe,
+ * NY"). Only street-level results inside the area are accepted; town-center
+ * fuzz is rejected. A building whose own address fails falls back to its
+ * project's address. Successes are cached in record_locations; failures are
+ * remembered in localStorage so reloads don't re-grind them (Sync addresses
+ * clears that and retries everything).
  */
 
 const STAGE_COLOR: Record<string, string> = {
@@ -33,18 +34,18 @@ const GKEY = (import.meta.env.VITE_GOOGLE_MAPS_KEY as string | undefined) || "AI
 // Home turf: Blooming Grove / Monroe, Orange County NY.
 const AREA_CENTER = { lat: 41.36, lng: -74.17 };
 const AREA_ZOOM = 12;
-// Geocoder bias box (tight around Blooming Grove + Monroe).
 const BIAS_SW = { lat: 41.25, lng: -74.35 };
 const BIAS_NE = { lat: 41.5, lng: -74.05 };
-// Acceptance box (a bit wider); results outside are treated as not found.
 const ACCEPT = { south: 41.1, north: 41.65, west: -74.55, east: -73.85 };
 function inArea(lat: number, lng: number): boolean {
   return lat >= ACCEPT.south && lat <= ACCEPT.north && lng >= ACCEPT.west && lng <= ACCEPT.east;
 }
 
-// Towns tried, in order, when an address has no city of its own.
 const LOCAL_TOWNS = ["Monroe, NY", "South Blooming Grove, NY", "Blooming Grove, NY", "Kiryas Joel, NY", "Highland Mills, NY"];
-// Only these Google result types count as a real street-level hit.
+// Suffixes tried when the address line has none ("35 Virginia" -> "35 Virginia Avenue").
+const STREET_SUFFIXES = ["Avenue", "Road", "Drive", "Lane", "Place", "Court"];
+const HAS_SUFFIX =
+  /\b(ave|avenue|st|street|rd|road|dr|drive|ln|lane|ct|court|pl|place|way|ter|terrace|blvd|boulevard|cir|circle|pkwy|parkway|hwy|highway|loop|trail|trl)\b\.?/i;
 const OK_TYPES = new Set([
   "street_address",
   "premise",
@@ -55,6 +56,24 @@ const OK_TYPES = new Set([
   "point_of_interest",
   "plus_code",
 ]);
+
+// Failed lookups are remembered across reloads; bump the version when the
+// ladder logic changes so old failures get retried under the new rules.
+const FAIL_CACHE_KEY = "mr-geo-fail-v3";
+function loadFailCache(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(FAIL_CACHE_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function saveFailCache(s: Set<string>) {
+  try {
+    localStorage.setItem(FAIL_CACHE_KEY, JSON.stringify([...s]));
+  } catch {
+    /* best effort */
+  }
+}
 
 interface MapPerson {
   oppId: string;
@@ -95,7 +114,6 @@ function opportunityUrl(locationId: string, oppId: string): string {
 function esc(s: unknown): string {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
-/** "15 Perlman Dr, Monroe, NY 10950" -> "15 Perlman Dr" for the on-map label. */
 function shortAddress(addr: string): string {
   const first = addr.split(",")[0]?.trim() ?? addr;
   return first.length > 28 ? first.slice(0, 27) + "…" : first;
@@ -134,13 +152,13 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
   const mapRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const autoSynced = useRef(false);
-  // Addresses that failed the full ladder this session - don't retry on every filter change.
-  const failedThisSession = useRef<Set<string>>(new Set());
+  const failCache = useRef<Set<string>>(typeof window !== "undefined" ? loadFailCache() : new Set());
 
   async function runSync() {
     setSyncing(true);
     try {
-      failedThisSession.current.clear();
+      failCache.current = new Set();
+      saveFailCache(failCache.current); // full retry after a sync
       await syncFn();
       await qc.invalidateQueries({ queryKey: ["record-locations"] });
     } finally {
@@ -148,7 +166,6 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
     }
   }
 
-  // First visit: the mirror is empty, so fill it automatically.
   useEffect(() => {
     if (!locData || autoSynced.current) return;
     if (!locData.tableMissing && locData.rows.length === 0) {
@@ -196,29 +213,42 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
           });
         });
 
+      const tryOne = async (q: string): Promise<{ lat: number; lng: number } | null> => {
+        const r = await geocodeRaw(q);
+        await new Promise((res) => setTimeout(res, 110));
+        if (!r) return null;
+        if (!inArea(r.lat, r.lng)) return null;
+        if (!r.types.some((t) => OK_TYPES.has(t))) return null; // town-center fuzz
+        return { lat: r.lat, lng: r.lng };
+      };
+
       /**
-       * The ladder: try the address with each local town appended (or as-is if
-       * it already names a town/NY), and accept the first STREET-LEVEL result
-       * inside the area. "Monroe, NY" town-center fuzz is rejected.
+       * The ladder. Plain rounds first (address + each town); if the line has
+       * no street suffix, suffix rounds follow: "35 Virginia" is retried as
+       * "35 Virginia Avenue, Monroe, NY", then Road/Drive/... across the
+       * nearest towns.
        */
       const geocodeSmart = async (address: string): Promise<{ lat: number; lng: number } | null> => {
         const base = address.replace(/\s+/g, " ").trim();
-        if (!base || failedThisSession.current.has(base)) return null;
+        if (!base || failCache.current.has(base)) return null;
         const mentionsLocal = /monroe|blooming grove|kiryas|palm tree|highland mills|\bny\b|new york/i.test(base);
         const tries: string[] = [];
         if (mentionsLocal) tries.push(/\bny\b|new york/i.test(base) ? base : `${base}, NY`);
         for (const town of LOCAL_TOWNS) tries.push(`${base}, ${town}`);
-        if (!mentionsLocal) tries.push(`${base}, NY`);
+        if (!HAS_SUFFIX.test(base)) {
+          for (const suffix of STREET_SUFFIXES) {
+            for (const town of LOCAL_TOWNS.slice(0, 3)) {
+              tries.push(`${base} ${suffix}, ${town}`);
+            }
+          }
+        }
         for (const q of tries) {
           if (cancelled) return null;
-          const r = await geocodeRaw(q);
-          await new Promise((res) => setTimeout(res, 120));
-          if (!r) continue;
-          if (!inArea(r.lat, r.lng)) continue;
-          if (!r.types.some((t) => OK_TYPES.has(t))) continue; // town-center fuzz, not a street
-          return { lat: r.lat, lng: r.lng };
+          const hit = await tryOne(q);
+          if (hit) return hit;
         }
-        failedThisSession.current.add(base);
+        failCache.current.add(base);
+        saveFailCache(failCache.current);
         return null;
       };
 
@@ -227,7 +257,6 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
           if (cancelled) return;
           if (b.units.length === 0 || b.id === "__loose__") continue;
 
-          // Candidates in order: the building's own address, then the project's.
           const bLoc = locById.get(b.id);
           const pLoc = locById.get(p.id);
           const candidates: Array<{ ownerId: string; loc: any }> = [];
@@ -243,7 +272,6 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
           for (const cand of candidates) {
             let lat = cand.loc.lat;
             let lng = cand.loc.lng;
-            // A cached point outside the area was a bad geocode - redo it.
             if (lat != null && lng != null && !inArea(Number(lat), Number(lng))) {
               lat = null;
               lng = null;
@@ -255,7 +283,7 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
               lat = r.lat;
               lng = r.lng;
               cand.loc.lat = lat;
-              cand.loc.lng = lng; // in-session cache so a shared address geocodes once
+              cand.loc.lng = lng;
               toSave.push({ id: cand.ownerId, lat, lng });
             }
             placed = { lat: Number(lat), lng: Number(lng) };
@@ -267,7 +295,6 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
             continue;
           }
 
-          // Buildings sharing one address (project fallback) fan out slightly.
           const key = `${placed.lat.toFixed(6)},${placed.lng.toFixed(6)}`;
           const n = posCount.get(key) ?? 0;
           posCount.set(key, n + 1);
@@ -304,11 +331,19 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
             title: `${p.name} · ${b.label} — ${usedLoc.address}`,
           });
 
-          // The street address, written on the map just under the pin.
+          // Address label pixel-anchored just below the pin: same position as
+          // the pin, an invisible icon, and labelOrigin pushing the text down a
+          // fixed ~22px regardless of zoom.
           const textMarker = new g.maps.Marker({
             map,
-            position: { lat: aLat - 0.0011, lng: aLng },
-            icon: { path: g.maps.SymbolPath.CIRCLE, scale: 0 },
+            position: { lat: aLat, lng: aLng },
+            icon: {
+              path: "M 0,0 L 0,0.1",
+              scale: 1,
+              strokeOpacity: 0,
+              fillOpacity: 0,
+              labelOrigin: new g.maps.Point(0, 22),
+            },
             label: {
               text: shortAddress(String(usedLoc.address)),
               color: "#1d2939",
@@ -316,6 +351,7 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
               fontWeight: "600",
             },
             clickable: true,
+            zIndex: 1,
             title: `${p.name} · ${b.label} — ${usedLoc.address}`,
           });
 
@@ -352,7 +388,6 @@ export function InventoryMapView({ model, locationId }: { model: MapModel; locat
       setStatus(`${plotted} building${plotted === 1 ? "" : "s"} on the map`);
       if (!bounds.isEmpty()) {
         map.fitBounds(bounds, 60);
-        // Stay zoomed in on the area - never zoom out past it, never in past street level.
         g.maps.event.addListenerOnce(map, "idle", () => {
           if (map.getZoom() > 16) map.setZoom(16);
           if (map.getZoom() < AREA_ZOOM) {

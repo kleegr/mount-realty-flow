@@ -1,1 +1,1 @@
-Deploy: map geocode ladder (local towns), street-level-only matches, project-address fallback.
+Deploy: map suffix ladder + pixel-anchored labels + persistent failure cache.
