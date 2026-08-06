@@ -34,15 +34,30 @@ const STAGES = ["Available", "Reserved/Locked", "Under Contract", "Closed/Sold"]
 
 const SYNC_STALE_MS = 30 * 60 * 1000;
 
+/**
+ * Turn a stored record name into the short label a human wants to read:
+ * strip the parent's "Project - Building - " prefix, fall back to the text
+ * after the last " - " when names don't line up (old imports), and collapse
+ * the historical "001 001" / "Unit 101 Unit 101" doubling.
+ */
 function stripPrefix(name: string, parent?: string): string {
   let s = name;
   if (parent && s.startsWith(parent + " - ")) s = s.slice(parent.length + 3);
+  else if (s.includes(" - ")) s = s.slice(s.lastIndexOf(" - ") + 3);
   const parts = s.split(" ");
   const half = parts.length / 2;
   if (Number.isInteger(half) && half > 0 && parts.slice(0, half).join(" ") === parts.slice(half).join(" ")) {
     s = parts.slice(0, half).join(" ");
   }
   return s;
+}
+
+/** "up__down" -> "Up & Down", "walk_in" -> "Walk In", "1st_floor" -> "1st Floor". */
+function pretty(v: string | null): string {
+  if (!v) return "";
+  const s = v.replace(/_+/g, " ").replace(/\s+/g, " ").trim();
+  if (/^up\s*(and|&)?\s*down$/i.test(s)) return "Up & Down";
+  return s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
 }
 
 /** The CRM this app is embedded in (whitelabel-aware via the iframe referrer). */
@@ -73,16 +88,29 @@ function opportunityUrl(locationId: string, oppId: string): string {
 function money(n: number): string {
   return `$${Math.round(n).toLocaleString("en-US")}`;
 }
+function moneyShort(n: number): string {
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (n >= 1_000) return `$${Math.round(n / 1_000)}K`;
+  return money(n);
+}
 function detailLine(d: UnitDetailProps | null): string {
   if (!d) return "";
   const parts: string[] = [];
   if (d.rooms) parts.push(`${d.rooms} rm`);
   if (d.bedrooms) parts.push(`${d.bedrooms} bd`);
   if (d.sf) parts.push(`${Math.round(d.sf).toLocaleString("en-US")} SF`);
-  if (d.price) parts.push(money(d.price));
-  else if (d.psf) parts.push(`${money(d.psf)}/SF`);
-  if (d.style) parts.push(d.style);
-  if (d.floor) parts.push(`Fl ${d.floor}`);
+  if (d.price) {
+    parts.push(money(d.price));
+    if (d.psf) parts.push(`${money(d.psf)}/SF`);
+  } else if (d.psf) {
+    parts.push(`${money(d.psf)}/SF`);
+  }
+  if (d.style) parts.push(pretty(d.style));
+  if (d.floor) {
+    const f = pretty(d.floor);
+    parts.push(/floor|basement|up|down/i.test(f) ? f : `Fl ${f}`);
+  }
+  if (d.moveIn && /yes|ready|true/i.test(String(d.moveIn))) parts.push("Move-in ready");
   return parts.join(" · ");
 }
 
@@ -192,8 +220,8 @@ function InventoryPage() {
         </div>
       )}
 
-      {/* Search + view + sort */}
-      <div className="flex flex-wrap items-center gap-3">
+      {/* Search + view + sort - stays with you while scrolling */}
+      <div className="sticky top-12 z-30 -mx-4 flex flex-wrap items-center gap-3 border-b bg-background/95 px-4 py-2.5 backdrop-blur sm:-mx-6 sm:px-6">
         <div className="relative min-w-64 flex-1 sm:max-w-xl">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -258,7 +286,13 @@ function InventoryPage() {
               >
                 <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-90")} />
                 <FolderOpen className="h-4 w-4 shrink-0 text-accent" />
-                <span className="flex-1 truncate text-base font-semibold">{p.name}</span>
+                <span className="flex-1 truncate">
+                  <span className="text-base font-semibold">{p.name}</span>
+                  <span className="ml-2 hidden text-xs text-muted-foreground md:inline">
+                    {p.buildings.length} building{p.buildings.length === 1 ? "" : "s"}
+                    {p.fromPrice ? ` · from ${moneyShort(p.fromPrice)}` : ""}
+                  </span>
+                </span>
                 <StageDots counts={p.counts} />
                 <Badge variant="outline" className="shrink-0">{p.unitCount} units</Badge>
               </button>
@@ -275,7 +309,12 @@ function InventoryPage() {
                         >
                           <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", bOpen && "rotate-90")} />
                           <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="flex-1 truncate text-sm font-medium">{b.label}</span>
+                          <span className="flex-1 truncate">
+                            <span className="text-sm font-medium">{b.label}</span>
+                            {b.fromPrice ? (
+                              <span className="ml-2 hidden text-xs text-muted-foreground sm:inline">from {moneyShort(b.fromPrice)}</span>
+                            ) : null}
+                          </span>
                           <StageDots counts={b.counts} />
                           <span className="shrink-0 text-xs text-muted-foreground">{b.units.length} units</span>
                         </button>
@@ -457,7 +496,8 @@ interface Model {
     name: string;
     unitCount: number;
     counts: Counts;
-    buildings: Array<{ id: string; label: string; counts: Counts; units: UnitVM[] }>;
+    fromPrice: number | null;
+    buildings: Array<{ id: string; label: string; counts: Counts; fromPrice: number | null; units: UnitVM[] }>;
   }>;
   allUnits: UnitVM[];
   totals: { projects: number; buildings: number; units: number; byStage: Record<string, number> };
@@ -529,6 +569,7 @@ function buildModel(
     const pMatch = !needle || p.name.toLowerCase().includes(needle);
     const pCounts = emptyCounts();
     let pUnits = 0;
+    let pFrom: number | null = null;
     const bOut: Model["projects"][number]["buildings"] = [];
 
     const buildingEntries = [
@@ -540,6 +581,7 @@ function buildModel(
       const bMatch = pMatch || b.label.toLowerCase().includes(needle) || b.name.toLowerCase().includes(needle);
       const bCounts = emptyCounts();
       const uOut: UnitVM[] = [];
+      let bFrom: number | null = null;
       for (const u of b.units) {
         const ints = byUnit.get(u.id) ?? { holder: null, interested: [] };
         // The local hold is a fallback when the deal walk hasn't run yet.
@@ -553,6 +595,9 @@ function buildModel(
         if (needle && !bMatch && !hay.includes(needle)) continue;
         bump(bCounts, bucket);
         if (bucket) totals.byStage[bucket] = (totals.byStage[bucket] ?? 0) + 1;
+        if (bucket === "Available" && u.details?.price) {
+          bFrom = bFrom === null ? u.details.price : Math.min(bFrom, u.details.price);
+        }
         const vm: UnitVM = {
           id: u.id,
           label,
@@ -577,7 +622,8 @@ function buildModel(
       pCounts.underContract += bCounts.underContract;
       pCounts.sold += bCounts.sold;
       pUnits += uOut.length;
-      bOut.push({ id: b.id, label: b.label, counts: bCounts, units: uOut });
+      if (bFrom !== null) pFrom = pFrom === null ? bFrom : Math.min(pFrom, bFrom);
+      bOut.push({ id: b.id, label: b.label, counts: bCounts, fromPrice: bFrom, units: uOut });
     }
 
     if (bOut.length === 0) continue;
@@ -588,7 +634,7 @@ function buildModel(
     totals.projects++;
     totals.buildings += bOut.length;
     totals.units += pUnits;
-    projectsOut.push({ id: p.id, name: p.name, unitCount: pUnits, counts: pCounts, buildings: bOut });
+    projectsOut.push({ id: p.id, name: p.name, unitCount: pUnits, counts: pCounts, fromPrice: pFrom, buildings: bOut });
   }
 
   if (sortMode === "interest") {
