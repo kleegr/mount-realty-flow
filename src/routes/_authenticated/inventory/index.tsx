@@ -3,7 +3,6 @@ import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getInventoryTree, syncUnitDetails, syncUnitInterestChunk, type UnitDetailProps } from "@/lib/inventory-view.functions";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -29,6 +28,12 @@ const STAGE_STYLE: Record<string, string> = {
   "Reserved/Locked": "bg-amber-50 text-amber-700 border-amber-200",
   "Under Contract": "bg-sky-50 text-sky-700 border-sky-200",
   "Closed/Sold": "bg-slate-100 text-slate-600 border-slate-200",
+};
+const STAGE_BAR: Record<string, string> = {
+  Available: "bg-emerald-500",
+  "Reserved/Locked": "bg-amber-500",
+  "Under Contract": "bg-sky-500",
+  "Closed/Sold": "bg-slate-400",
 };
 const STAGES = ["Available", "Reserved/Locked", "Under Contract", "Closed/Sold"] as const;
 
@@ -58,6 +63,18 @@ function pretty(v: string | null): string {
   const s = v.replace(/_+/g, " ").replace(/\s+/g, " ").trim();
   if (/^up\s*(and|&)?\s*down$/i.test(s)) return "Up & Down";
   return s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+
+/** "Yakov Zev Meizels - (347) 884-1388" -> "Yakov Zev Meizels". */
+function nameFromDeal(oppName: string | null): string | null {
+  if (!oppName) return null;
+  const first = oppName.split(" - ")[0]?.trim();
+  return first || null;
+}
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return ((parts[0][0] ?? "") + (parts.length > 1 ? parts[parts.length - 1][0] ?? "" : "")).toUpperCase();
 }
 
 /** The CRM this app is embedded in (whitelabel-aware via the iframe referrer). */
@@ -171,13 +188,17 @@ function InventoryPage() {
     });
   }
 
+  const totalUnits = model ? Object.values(model.totals.byStage).reduce((a, b) => a + b, 0) : 0;
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Inventory</h1>
           <p className="mt-1 text-muted-foreground">
-            Every project, building and unit — details, who's interested and who's serious. Read-only.
+            {model
+              ? `${model.totals.projects} projects · ${model.totals.buildings} buildings · ${model.totals.units} units — live from the CRM.`
+              : "Every project, building and unit — live from the CRM."}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -191,15 +212,12 @@ function InventoryPage() {
         </div>
       </div>
 
-      {/* Summary / stage filters */}
+      {/* Stage overview - big, clickable stat cards that double as filters */}
       {model && (
-        <div className="flex flex-wrap items-center gap-2">
-          <StatChip icon={FolderOpen} label="Projects" value={model.totals.projects} />
-          <StatChip icon={Building2} label="Buildings" value={model.totals.buildings} />
-          <StatChip icon={Home} label="Units" value={model.totals.units} />
-          <span className="mx-1 hidden w-px self-stretch bg-border sm:block" />
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {STAGES.map((label) => {
             const n = model.totals.byStage[label] ?? 0;
+            const pct = totalUnits > 0 ? Math.round((n / totalUnits) * 100) : 0;
             const active = stageFilter.has(label);
             return (
               <button
@@ -207,13 +225,21 @@ function InventoryPage() {
                 onClick={() => toggleStage(label)}
                 title={active ? "Clear filter" : `Show only ${label}`}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-shadow",
-                  STAGE_STYLE[label],
-                  active && "ring-2 ring-primary/40",
+                  "group rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:shadow-md",
+                  active && "ring-2 ring-primary/50",
                 )}
               >
-                {label}
-                <span className="font-bold">{n}</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+                  <span className={cn("h-2.5 w-2.5 rounded-full", STAGE_BAR[label])} />
+                </div>
+                <div className="mt-1 flex items-baseline gap-2">
+                  <span className="text-3xl font-bold tabular-nums tracking-tight">{n}</span>
+                  <span className="text-xs text-muted-foreground">{pct}%</span>
+                </div>
+                <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-secondary">
+                  <div className={cn("h-full rounded-full transition-all", STAGE_BAR[label])} style={{ width: `${pct}%` }} />
+                </div>
               </button>
             );
           })}
@@ -275,82 +301,136 @@ function InventoryPage() {
         <p className="py-10 text-center text-muted-foreground">Nothing matches.</p>
       )}
 
-      {view === "browse" &&
-        model?.projects.map((p) => {
-          const expanded = searching || open[p.id];
-          return (
-            <Card key={p.id} className="overflow-hidden transition-shadow hover:shadow-md">
-              <button
-                className="flex w-full items-center gap-3 px-4 py-3 text-left"
-                onClick={() => setOpen((o) => ({ ...o, [p.id]: !o[p.id] }))}
-              >
-                <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-90")} />
-                <FolderOpen className="h-4 w-4 shrink-0 text-accent" />
-                <span className="flex-1 truncate">
-                  <span className="text-base font-semibold">{p.name}</span>
-                  <span className="ml-2 hidden text-xs text-muted-foreground md:inline">
-                    {p.buildings.length} building{p.buildings.length === 1 ? "" : "s"}
-                    {p.fromPrice ? ` · from ${moneyShort(p.fromPrice)}` : ""}
-                  </span>
-                </span>
-                <StageDots counts={p.counts} />
-                <Badge variant="outline" className="shrink-0">{p.unitCount} units</Badge>
-              </button>
+      {view === "browse" && (
+        <div className="space-y-3">
+          {model?.projects.map((p) => {
+            const expanded = searching || open[p.id];
+            return (
+              <Card key={p.id} className="overflow-hidden shadow-sm transition-shadow hover:shadow-md">
+                <button
+                  className="block w-full px-4 py-3 text-left"
+                  onClick={() => setOpen((o) => ({ ...o, [p.id]: !o[p.id] }))}
+                >
+                  <div className="flex items-center gap-3">
+                    <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-90")} />
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/5">
+                      <FolderOpen className="h-4 w-4 text-primary" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-base font-semibold">{p.name}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {p.buildings.length} building{p.buildings.length === 1 ? "" : "s"} · {p.unitCount} units
+                        {p.fromPrice ? ` · from ${moneyShort(p.fromPrice)}` : ""}
+                      </span>
+                    </span>
+                    <CountsLegend counts={p.counts} />
+                  </div>
+                  <StageBar counts={p.counts} className="ml-[60px] mt-2.5" />
+                </button>
 
-              {expanded && (
-                <CardContent className="space-y-3 border-t bg-secondary/20 px-4 pb-4 pt-3">
-                  {p.buildings.map((b) => {
-                    const bOpen = searching || open[b.id];
-                    return (
-                      <div key={b.id} className="overflow-hidden rounded-lg border bg-card">
-                        <button
-                          className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
-                          onClick={() => setOpen((o) => ({ ...o, [b.id]: !o[b.id] }))}
-                        >
-                          <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", bOpen && "rotate-90")} />
-                          <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="flex-1 truncate">
-                            <span className="text-sm font-medium">{b.label}</span>
-                            {b.fromPrice ? (
-                              <span className="ml-2 hidden text-xs text-muted-foreground sm:inline">from {moneyShort(b.fromPrice)}</span>
-                            ) : null}
-                          </span>
-                          <StageDots counts={b.counts} />
-                          <span className="shrink-0 text-xs text-muted-foreground">{b.units.length} units</span>
-                        </button>
+                {expanded && (
+                  <CardContent className="space-y-3 border-t bg-secondary/20 px-4 pb-4 pt-3">
+                    {p.buildings.map((b) => {
+                      const bOpen = searching || open[b.id];
+                      return (
+                        <div key={b.id} className="overflow-hidden rounded-lg border bg-card">
+                          <button
+                            className="block w-full px-3 py-2.5 text-left"
+                            onClick={() => setOpen((o) => ({ ...o, [b.id]: !o[b.id] }))}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", bOpen && "rotate-90")} />
+                              <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="min-w-0 flex-1 truncate">
+                                <span className="text-sm font-medium">{b.label}</span>
+                                <span className="ml-2 text-xs text-muted-foreground">
+                                  {b.units.length} units{b.fromPrice ? ` · from ${moneyShort(b.fromPrice)}` : ""}
+                                </span>
+                              </span>
+                              <CountsLegend counts={b.counts} />
+                            </div>
+                          </button>
 
-                        {bOpen && (
-                          <div className="divide-y border-t">
-                            {b.units.map((u) => (
-                              <UnitRow key={u.id} u={u} locationId={data?.locationId ?? ""} />
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </CardContent>
-              )}
-            </Card>
-          );
-        })}
+                          {bOpen && (
+                            <div className="divide-y border-t">
+                              {b.units.map((u) => (
+                                <UnitRow key={u.id} u={u} locationId={data?.locationId ?? ""} />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </CardContent>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
+/** Thin stacked bar showing the stage mix of a project/building. */
+function StageBar({ counts, className }: { counts: Counts; className?: string }) {
+  const total = counts.available + counts.reserved + counts.underContract + counts.sold;
+  if (total === 0) return null;
+  const segs: Array<[number, string]> = [
+    [counts.available, STAGE_BAR.Available],
+    [counts.reserved, STAGE_BAR["Reserved/Locked"]],
+    [counts.underContract, STAGE_BAR["Under Contract"]],
+    [counts.sold, STAGE_BAR["Closed/Sold"]],
+  ];
+  return (
+    <div className={cn("flex h-1.5 overflow-hidden rounded-full bg-secondary", className)}>
+      {segs
+        .filter(([n]) => n > 0)
+        .map(([n, cls], i) => (
+          <div key={i} className={cls} style={{ width: `${(n / total) * 100}%` }} />
+        ))}
+    </div>
+  );
+}
+
+function CountsLegend({ counts }: { counts: Counts }) {
+  const items: Array<[number, string, string]> = [
+    [counts.available, "text-emerald-600", "Available"],
+    [counts.reserved, "text-amber-600", "Reserved/Locked"],
+    [counts.underContract, "text-sky-600", "Under Contract"],
+    [counts.sold, "text-slate-500", "Closed/Sold"],
+  ];
+  return (
+    <span className="hidden shrink-0 items-center gap-2.5 text-xs font-semibold tabular-nums sm:inline-flex">
+      {items
+        .filter(([n]) => n > 0)
+        .map(([n, cls, label]) => (
+          <span key={label} className={cls} title={label}>
+            {n}
+          </span>
+        ))}
+    </span>
+  );
+}
+
 function PersonChips({ u, locationId, showEmpty = true }: { u: UnitVM; locationId: string; showEmpty?: boolean }) {
+  const holderName = u.holder ? (u.holder.name ?? nameFromDeal(u.holder.oppName)) : null;
   return (
     <>
       {u.holder && (
         <a
           href={opportunityUrl(locationId, u.holder.oppId)}
           target="_top"
-          className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/10"
-          title={`${u.holder.name ?? u.holder.oppName ?? "Deal"} — ${u.holder.stageName ?? u.stage} (open in CRM)`}
+          className="group inline-flex items-center gap-2 rounded-lg border bg-card py-1 pl-1 pr-2.5 shadow-sm transition-colors hover:border-primary/40 hover:bg-primary/5"
+          title={`${holderName ?? "Buyer"} — ${u.holder.stageName ?? u.stage} · open the deal in the CRM`}
         >
-          <Lock className="h-3 w-3" />
-          {u.holder.name ?? u.holder.oppName ?? "View deal"}
-          <span className="font-normal text-primary/70">· {u.holder.stageName ?? u.stage ?? "held"}</span>
+          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary text-[10px] font-bold text-primary-foreground">
+            {holderName ? initials(holderName) : <Lock className="h-3 w-3" />}
+          </span>
+          <span className="leading-tight">
+            <span className="block text-xs font-semibold text-foreground">{holderName ?? "Open deal"}</span>
+            <span className="block text-[10px] text-muted-foreground">{u.holder.stageName ?? u.stage ?? "Holding"}</span>
+          </span>
         </a>
       )}
       {u.interested.length > 0 && (
@@ -358,22 +438,25 @@ function PersonChips({ u, locationId, showEmpty = true }: { u: UnitVM; locationI
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             {u.interested.length} interested
           </span>
-          {u.interested.map((i) => (
-            <a
-              key={i.oppId}
-              href={i.contactId ? contactUrl(locationId, i.contactId) : opportunityUrl(locationId, i.oppId)}
-              target="_top"
-              className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100"
-              title="Open in CRM"
-            >
-              <UserRound className="h-3 w-3" />
-              {i.name ?? i.oppName ?? "View"}
-            </a>
-          ))}
+          {u.interested.map((i) => {
+            const nm = i.name ?? nameFromDeal(i.oppName) ?? "View";
+            return (
+              <a
+                key={i.oppId}
+                href={i.contactId ? contactUrl(locationId, i.contactId) : opportunityUrl(locationId, i.oppId)}
+                target="_top"
+                className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100"
+                title="Open in CRM"
+              >
+                <UserRound className="h-3 w-3" />
+                {nm}
+              </a>
+            );
+          })}
         </span>
       )}
       {showEmpty && !u.holder && u.interested.length === 0 && (
-        <span className="text-[11px] text-muted-foreground/50">no interest yet</span>
+        <span className="text-[11px] text-muted-foreground/40">—</span>
       )}
     </>
   );
@@ -383,13 +466,17 @@ function UnitRow({ u, locationId }: { u: UnitVM; locationId: string }) {
   const stageCls = STAGE_STYLE[u.stage] ?? "bg-secondary text-muted-foreground border-border";
   const details = detailLine(u.details);
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5">
-      <Home className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
-      <span className="min-w-16 text-sm font-medium">{u.label}</span>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5 transition-colors hover:bg-secondary/30">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-secondary/60">
+        <Home className="h-3.5 w-3.5 text-muted-foreground" />
+      </span>
+      <span className="min-w-14">
+        <span className="block text-sm font-semibold leading-tight">{u.label}</span>
+        {details && <span className="block text-xs leading-tight text-muted-foreground">{details}</span>}
+      </span>
       <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium", stageCls)}>
         {u.stage || u.availability || "—"}
       </span>
-      {details && <span className="text-xs text-muted-foreground">{details}</span>}
       <span className="flex-1" />
       <PersonChips u={u} locationId={locationId} />
     </div>
@@ -407,7 +494,7 @@ function TopInterest({ model, locationId }: { model: Model; locationId: string }
     <Card>
       <CardContent className="divide-y p-0">
         {ranked.map((u, idx) => (
-          <div key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3">
+          <div key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 transition-colors hover:bg-secondary/30">
             <span className="w-6 shrink-0 text-center text-sm font-bold text-muted-foreground">{idx + 1}</span>
             <div className="min-w-40">
               <div className="text-sm font-semibold">{u.label}</div>
@@ -423,37 +510,6 @@ function TopInterest({ model, locationId }: { model: Model; locationId: string }
         ))}
       </CardContent>
     </Card>
-  );
-}
-
-function StageDots({ counts }: { counts: Counts }) {
-  const dots: Array<[number, string, string]> = [
-    [counts.available, "bg-emerald-500", "Available"],
-    [counts.reserved, "bg-amber-500", "Reserved/Locked"],
-    [counts.underContract, "bg-sky-500", "Under Contract"],
-    [counts.sold, "bg-slate-400", "Closed/Sold"],
-  ];
-  return (
-    <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">
-      {dots
-        .filter(([n]) => n > 0)
-        .map(([n, cls, label]) => (
-          <span key={label} className="inline-flex items-center gap-1 text-xs text-muted-foreground" title={label}>
-            <span className={cn("h-2 w-2 rounded-full", cls)} />
-            {n}
-          </span>
-        ))}
-    </span>
-  );
-}
-
-function StatChip({ icon: Icon, label, value }: { icon: typeof Home; label: string; value: number }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border bg-card px-3 py-1 text-xs font-medium text-foreground">
-      <Icon className="h-3.5 w-3.5 text-muted-foreground" />
-      {label}
-      <span className="font-bold">{value}</span>
-    </span>
   );
 }
 
