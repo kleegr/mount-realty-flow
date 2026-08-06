@@ -137,8 +137,14 @@ export function validateRows(rows: Row[]): ValidationResult {
       rowWarnings.push(`Unit style "${style}" is not in the allowed list.`);
     }
 
-    // Availability/stage consistency
-    if (stage && availability && availability !== "Not Available") {
+    // Availability/stage consistency.
+    // "Available" is a REAL stage (owner decision, 2026-07-20): it pairs with
+    // availability "Available". Only the holding stages (Reserved/Locked,
+    // Under Contract, Closed/Sold) require "Not Available".
+    if (stage === "Available" && availability === "Not Available") {
+      rowErrors.push(`Stage "Available" cannot pair with availability "Not Available".`);
+    }
+    if (stage && stage !== "Available" && availability && availability !== "Not Available") {
       rowErrors.push(`Stage "${stage}" requires availability "Not Available".`);
     }
     if (!stage && availability === "Not Available") {
@@ -158,6 +164,10 @@ export function validateRows(rows: Row[]): ValidationResult {
     for (const w of rowWarnings) warnings.push({ level: "warning", message: w, rowNumber });
     for (const e of rowErrors) errors.push({ level: "error", message: e, rowNumber });
 
+    // Floor can be a number (3) or text ("Basement", "1st Floor", "Up and Down").
+    const floorNumber = normalizeNumber(row["Floor"]);
+    const floorValue = floorNumber ?? normalizeString(row["Floor"]);
+
     const unitProps = {
       [FIELDS.unit.name]: unitName,
       [FIELDS.unit.number]: unitNumber,
@@ -165,13 +175,16 @@ export function validateRows(rows: Row[]): ValidationResult {
       [FIELDS.unit.stage]: stage,
       [FIELDS.unit.rooms]: normalizeNumber(row["Rooms"]),
       [FIELDS.unit.bedrooms]: normalizeNumber(row["Bedrooms"]),
-      [FIELDS.unit.floor]: normalizeNumber(row["Floor"]),
+      [FIELDS.unit.floor]: floorValue,
       [FIELDS.unit.style]: style,
       [FIELDS.unit.total_sf]: totalSf,
       [FIELDS.unit.movein_ready]: normalizeYesNo(row["Move-in Ready"]),
       [FIELDS.unit.price]: price,
       [FIELDS.unit.price_per_sf]: pricePerSf,
-      [FIELDS.unit.inventory_deducted]: normalizeYesNo(row["Inventory Deducted?"]) || (stage ? "Yes" : "No"),
+      // Inventory is deducted only when a HOLDING stage has taken the unit -
+      // an Available unit is by definition not deducted.
+      [FIELDS.unit.inventory_deducted]:
+        normalizeYesNo(row["Inventory Deducted?"]) || (stage && stage !== "Available" ? "Yes" : "No"),
       [FIELDS.unit.locked_date]: normalizeString(row["Locked Date"]),
     };
 
