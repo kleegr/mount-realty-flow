@@ -16,7 +16,9 @@
  *  3. Association DEFINITIONS are matched by the pair of object schema keys
  *     (custom_objects.projects ↔ custom_objects.buildings), exactly like
  *     associations.server.ts does - matching by definition NAME found
- *     nothing and left the tree flat.
+ *     nothing and left the tree flat. If the pair match ever fails, the
+ *     job log records the definitions actually seen, so the mismatch is
+ *     diagnosable from sync_jobs.error_summary alone.
  */
 import { createCrmClient, type CrmClient } from "@/lib/kleegr/client.server";
 import { FIELDS } from "@/lib/kleegr/field-map";
@@ -253,7 +255,13 @@ async function fillParentsFromAssociations(client: CrmClient, counters: SyncCoun
   const p2bId = String(p2b?.id ?? "");
   const b2uId = String(b2u?.id ?? "");
   if (!p2bId && !b2uId) {
-    counters.errorSummary.push("no project/building/unit association definitions found - parents not rebuilt");
+    // Diagnose from the log alone: record what the CRM actually returned.
+    const seen = defs
+      .slice(0, 6)
+      .map((d) => `${String(d.key ?? "?")}[${lc(d.firstObjectKey ?? d.firstObjectId)}<->${lc(d.secondObjectKey ?? d.secondObjectId)}]`)
+      .join(", ");
+    const wanted = `proj:{${[...projKeys].join("|")}} bld:{${[...bldKeys].join("|")}} unit:{${[...unitKeys].join("|")}}`;
+    counters.errorSummary.push(`assoc defs not matched. seen: ${seen || "NONE"} ; wanted: ${wanted}`.slice(0, 900));
     return;
   }
 
@@ -319,6 +327,10 @@ async function fillParentsFromAssociations(client: CrmClient, counters: SyncCoun
       await supabaseAdmin.from("external_id_map").update({ parent_crm_id: b }).eq("scope", "unit").in("crm_record_id", us.slice(i, i + 200));
     }
   }
+
+  counters.errorSummary.push(
+    `parents rebuilt: ${buildingParent.size} buildings linked to projects, ${unitParent.size} units linked to buildings`,
+  );
 }
 
 export async function runSync(jobId: string, scope: SyncScope | "all"): Promise<void> {
