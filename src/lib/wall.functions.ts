@@ -9,7 +9,8 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
  *  - external_id_map + unit_state + unit_details: live tree, buckets, prices
  *  - record_locations: building coordinates for the map scene
  *  - audit_events (unit scope): movement counts (today/week/month vs the
- *    previous period) and the ticker of recent stage changes
+ *    previous period), the ticker, and recentMoves - the feed behind the
+ *    "recent contracts & closings" panel AND the celebration overlay
  *  - CRM (best effort): salesperson leaderboard from opportunity owners -
  *    if the CRM is unreachable the wall still renders everything else
  */
@@ -23,6 +24,14 @@ function bucketOf(stage: unknown, availability: unknown): "available" | "reserve
   if (s === "undercontract") return "underContract";
   if (s === "closedsold") return "sold";
   if (s === "available" || norm(availability) === "available") return "available";
+  return null;
+}
+function statusWord(stage: string): "AVAILABLE" | "RESERVED" | "UNDER CONTRACT" | "SOLD" | null {
+  const s = norm(stage);
+  if (s === "reservedlocked" || s.includes("reserved")) return "RESERVED";
+  if (s === "undercontract" || s.includes("contract")) return "UNDER CONTRACT";
+  if (s === "closedsold" || s.includes("closed") || s.includes("sold")) return "SOLD";
+  if (s === "available") return "AVAILABLE";
   return null;
 }
 function pickStage(o: unknown): string {
@@ -72,10 +81,10 @@ export const getWallData = createServerFn({ method: "GET" })
         .gte("created_at", since),
       supabaseAdmin
         .from("audit_events")
-        .select("created_at, entity_crm_id, previous, next")
+        .select("id, created_at, entity_crm_id, previous, next")
         .eq("entity_scope", "unit")
         .order("created_at", { ascending: false })
-        .limit(60),
+        .limit(120),
     ]);
 
     const rows = mapRes.data ?? [];
@@ -94,13 +103,12 @@ export const getWallData = createServerFn({ method: "GET" })
       if (Number.isFinite(n) && n > 0) priceById.set(d.unit_crm_id, n);
     }
 
-    // ---- totals + per-building/project aggregation + roll + volume
+    // ---- totals + per-building/project aggregation + volume
     const totals = { available: 0, reserved: 0, underContract: 0, sold: 0 };
     let contractedVolume = 0;
     interface Agg { available: number; reserved: number; underContract: number; sold: number; total: number }
     const perBuilding = new Map<string, Agg>();
     const perProject = new Map<string, Agg>();
-    const roll: Array<{ unit: string; building: string; status: string }> = [];
     const bump = (m: Map<string, Agg>, k: string, b: string | null) => {
       const a = m.get(k) ?? { available: 0, reserved: 0, underContract: 0, sold: 0, total: 0 };
       a.total++;
@@ -119,41 +127,38 @@ export const getWallData = createServerFn({ method: "GET" })
       const proj = bld?.parent_crm_id ? projById.get(bld.parent_crm_id) : null;
       if (bld) bump(perBuilding, bld.crm_record_id, b);
       if (proj) bump(perProject, proj.crm_record_id, b);
-      if (b && b !== "available" && roll.length < 60 && bld) {
-        roll.push({
-          unit: shortLabel(u.display_name, bld.display_name ?? "").toUpperCase(),
-          building: midLabel(bld.display_name, proj?.display_name).toUpperCase(),
-          status: b === "reserved" ? "RESERVED" : b === "underContract" ? "UNDER CONTRACT" : "SOLD",
-        });
-      }
-    }
-    // Mix a few available units into the roll so it isn't all one color.
-    let availAdded = 0;
-    for (const u of units) {
-      if (availAdded >= 14) break;
-      const st = stateById.get(u.crm_record_id);
-      if (bucketOf(st?.stage, st?.availability) !== "available") continue;
-      const bld = u.parent_crm_id ? bldById.get(u.parent_crm_id) : null;
-      if (!bld) continue;
-      const proj = bld.parent_crm_id ? projById.get(bld.parent_crm_id) : null;
-      roll.splice(Math.min(roll.length, (availAdded + 1) * 4), 0, {
-        unit: shortLabel(u.display_name, bld.display_name ?? "").toUpperCase(),
-        building: midLabel(bld.display_name, proj?.display_name).toUpperCase(),
-        status: "AVAILABLE",
-      });
-      availAdded++;
     }
 
+    // ---- projects with their BUILDINGS (for the project-tour scene)
     const projectCards = [...perProject.entries()]
-      .map(([id, a]) => ({
-        id,
-        name: String(projById.get(id)?.display_name ?? "").toUpperCase(),
-        total: a.total,
-        available: a.available,
-        reserved: a.reserved,
-        underContract: a.underContract,
-        sold: a.sold,
-      }))
+      .map(([id, a]) => {
+        const projName = String(projById.get(id)?.display_name ?? "");
+        const blds = buildings
+          .filter((b) => b.parent_crm_id === id)
+          .map((b) => {
+            const ba = perBuilding.get(b.crm_record_id) ?? { available: 0, reserved: 0, underContract: 0, sold: 0, total: 0 };
+            return {
+              label: midLabel(b.display_name, projName).toUpperCase(),
+              available: ba.available,
+              reserved: ba.reserved,
+              underContract: ba.underContract,
+              sold: ba.sold,
+              total: ba.total,
+            };
+          })
+          .filter((b) => b.total > 0)
+          .sort((x, y) => x.label.localeCompare(y.label));
+        return {
+          id,
+          name: projName.toUpperCase(),
+          total: a.total,
+          available: a.available,
+          reserved: a.reserved,
+          underContract: a.underContract,
+          sold: a.sold,
+          buildings: blds,
+        };
+      })
       .filter((p) => p.name && p.total > 0)
       .sort((a, b) => b.total - a.total);
 
@@ -199,18 +204,27 @@ export const getWallData = createServerFn({ method: "GET" })
       month: { moves: inRange(now - 30 * day, now), prev: inRange(now - 60 * day, now - 30 * day) },
     };
 
-    // ---- ticker: recent stage transitions with unit labels
-    const ticker: string[] = [];
+    // ---- recent moves: the feed for the panel, the ticker AND the
+    //      celebration overlay (new SOLD events trigger the balloons)
+    const recentMoves: Array<{ id: string; at: string; status: "AVAILABLE" | "RESERVED" | "UNDER CONTRACT" | "SOLD"; unit: string; building: string; project: string }> = [];
     for (const e of tickRes.data ?? []) {
       const u = e.entity_crm_id ? unitById.get(e.entity_crm_id) : null;
       if (!u) continue;
+      const st = statusWord(pickStage(e.next));
+      if (!st || st === "AVAILABLE") continue; // the wall celebrates movement INTO holding stages
       const bld = u.parent_crm_id ? bldById.get(u.parent_crm_id) : null;
-      const nextStage = pickStage(e.next) || pickStage(e.previous);
-      if (!nextStage) continue;
-      const label = `${nextStage.toUpperCase()} \u2014 ${midLabel(bld?.display_name ?? "", bld?.parent_crm_id ? projById.get(bld.parent_crm_id)?.display_name : "").toUpperCase()} \u00b7 ${shortLabel(u.display_name, bld?.display_name ?? "").toUpperCase()}`;
-      if (!ticker.includes(label)) ticker.push(label);
-      if (ticker.length >= 10) break;
+      const proj = bld?.parent_crm_id ? projById.get(bld.parent_crm_id) : null;
+      recentMoves.push({
+        id: String(e.id),
+        at: String(e.created_at),
+        status: st,
+        unit: shortLabel(u.display_name, bld?.display_name ?? "").toUpperCase(),
+        building: midLabel(bld?.display_name ?? "", proj?.display_name).toUpperCase(),
+        project: String(proj?.display_name ?? "").toUpperCase(),
+      });
+      if (recentMoves.length >= 16) break;
     }
+    const ticker = recentMoves.slice(0, 10).map((m) => `${m.status} \u2014 ${m.building} \u00b7 ${m.unit}`);
 
     // ---- leaderboard (best effort, CRM)
     let leaderboard: Array<{ name: string; deals: number; contract: number }> = [];
@@ -226,11 +240,9 @@ export const getWallData = createServerFn({ method: "GET" })
       );
       const counts = new Map<string, { deals: number; contract: number }>();
       for (let page = 1; page <= 8; page++) {
-        const sr = await client.request<{ opportunities?: Array<Record<string, unknown>>; meta?: Record<string, unknown> }>(
-          "GET",
-          "/opportunities/search",
-          { query: { location_id: locationId, limit: 100, page } },
-        );
+        const sr = await client.request<{ opportunities?: Array<Record<string, unknown>> }>("GET", "/opportunities/search", {
+          query: { location_id: locationId, limit: 100, page },
+        });
         const opps = Array.isArray(sr.data?.opportunities) ? sr.data.opportunities : [];
         if (opps.length === 0) break;
         for (const o of opps) {
@@ -259,7 +271,7 @@ export const getWallData = createServerFn({ method: "GET" })
       contractedVolume,
       activity,
       projects: projectCards,
-      roll: roll.slice(0, 40),
+      recentMoves,
       ticker,
       mapBuildings,
       leaderboard,
