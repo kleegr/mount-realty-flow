@@ -13,10 +13,14 @@
  *     but not necessarily in their CRM properties; keying by properties
  *     alone created duplicate crm:{id} rows for the same record. Always
  *     reuse the existing row's key for a known crm_record_id.
+ *  3. Association DEFINITIONS are matched by the pair of object schema keys
+ *     (custom_objects.projects ↔ custom_objects.buildings), exactly like
+ *     associations.server.ts does - matching by definition NAME found
+ *     nothing and left the tree flat.
  */
 import { createCrmClient, type CrmClient } from "@/lib/kleegr/client.server";
 import { FIELDS } from "@/lib/kleegr/field-map";
-import { requestObject } from "@/lib/kleegr/object-config.server";
+import { requestObject, objectKeyCandidates } from "@/lib/kleegr/object-config.server";
 
 export type SyncScope = "project" | "building" | "unit";
 
@@ -71,8 +75,8 @@ function externalIdFor(scope: SyncScope, props: Record<string, unknown>): string
   return String(readProp(props, FIELDS.unit.external_import_id) ?? "");
 }
 
-function norm(s: unknown): string {
-  return String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+function lc(v: unknown): string {
+  return String(v ?? "").trim().toLowerCase();
 }
 
 async function updateJob(
@@ -220,9 +224,10 @@ function normalizeStage(value: unknown): string | null {
 }
 
 /**
- * Rebuild parent links from the CRM's own associations. One relations call
- * per building answers BOTH questions: which project owns the building, and
- * which units the building owns.
+ * Rebuild parent links from the CRM's own associations. Definitions are
+ * resolved by their object-key PAIR (the same way associations.server.ts
+ * does when it creates them). One relations call per building answers BOTH
+ * questions: which project owns the building, and which units it owns.
  */
 async function fillParentsFromAssociations(client: CrmClient, counters: SyncCounters): Promise<void> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -232,8 +237,19 @@ async function fillParentsFromAssociations(client: CrmClient, counters: SyncCoun
     query: { locationId, skip: 0, limit: 100 },
   });
   const defs = defsRes.data?.associations ?? [];
-  const p2b = defs.find((d) => norm(d.key).includes("project") && norm(d.key).includes("building"));
-  const b2u = defs.find((d) => norm(d.key).includes("building") && norm(d.key).includes("unit"));
+
+  const projKeys = new Set(objectKeyCandidates(client, "project").map(lc));
+  const bldKeys = new Set(objectKeyCandidates(client, "building").map(lc));
+  const unitKeys = new Set(objectKeyCandidates(client, "unit").map(lc));
+
+  const pairMatch = (d: Record<string, unknown>, aKeys: Set<string>, bKeys: Set<string>) => {
+    const first = lc(d.firstObjectKey ?? d.firstObjectId);
+    const second = lc(d.secondObjectKey ?? d.secondObjectId);
+    return (aKeys.has(first) && bKeys.has(second)) || (aKeys.has(second) && bKeys.has(first));
+  };
+
+  const p2b = defs.find((d) => pairMatch(d, projKeys, bldKeys));
+  const b2u = defs.find((d) => pairMatch(d, bldKeys, unitKeys));
   const p2bId = String(p2b?.id ?? "");
   const b2uId = String(b2u?.id ?? "");
   if (!p2bId && !b2uId) {
