@@ -9,15 +9,13 @@ import { WALL_BG2 } from "@/lib/wall-bg2";
 import { WALL_BG3 } from "@/lib/wall-bg3";
 
 /**
- * WALL MONITOR — pass 12 (owner notes on pass 11):
- *  1. Top ribbon recolored to the chartreuse/lime of the bottom banner so the
- *     header and footer bookend the board in the same brand color. Dot, date
- *     and TEAM/GUESTS toggle darkened for contrast on lime.
- *  2. Leaderboard agent names enlarged (Anton display face, bigger) so they
- *     read from across the room; rank and contract count scaled to match.
- *
- * Pass 11 recap: bigger type throughout, 20s sayings, address on the map
- * caption, faint rotating house backgrounds cropped from the poster art.
+ * WALL MONITOR — pass 13 (owner notes on pass 12):
+ *  1. Leaderboard agents are now ALWAYS on screen. The right rail shows the
+ *     board leaders at all times; the project spotlight moved beneath it and
+ *     rotates there, so the two no longer trade places. Agents never vanish.
+ *  2. Top ribbon recolored to the SAGE/olive green (the 'under contract'
+ *     tone) instead of lime, so the header reads as the darker green while
+ *     the footer stays chartreuse. Logo/type kept ivory for contrast.
  *
  * Scene clock: BOARD 36s → MAP 36s → PROJECT TOUR (4 × 9s) → repeat.
  * TEAM / GUESTS switch persists per device; ?celebrate=1 previews balloons.
@@ -269,7 +267,7 @@ function WallMonitor() {
   const moves = data?.recentMoves ?? [];
   const ticker = data?.ticker ?? [];
   const leaderboard = mode === "team" ? (data?.leaderboard ?? []) : [];
-  const showLeaderboard = leaderboard.length > 0 && railFlip % 2 === 1;
+  const hasLeaderboard = leaderboard.length > 0;
 
   return (
     <div style={{ height: "100vh", background: BG, color: INK, fontFamily: BODY, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
@@ -288,25 +286,25 @@ function WallMonitor() {
       {/* faint rotating house scenes; the full-bleed map covers its own ground */}
       {scene !== "map" && <BgSlideshow />}
 
-      {/* ---------------- masthead: lime ribbon, matching the bottom banner ---------------- */}
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 56px", height: 80, flexShrink: 0, position: "relative", zIndex: 5, background: LIME }}>
+      {/* ---------------- masthead: sage/olive-green ribbon (darker green up top) ---------------- */}
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 56px", height: 80, flexShrink: 0, position: "relative", zIndex: 5, background: SAGE }}>
         <img src={LOGO} alt="Mount Realty Group" style={{ height: 42 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
-          <span style={{ width: 8, height: 8, borderRadius: 999, background: INK, animation: "wDot 2s infinite" }} />
-          <span style={{ fontSize: 11, letterSpacing: "0.42em", fontWeight: 700, color: INK }}>LIVE INVENTORY</span>
-          <span style={{ width: 1, height: 16, background: "rgba(21,21,13,.3)", margin: "0 5px" }} />
-          <span style={{ fontSize: 12, letterSpacing: "0.18em", color: INK, fontWeight: 600 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 999, background: IVORY, animation: "wDot 2s infinite" }} />
+          <span style={{ fontSize: 11, letterSpacing: "0.42em", fontWeight: 700, color: IVORY }}>LIVE INVENTORY</span>
+          <span style={{ width: 1, height: 16, background: "rgba(244,241,228,.4)", margin: "0 5px" }} />
+          <span style={{ fontSize: 12, letterSpacing: "0.18em", color: "rgba(244,241,228,.85)", fontWeight: 600 }}>
             {now.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }).toUpperCase()}
             {"   "}
             {now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
           </span>
-          <span style={{ width: 1, height: 16, background: "rgba(21,21,13,.3)", margin: "0 5px" }} />
-          <div style={{ display: "flex", border: `1.5px solid ${INK}`, borderRadius: 999, overflow: "hidden" }}>
+          <span style={{ width: 1, height: 16, background: "rgba(244,241,228,.4)", margin: "0 5px" }} />
+          <div style={{ display: "flex", border: `1.5px solid ${IVORY}`, borderRadius: 999, overflow: "hidden" }}>
             {(["team", "guests"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => switchMode(m)}
-                style={{ fontSize: 9, letterSpacing: "0.3em", fontWeight: 700, padding: "5px 12px", border: "none", cursor: "pointer", background: mode === m ? INK : "transparent", color: mode === m ? LIME : INK }}
+                style={{ fontSize: 9, letterSpacing: "0.3em", fontWeight: 700, padding: "5px 12px", border: "none", cursor: "pointer", background: mode === m ? IVORY : "transparent", color: mode === m ? INK : IVORY }}
               >
                 {m.toUpperCase()}
               </button>
@@ -382,19 +380,20 @@ function WallMonitor() {
             </div>
           </section>
 
-          {/* --- the rail --- */}
+          {/* --- the rail: leaderboard is ALWAYS on; spotlight rotates below it --- */}
           <section style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center" }}>
             <Line label="RESERVED" value={totals.reserved} tone={GOLD} />
             <Line label="UNDER CONTRACT" value={totals.underContract} tone={SAGE} />
             <Line label="SOLD" value={totals.sold} tone={INK} />
-            <div style={{ height: 1, background: FAINT, margin: "18px 0" }} />
+            <div style={{ height: 1, background: FAINT, margin: "16px 0" }} />
             <div style={{ fontSize: 10, letterSpacing: "0.4em", fontWeight: 700, color: MUTE }}>CONTRACTED VOLUME</div>
-            <div style={{ fontFamily: DISPLAY, fontSize: "clamp(40px, 6vh, 66px)", color: INK, lineHeight: 0.95, letterSpacing: "-0.02em", marginTop: 5 }}>
+            <div style={{ fontFamily: DISPLAY, fontSize: "clamp(34px, 5vh, 56px)", color: INK, lineHeight: 0.95, letterSpacing: "-0.02em", marginTop: 5 }}>
               {money(data?.contractedVolume ?? 0)}
             </div>
-            <div style={{ height: 1, background: FAINT, margin: "18px 0" }} />
-            {showLeaderboard ? (
-              <div key={`lb-${railFlip}`} style={{ animation: "wIn .6s both" }}>
+            <div style={{ height: 1, background: FAINT, margin: "16px 0" }} />
+
+            {hasLeaderboard ? (
+              <>
                 <div style={{ fontSize: 10, letterSpacing: "0.4em", fontWeight: 700, color: MUTE }}>THE BOARD LEADERS</div>
                 <div style={{ marginTop: 12 }}>
                   {leaderboard.map((l, i) => (
@@ -408,7 +407,20 @@ function WallMonitor() {
                     </div>
                   ))}
                 </div>
-              </div>
+                {spotlight && (
+                  <div key={`spot-${railFlip}`} style={{ marginTop: 18, animation: "wIn .6s both" }}>
+                    <div style={{ fontSize: 10, letterSpacing: "0.4em", fontWeight: 700, color: MUTE }}>SPOTLIGHT</div>
+                    <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 16 }}>
+                      <PillChip label="PROJECT" value={spotlight.name} />
+                      <div style={{ display: "flex", gap: 15 }}>
+                        <Legend swatch={LIME} label="AVAIL" n={spotlight.available} />
+                        <Legend swatch={GOLD} label="RES" n={spotlight.reserved} />
+                        <Legend swatch={SAGE} label="CONTRACT" n={spotlight.underContract} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             ) : spotlight ? (
               <div key={`spot-${railFlip}`} style={{ animation: "wIn .6s both" }}>
                 <div style={{ fontSize: 10, letterSpacing: "0.4em", fontWeight: 700, color: MUTE }}>SPOTLIGHT</div>
