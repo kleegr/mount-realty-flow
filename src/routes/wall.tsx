@@ -9,16 +9,15 @@ import { WALL_BG2 } from "@/lib/wall-bg2";
 import { WALL_BG3 } from "@/lib/wall-bg3";
 
 /**
- * WALL MONITOR — pass 11 (owner notes on pass 10):
- *  1. Fonts clearer and a little bigger — every small label, list row,
- *     leaderboard line, ticker and legend got a size bump.
- *  2. Sayings rotate slower — one every 20 seconds, cycling all of them.
- *  3. The map caption card now shows the building ADDRESS under its name.
- *  4. Faint house imagery in the background — three scenes cropped from the
- *     real Mount Realty poster art rotate (~100s each, all 3 within 5 min)
- *     with a slow ken-burns drift. Kept at ~13% opacity behind the ivory
- *     board so the type stays readable. Drop /public/wall-bg-1.jpg (2, 3)
- *     into the repo later to override the built-in scenes.
+ * WALL MONITOR — pass 12 (owner notes on pass 11):
+ *  1. Top ribbon recolored to the chartreuse/lime of the bottom banner so the
+ *     header and footer bookend the board in the same brand color. Dot, date
+ *     and TEAM/GUESTS toggle darkened for contrast on lime.
+ *  2. Leaderboard agent names enlarged (Anton display face, bigger) so they
+ *     read from across the room; rank and contract count scaled to match.
+ *
+ * Pass 11 recap: bigger type throughout, 20s sayings, address on the map
+ * caption, faint rotating house backgrounds cropped from the poster art.
  *
  * Scene clock: BOARD 36s → MAP 36s → PROJECT TOUR (4 × 9s) → repeat.
  * TEAM / GUESTS switch persists per device; ?celebrate=1 previews balloons.
@@ -289,25 +288,25 @@ function WallMonitor() {
       {/* faint rotating house scenes; the full-bleed map covers its own ground */}
       {scene !== "map" && <BgSlideshow />}
 
-      {/* ---------------- masthead ---------------- */}
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 56px", height: 80, flexShrink: 0, position: "relative", zIndex: 5, borderBottom: `1px solid ${FAINT}` }}>
+      {/* ---------------- masthead: lime ribbon, matching the bottom banner ---------------- */}
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 56px", height: 80, flexShrink: 0, position: "relative", zIndex: 5, background: LIME }}>
         <img src={LOGO} alt="Mount Realty Group" style={{ height: 42 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
-          <span style={{ width: 8, height: 8, borderRadius: 999, background: LIME, border: `1.5px solid ${INK}`, animation: "wDot 2s infinite" }} />
+          <span style={{ width: 8, height: 8, borderRadius: 999, background: INK, animation: "wDot 2s infinite" }} />
           <span style={{ fontSize: 11, letterSpacing: "0.42em", fontWeight: 700, color: INK }}>LIVE INVENTORY</span>
-          <span style={{ width: 1, height: 16, background: FAINT, margin: "0 5px" }} />
-          <span style={{ fontSize: 12, letterSpacing: "0.18em", color: MUTE, fontWeight: 600 }}>
+          <span style={{ width: 1, height: 16, background: "rgba(21,21,13,.3)", margin: "0 5px" }} />
+          <span style={{ fontSize: 12, letterSpacing: "0.18em", color: INK, fontWeight: 600 }}>
             {now.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }).toUpperCase()}
             {"   "}
             {now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
           </span>
-          <span style={{ width: 1, height: 16, background: FAINT, margin: "0 5px" }} />
+          <span style={{ width: 1, height: 16, background: "rgba(21,21,13,.3)", margin: "0 5px" }} />
           <div style={{ display: "flex", border: `1.5px solid ${INK}`, borderRadius: 999, overflow: "hidden" }}>
             {(["team", "guests"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => switchMode(m)}
-                style={{ fontSize: 9, letterSpacing: "0.3em", fontWeight: 700, padding: "5px 12px", border: "none", cursor: "pointer", background: mode === m ? INK : "transparent", color: mode === m ? LIME : MUTE }}
+                style={{ fontSize: 9, letterSpacing: "0.3em", fontWeight: 700, padding: "5px 12px", border: "none", cursor: "pointer", background: mode === m ? INK : "transparent", color: mode === m ? LIME : INK }}
               >
                 {m.toUpperCase()}
               </button>
@@ -397,14 +396,14 @@ function WallMonitor() {
             {showLeaderboard ? (
               <div key={`lb-${railFlip}`} style={{ animation: "wIn .6s both" }}>
                 <div style={{ fontSize: 10, letterSpacing: "0.4em", fontWeight: 700, color: MUTE }}>THE BOARD LEADERS</div>
-                <div style={{ marginTop: 10 }}>
+                <div style={{ marginTop: 12 }}>
                   {leaderboard.map((l, i) => (
-                    <div key={l.name} style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "6px 0", borderBottom: `1px solid ${FAINT}` }}>
-                      <span style={{ fontFamily: DISPLAY, fontSize: 17, color: i === 0 ? INK : MUTE, width: 20 }}>{i + 1}</span>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: INK, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: "0.05em" }}>
+                    <div key={l.name} style={{ display: "flex", alignItems: "baseline", gap: 13, padding: "9px 0", borderBottom: `1px solid ${FAINT}` }}>
+                      <span style={{ fontFamily: DISPLAY, fontSize: 24, color: i === 0 ? INK : MUTE, width: 26 }}>{i + 1}</span>
+                      <span style={{ fontFamily: DISPLAY, fontSize: "clamp(22px, 3vh, 30px)", color: INK, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: "0.01em", lineHeight: 1.05 }}>
                         {l.name.toUpperCase()}
                       </span>
-                      <span style={{ fontFamily: DISPLAY, fontSize: 21, color: INK, background: i === 0 ? LIME : "transparent", padding: i === 0 ? "0 8px" : 0, borderRadius: 4 }}>{l.contract}</span>
+                      <span style={{ fontFamily: DISPLAY, fontSize: 26, color: INK, background: i === 0 ? LIME : "transparent", padding: i === 0 ? "0 9px" : 0, borderRadius: 4 }}>{l.contract}</span>
                       <span style={{ fontSize: 9, letterSpacing: "0.2em", color: MUTE, fontWeight: 700 }}>IN CONTRACT</span>
                     </div>
                   ))}
