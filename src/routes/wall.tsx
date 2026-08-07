@@ -6,22 +6,23 @@ import { supabase } from "@/integrations/supabase/client";
 import { getWallData } from "@/lib/wall.functions";
 
 /**
- * WALL MONITOR — pass 9.
+ * WALL MONITOR — pass 10: repainted to the REAL brand.
  *
- * Owner's notes from pass 8, all addressed:
- *  - the map now bleeds EDGE TO EDGE (no border, no rounded box); the
- *    caption card moved to the top-left so nothing collides with Google's
- *    mandatory logo in the bottom corner
- *  - a third scene: the PROJECT TOUR — every project takes the full stage
- *    for a few seconds with its buildings and their live mixes
- *  - the middle column of the board scene is now RECENT CONTRACTS &
- *    CLOSINGS — real stage changes with how long ago they happened
- *  - when a NEW closing lands, the whole wall celebrates: a takeover
- *    overlay for ~10 seconds — "CONGRATULATIONS" + balloons. Add
- *    ?celebrate=1 to the URL to preview it.
+ * The owner supplied actual Mount Realty posters: warm ivory ground,
+ * chartreuse bands, everything else in near-black ink, black pill chips for
+ * project names, gold only as a whisper. The previous dark-olive theme was a
+ * concept guess — this pass matches the print work:
+ *  - ivory ground, ink typography, chartreuse accents and footer band
+ *  - the black rounded "PROJECT · NAME" pill motif from the posters is now
+ *    the wall's chip language
+ *  - the EXACT logo, extracted from the poster art, embedded inline (no
+ *    asset upload needed); drop /public/mount-logo.svg in later to override
+ *  - the map is light-styled to sit on ivory; its caption card is now BIG
+ *    (owner note) — an ink block with a chartreuse spine
+ *  - celebration takeover is a full chartreuse moment with ink type
  *
- * Scene clock: BOARD 36s → MAP 36s → PROJECT TOUR (4 projects × 9s) → repeat.
- * TEAM / GUESTS switch persists per device; GUESTS hides the leaderboard.
+ * Scene clock: BOARD 36s → MAP 36s → PROJECT TOUR (4 × 9s) → repeat.
+ * TEAM / GUESTS switch persists per device; ?celebrate=1 previews balloons.
  */
 
 export const Route = createFileRoute("/wall")({
@@ -33,12 +34,14 @@ export const Route = createFileRoute("/wall")({
   component: WallMonitor,
 });
 
-const LIME = "#C6D92E";
-const ON_LIME = "#2E360B";
+// -------- the poster palette
+const BG = "#F0EDE2";
+const INK = "#15150D";
+const MUTE = "#787668";
+const FAINT = "rgba(21,21,13,.14)";
+const LIME = "#C4D62E";
 const GOLD = "#C9A961";
-const SAGE = "#8C9A73";
-const OLIVE = "#222B15";
-const INK = "#0E1108";
+const SAGE = "#7B8A5E";
 const IVORY = "#F4F1E4";
 const DISPLAY = "'Anton','Arial Narrow',Impact,sans-serif";
 const BODY = "'Archivo',Inter,system-ui,sans-serif";
@@ -48,8 +51,12 @@ const STATUS_TONE: Record<Status, string> = {
   AVAILABLE: LIME,
   RESERVED: GOLD,
   "UNDER CONTRACT": SAGE,
-  SOLD: IVORY,
+  SOLD: INK,
 };
+
+/** The exact wordmark, cut from the poster art. */
+const LOGO =
+  "data:image/png;base64,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";
 
 const SAYINGS = [
   "The fortune is in the follow-up.",
@@ -81,16 +88,17 @@ const SET_COUNT = Math.floor(SAYINGS.length / 3);
 
 const GKEY = (import.meta.env.VITE_GOOGLE_MAPS_KEY as string | undefined) || "AIzaSyBjnAKmoD8mmxO3xhNImshrDqzH2yg423k";
 const AREA_CENTER = { lat: 41.36, lng: -74.17 };
+/** Light map tuned to the ivory ground. */
 const MAP_STYLE = [
-  { elementType: "geometry", stylers: [{ color: "#161c0e" }] },
-  { elementType: "labels.text.fill", stylers: [{ color: "#8C9A73" }] },
-  { elementType: "labels.text.stroke", stylers: [{ color: "#0E1108" }] },
+  { elementType: "geometry", stylers: [{ color: "#e9e6d9" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#8a8876" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#f4f1e4" }] },
   { featureType: "poi", stylers: [{ visibility: "off" }] },
   { featureType: "transit", stylers: [{ visibility: "off" }] },
-  { featureType: "road", elementType: "geometry", stylers: [{ color: "#2a3319" }] },
-  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#6f7d5a" }] },
-  { featureType: "water", elementType: "geometry", stylers: [{ color: "#0d1a1c" }] },
-  { featureType: "landscape.natural", elementType: "geometry", stylers: [{ color: "#1a2210" }] },
+  { featureType: "road", elementType: "geometry", stylers: [{ color: "#ffffff" }] },
+  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#9b997f" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#c9d6cd" }] },
+  { featureType: "landscape.natural", elementType: "geometry", stylers: [{ color: "#e3e2d0" }] },
 ];
 
 function money(n: number): string {
@@ -104,16 +112,6 @@ function ago(iso: string): string {
   const h = Math.round(mins / 60);
   if (h < 24) return `${h}H AGO`;
   return `${Math.round(h / 24)}D AGO`;
-}
-
-function useAsset(src: string) {
-  const [ok, setOk] = useState(false);
-  useEffect(() => {
-    const img = new Image();
-    img.onload = () => setOk(true);
-    img.src = src;
-  }, [src]);
-  return ok;
 }
 
 let gmapsPromise: Promise<unknown> | null = null;
@@ -139,7 +137,6 @@ type MapB = WallData["mapBuildings"][number];
 type Move = WallData["recentMoves"][number];
 type Proj = WallData["projects"][number];
 
-/** BOARD 36s -> MAP 36s -> 4 project frames x 9s -> repeat */
 const SCHEDULE: Array<{ scene: "board" | "map" | "proj"; dur: number }> = [
   { scene: "board", dur: 36_000 },
   { scene: "map", dur: 36_000 },
@@ -166,7 +163,6 @@ function WallMonitor() {
       return "team";
     }
   });
-  const hasLogo = useAsset("/mount-logo.svg");
 
   function switchMode(m: "team" | "guests") {
     setMode(m);
@@ -187,7 +183,6 @@ function WallMonitor() {
     const t = setInterval(() => setRailFlip((f) => f + 1), 13_000);
     return () => clearInterval(t);
   }, []);
-  // the scene clock
   useEffect(() => {
     const cur = SCHEDULE[step % SCHEDULE.length];
     const t = setTimeout(() => {
@@ -197,7 +192,6 @@ function WallMonitor() {
     return () => clearTimeout(t);
   }, [step]);
 
-  // ---- celebration: a NEW closing takes over the wall
   useEffect(() => {
     if (!data) return;
     try {
@@ -214,7 +208,7 @@ function WallMonitor() {
       if (sold.length === 0) return;
       const newest = sold[0];
       if (last === null) {
-        localStorage.setItem(key, newest.at); // first boot: don't celebrate history
+        localStorage.setItem(key, newest.at);
         return;
       }
       if (!last.startsWith("test") && newest.at > last) {
@@ -238,18 +232,7 @@ function WallMonitor() {
   const showLeaderboard = leaderboard.length > 0 && railFlip % 2 === 1;
 
   return (
-    <div
-      style={{
-        height: "100vh",
-        background: `radial-gradient(120% 90% at 84% 26%, rgba(201,169,97,.18) 0%, rgba(34,43,21,0) 58%), linear-gradient(180deg, ${OLIVE} 0%, ${INK} 100%)`,
-        color: IVORY,
-        fontFamily: BODY,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        position: "relative",
-      }}
-    >
+    <div style={{ height: "100vh", background: BG, color: INK, fontFamily: BODY, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;500;600;700&display=swap');
         @keyframes wTick { from { transform: translateX(0) } to { transform: translateX(-50%) } }
@@ -262,34 +245,24 @@ function WallMonitor() {
       `}</style>
 
       {/* ---------------- masthead ---------------- */}
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 56px", height: 74, flexShrink: 0, position: "relative", zIndex: 5 }}>
-        {hasLogo ? (
-          <img src="/mount-logo.svg" alt="Mount Realty Group" style={{ height: 32 }} />
-        ) : (
-          <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
-            <span style={{ fontFamily: DISPLAY, fontSize: 32, letterSpacing: "-0.02em", color: IVORY, lineHeight: 1 }}>MOUNT</span>
-            <span style={{ fontSize: 9, letterSpacing: "0.56em", color: GOLD, fontWeight: 700 }}>REALTY GROUP</span>
-          </div>
-        )}
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 56px", height: 80, flexShrink: 0, position: "relative", zIndex: 5, borderBottom: `1px solid ${FAINT}` }}>
+        <img src={LOGO} alt="Mount Realty Group" style={{ height: 42 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
-          <span style={{ width: 7, height: 7, borderRadius: 999, background: LIME, animation: "wDot 2s infinite" }} />
-          <span style={{ fontSize: 10, letterSpacing: "0.42em", fontWeight: 700, color: LIME }}>LIVE INVENTORY</span>
-          <span style={{ width: 1, height: 16, background: "rgba(244,241,228,.22)", margin: "0 5px" }} />
-          <span style={{ fontSize: 11, letterSpacing: "0.2em", color: SAGE, fontWeight: 600 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 999, background: LIME, border: `1.5px solid ${INK}`, animation: "wDot 2s infinite" }} />
+          <span style={{ fontSize: 10, letterSpacing: "0.42em", fontWeight: 700, color: INK }}>LIVE INVENTORY</span>
+          <span style={{ width: 1, height: 16, background: FAINT, margin: "0 5px" }} />
+          <span style={{ fontSize: 11, letterSpacing: "0.2em", color: MUTE, fontWeight: 600 }}>
             {now.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }).toUpperCase()}
             {"   "}
             {now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
           </span>
-          <span style={{ width: 1, height: 16, background: "rgba(244,241,228,.22)", margin: "0 5px" }} />
-          <div style={{ display: "flex", border: "1px solid rgba(244,241,228,.25)", borderRadius: 999, overflow: "hidden" }}>
+          <span style={{ width: 1, height: 16, background: FAINT, margin: "0 5px" }} />
+          <div style={{ display: "flex", border: `1.5px solid ${INK}`, borderRadius: 999, overflow: "hidden" }}>
             {(["team", "guests"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => switchMode(m)}
-                style={{
-                  fontSize: 8, letterSpacing: "0.3em", fontWeight: 700, padding: "4px 10px", border: "none", cursor: "pointer",
-                  background: mode === m ? LIME : "transparent", color: mode === m ? ON_LIME : SAGE,
-                }}
+                style={{ fontSize: 8, letterSpacing: "0.3em", fontWeight: 700, padding: "5px 11px", border: "none", cursor: "pointer", background: mode === m ? INK : "transparent", color: mode === m ? LIME : MUTE }}
               >
                 {m.toUpperCase()}
               </button>
@@ -300,7 +273,6 @@ function WallMonitor() {
 
       {/* ---------------- body ---------------- */}
       {scene === "map" ? (
-        /* FULL-BLEED map: edge to edge, no border, no box. */
         <WallMap buildings={data?.mapBuildings ?? []} />
       ) : scene === "proj" && proj ? (
         <ProjectTour proj={proj} />
@@ -308,31 +280,28 @@ function WallMonitor() {
         <main style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "1.28fr 0.9fr 1fr", gap: 40, padding: "0 56px 14px" }}>
           {/* --- the figure --- */}
           <section style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", animation: "wIn .6s both" }}>
-            <div style={{ fontSize: 11, letterSpacing: "0.52em", fontWeight: 700, color: LIME }}>AVAILABLE NOW</div>
-            <div style={{ fontSize: 10, letterSpacing: "0.34em", fontWeight: 600, color: SAGE, marginTop: 5 }}>
+            <span style={{ alignSelf: "flex-start", background: INK, color: LIME, borderRadius: 999, padding: "6px 16px", fontSize: 10, letterSpacing: "0.5em", fontWeight: 700 }}>
+              AVAILABLE NOW
+            </span>
+            <div style={{ fontSize: 10, letterSpacing: "0.34em", fontWeight: 600, color: MUTE, marginTop: 10 }}>
               BLOOMING GROVE · KIRYAS YOEL
             </div>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 24, paddingTop: 22 }}>
-              <span style={{ fontFamily: DISPLAY, fontSize: "clamp(96px, 20vh, 216px)", lineHeight: 0.74, letterSpacing: "-0.045em", color: IVORY }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 24, paddingTop: 20 }}>
+              <span style={{ fontFamily: DISPLAY, fontSize: "clamp(96px, 20vh, 216px)", lineHeight: 0.74, letterSpacing: "-0.045em", color: INK }}>
                 {totals.available}
               </span>
               <div style={{ paddingTop: 4 }}>
-                <div style={{ fontFamily: DISPLAY, fontSize: 27, color: LIME, lineHeight: 1 }}>{TOTAL}</div>
-                <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, marginTop: 4 }}>TOTAL UNITS</div>
-                <div style={{ width: 28, height: 1, background: "rgba(244,241,228,.28)", margin: "11px 0" }} />
-                <div style={{ fontFamily: DISPLAY, fontSize: 27, color: IVORY, lineHeight: 1 }}>
+                <div style={{ fontFamily: DISPLAY, fontSize: 27, color: INK, lineHeight: 1 }}>{TOTAL}</div>
+                <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: MUTE, marginTop: 4 }}>TOTAL UNITS</div>
+                <div style={{ width: 28, height: 2, background: LIME, margin: "11px 0" }} />
+                <div style={{ fontFamily: DISPLAY, fontSize: 27, color: INK, lineHeight: 1 }}>
                   {TOTAL > 0 ? Math.round((totals.available / TOTAL) * 100) : 0}%
                 </div>
-                <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, marginTop: 4 }}>OF PORTFOLIO</div>
+                <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: MUTE, marginTop: 4 }}>OF PORTFOLIO</div>
               </div>
             </div>
-            <div style={{ display: "flex", height: 6, marginTop: 20, borderRadius: 999, overflow: "hidden", background: "rgba(244,241,228,.14)" }}>
-              <div className="grow" style={{ width: `${TOTAL ? (totals.available / TOTAL) * 100 : 0}%`, background: LIME }} />
-              <div className="grow" style={{ width: `${TOTAL ? (totals.reserved / TOTAL) * 100 : 0}%`, background: GOLD }} />
-              <div className="grow" style={{ width: `${TOTAL ? (totals.underContract / TOTAL) * 100 : 0}%`, background: SAGE }} />
-              <div className="grow" style={{ width: `${TOTAL ? (totals.sold / TOTAL) * 100 : 0}%`, background: IVORY }} />
-            </div>
-            <div style={{ display: "flex", alignItems: "stretch", marginTop: 22, paddingTop: 16, borderTop: "1px solid rgba(244,241,228,.16)" }}>
+            <MixBar available={totals.available} reserved={totals.reserved} underContract={totals.underContract} sold={totals.sold} total={TOTAL} style={{ marginTop: 20 }} />
+            <div style={{ display: "flex", alignItems: "stretch", marginTop: 22, paddingTop: 16, borderTop: `1px solid ${FAINT}` }}>
               <Period label="TODAY" moves={data?.activity.today.moves ?? 0} prev={data?.activity.today.prev ?? 0} against="YESTERDAY" />
               <Rule />
               <Period label="THIS WEEK" moves={data?.activity.week.moves ?? 0} prev={data?.activity.week.prev ?? 0} against="LAST WEEK" />
@@ -342,29 +311,29 @@ function WallMonitor() {
           </section>
 
           {/* --- recent contracts & closings --- */}
-          <section style={{ minWidth: 0, display: "flex", flexDirection: "column", borderLeft: "1px solid rgba(244,241,228,.16)", borderRight: "1px solid rgba(244,241,228,.16)", padding: "20px 28px 0", minHeight: 0 }}>
-            <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: SAGE, flexShrink: 0 }}>
+          <section style={{ minWidth: 0, display: "flex", flexDirection: "column", borderLeft: `1px solid ${FAINT}`, borderRight: `1px solid ${FAINT}`, padding: "20px 28px 0", minHeight: 0 }}>
+            <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: MUTE, flexShrink: 0 }}>
               RECENT CONTRACTS & CLOSINGS
             </div>
             <div style={{ flex: 1, overflow: "hidden", marginTop: 8, minHeight: 0 }}>
               {(moves.length > 0 ? moves.slice(0, 9) : []).map((m, i) => (
-                <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderBottom: "1px solid rgba(244,241,228,.08)", animation: `wIn .5s ${i * 0.05}s both` }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: STATUS_TONE[m.status], flexShrink: 0 }} />
+                <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderBottom: `1px solid ${FAINT}`, animation: `wIn .5s ${i * 0.05}s both` }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 2, background: STATUS_TONE[m.status], border: `1.5px solid ${INK}`, flexShrink: 0 }} />
                   <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontFamily: DISPLAY, fontSize: 15, color: IVORY, lineHeight: 1.1 }}>
+                    <div style={{ fontFamily: DISPLAY, fontSize: 15, color: INK, lineHeight: 1.1 }}>
                       {m.building} · {m.unit}
                     </div>
-                    <div style={{ fontSize: 8, letterSpacing: "0.22em", color: STATUS_TONE[m.status], fontWeight: 700, marginTop: 2 }}>
+                    <div style={{ fontSize: 8, letterSpacing: "0.22em", color: MUTE, fontWeight: 700, marginTop: 2 }}>
                       {m.status}
                     </div>
                   </div>
-                  <span style={{ fontSize: 8, letterSpacing: "0.18em", color: "rgba(140,154,115,.7)", fontWeight: 700, whiteSpace: "nowrap" }}>
+                  <span style={{ fontSize: 8, letterSpacing: "0.18em", color: MUTE, fontWeight: 700, whiteSpace: "nowrap" }}>
                     {ago(m.at)}
                   </span>
                 </div>
               ))}
               {moves.length === 0 && (
-                <div style={{ fontSize: 11, color: SAGE, marginTop: 16, letterSpacing: "0.1em" }}>Movement will appear here as deals change stage.</div>
+                <div style={{ fontSize: 11, color: MUTE, marginTop: 16, letterSpacing: "0.1em" }}>Movement will appear here as deals change stage.</div>
               )}
             </div>
           </section>
@@ -373,37 +342,34 @@ function WallMonitor() {
           <section style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center" }}>
             <Line label="RESERVED" value={totals.reserved} tone={GOLD} />
             <Line label="UNDER CONTRACT" value={totals.underContract} tone={SAGE} />
-            <Line label="SOLD" value={totals.sold} tone={IVORY} />
-            <div style={{ height: 1, background: "rgba(244,241,228,.16)", margin: "18px 0" }} />
-            <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: SAGE }}>CONTRACTED VOLUME</div>
-            <div style={{ fontFamily: DISPLAY, fontSize: "clamp(38px, 5.8vh, 62px)", color: LIME, lineHeight: 0.95, letterSpacing: "-0.02em", marginTop: 5 }}>
+            <Line label="SOLD" value={totals.sold} tone={INK} />
+            <div style={{ height: 1, background: FAINT, margin: "18px 0" }} />
+            <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: MUTE }}>CONTRACTED VOLUME</div>
+            <div style={{ fontFamily: DISPLAY, fontSize: "clamp(38px, 5.8vh, 62px)", color: INK, lineHeight: 0.95, letterSpacing: "-0.02em", marginTop: 5 }}>
               {money(data?.contractedVolume ?? 0)}
             </div>
-            <div style={{ height: 1, background: "rgba(244,241,228,.16)", margin: "18px 0" }} />
+            <div style={{ height: 1, background: FAINT, margin: "18px 0" }} />
             {showLeaderboard ? (
               <div key={`lb-${railFlip}`} style={{ animation: "wIn .6s both" }}>
-                <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: SAGE }}>THE BOARD LEADERS</div>
+                <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: MUTE }}>THE BOARD LEADERS</div>
                 <div style={{ marginTop: 10 }}>
                   {leaderboard.map((l, i) => (
-                    <div key={l.name} style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "5px 0", borderBottom: "1px solid rgba(244,241,228,.08)" }}>
-                      <span style={{ fontFamily: DISPLAY, fontSize: 15, color: i === 0 ? LIME : SAGE, width: 18 }}>{i + 1}</span>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: IVORY, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: "0.06em" }}>
+                    <div key={l.name} style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "5px 0", borderBottom: `1px solid ${FAINT}` }}>
+                      <span style={{ fontFamily: DISPLAY, fontSize: 15, color: i === 0 ? INK : MUTE, width: 18 }}>{i + 1}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: INK, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: "0.06em" }}>
                         {l.name.toUpperCase()}
                       </span>
-                      <span style={{ fontFamily: DISPLAY, fontSize: 17, color: i === 0 ? LIME : IVORY }}>{l.contract}</span>
-                      <span style={{ fontSize: 8, letterSpacing: "0.2em", color: SAGE, fontWeight: 700 }}>IN CONTRACT</span>
+                      <span style={{ fontFamily: DISPLAY, fontSize: 17, color: INK, background: i === 0 ? LIME : "transparent", padding: i === 0 ? "0 8px" : 0, borderRadius: 4 }}>{l.contract}</span>
+                      <span style={{ fontSize: 8, letterSpacing: "0.2em", color: MUTE, fontWeight: 700 }}>IN CONTRACT</span>
                     </div>
                   ))}
                 </div>
               </div>
             ) : spotlight ? (
               <div key={`spot-${railFlip}`} style={{ animation: "wIn .6s both" }}>
-                <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: SAGE }}>SPOTLIGHT</div>
+                <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: MUTE }}>SPOTLIGHT</div>
                 <div style={{ marginTop: 11 }}>
-                  <div style={{ display: "inline-flex", flexDirection: "column", background: INK, padding: "7px 15px", borderRadius: 4 }}>
-                    <span style={{ fontSize: 8, letterSpacing: "0.38em", color: SAGE, fontWeight: 700 }}>PROJECT</span>
-                    <span style={{ fontFamily: DISPLAY, fontSize: 22, color: IVORY, lineHeight: 1.15 }}>{spotlight.name}</span>
-                  </div>
+                  <PillChip label="PROJECT" value={spotlight.name} />
                   <MixBar available={spotlight.available} reserved={spotlight.reserved} underContract={spotlight.underContract} sold={spotlight.sold} total={spotlight.total} style={{ marginTop: 11 }} />
                   <div style={{ display: "flex", gap: 15, marginTop: 9 }}>
                     <Legend swatch={LIME} label="AVAIL" n={spotlight.available} />
@@ -417,13 +383,13 @@ function WallMonitor() {
         </main>
       )}
 
-      {/* ---------------- live activity ticker ---------------- */}
-      <div style={{ overflow: "hidden", padding: "9px 0", flexShrink: 0, borderTop: "1px solid rgba(244,241,228,.12)", position: "relative", zIndex: 5, background: scene === "map" ? "rgba(14,17,8,.85)" : "transparent" }}>
+      {/* ---------------- ticker: ink band, lime type (poster chip language) ---------------- */}
+      <div style={{ overflow: "hidden", padding: "10px 0", flexShrink: 0, background: INK, position: "relative", zIndex: 5 }}>
         <div style={{ display: "flex", width: "max-content", animation: "wTick 48s linear infinite" }}>
           {[0, 1].map((dup) => (
             <div key={dup} style={{ display: "flex" }}>
               {(ticker.length > 0 ? ticker : ["MOUNT REALTY · LIVE INVENTORY"]).map((t, i) => (
-                <span key={`${dup}-${i}`} style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.24em", color: SAGE, padding: "0 38px", whiteSpace: "nowrap" }}>
+                <span key={`${dup}-${i}`} style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.24em", color: LIME, padding: "0 38px", whiteSpace: "nowrap" }}>
                   {t}
                 </span>
               ))}
@@ -434,70 +400,80 @@ function WallMonitor() {
 
       {/* ---------------- chartreuse banner ---------------- */}
       <footer style={{ background: LIME, flexShrink: 0, display: "flex", alignItems: "center", gap: 26, padding: "16px 56px", minHeight: 68, position: "relative", zIndex: 5 }}>
-        <span style={{ fontSize: 9, letterSpacing: "0.46em", fontWeight: 700, color: ON_LIME, whiteSpace: "nowrap" }}>THIS HOUR</span>
+        <span style={{ fontSize: 9, letterSpacing: "0.46em", fontWeight: 700, color: INK, whiteSpace: "nowrap" }}>THIS HOUR</span>
         <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
           {[0, 1, 2].map((i) => (
-            <span key={i} style={{ width: i === sayIdx ? 14 : 5, height: 3, borderRadius: 999, background: i === sayIdx ? INK : "rgba(46,54,11,.32)", transition: "width .4s" }} />
+            <span key={i} style={{ width: i === sayIdx ? 14 : 5, height: 3, borderRadius: 999, background: i === sayIdx ? INK : "rgba(21,21,13,.3)", transition: "width .4s" }} />
           ))}
         </div>
-        <span style={{ width: 1, height: 24, background: "rgba(46,54,11,.30)", flexShrink: 0 }} />
+        <span style={{ width: 1, height: 24, background: "rgba(21,21,13,.3)", flexShrink: 0 }} />
         <span key={saying} style={{ fontFamily: DISPLAY, fontSize: "clamp(19px, 2.9vh, 31px)", color: INK, letterSpacing: "0.01em", lineHeight: 1.1, animation: "wSay .45s both" }}>
           {saying}
         </span>
       </footer>
 
-      {/* ---------------- THE CELEBRATION ---------------- */}
       {celebrate && <Celebration move={celebrate} />}
     </div>
+  );
+}
+
+/** Poster motif: black pill with a tiny label and the value in white. */
+function PillChip({ label, value }: { label: string; value: string }) {
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", background: INK, borderRadius: 10, padding: "7px 20px 9px" }}>
+      <span style={{ fontSize: 7, letterSpacing: "0.4em", color: "rgba(244,241,228,.75)", fontWeight: 700 }}>{label}</span>
+      <span style={{ fontFamily: DISPLAY, fontSize: 20, color: IVORY, lineHeight: 1.15, whiteSpace: "nowrap" }}>{value}</span>
+    </span>
   );
 }
 
 function MixBar({ available, reserved, underContract, sold, total, style }: { available: number; reserved: number; underContract: number; sold: number; total: number; style?: React.CSSProperties }) {
   if (total === 0) return null;
   return (
-    <div style={{ display: "flex", height: 6, borderRadius: 999, overflow: "hidden", background: "rgba(244,241,228,.14)", ...style }}>
+    <div style={{ display: "flex", height: 7, borderRadius: 999, overflow: "hidden", background: "rgba(21,21,13,.1)", ...style }}>
       <div className="grow" style={{ width: `${(available / total) * 100}%`, background: LIME }} />
       <div className="grow" style={{ width: `${(reserved / total) * 100}%`, background: GOLD }} />
       <div className="grow" style={{ width: `${(underContract / total) * 100}%`, background: SAGE }} />
-      <div className="grow" style={{ width: `${(sold / total) * 100}%`, background: IVORY }} />
+      <div className="grow" style={{ width: `${(sold / total) * 100}%`, background: INK }} />
     </div>
   );
 }
 
-/** Every project takes the stage: name huge on the left, buildings live on the right. */
 function ProjectTour({ proj }: { proj: Proj }) {
   const cols = proj.buildings.length > 8 ? 2 : 1;
   return (
     <main key={proj.id + proj.name} style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "1fr 1.35fr", gap: 48, padding: "0 56px 14px", animation: "wIn .6s both" }}>
       <section style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
-        <div style={{ fontSize: 10, letterSpacing: "0.5em", fontWeight: 700, color: GOLD }}>PROJECT TOUR</div>
-        <div style={{ fontFamily: DISPLAY, fontSize: "clamp(48px, 9.5vh, 104px)", lineHeight: 0.94, letterSpacing: "-0.02em", color: IVORY, marginTop: 14, overflowWrap: "anywhere" }}>
+        <span style={{ alignSelf: "flex-start", background: INK, color: LIME, borderRadius: 999, padding: "6px 16px", fontSize: 10, letterSpacing: "0.5em", fontWeight: 700 }}>
+          PROJECT TOUR
+        </span>
+        <div style={{ fontFamily: DISPLAY, fontSize: "clamp(48px, 9.5vh, 104px)", lineHeight: 0.94, letterSpacing: "-0.02em", color: INK, marginTop: 16, overflowWrap: "anywhere" }}>
           {proj.name}
         </div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 26, marginTop: 22 }}>
           <div>
-            <span style={{ fontFamily: DISPLAY, fontSize: "clamp(40px, 7vh, 72px)", color: LIME, lineHeight: 1 }}>{proj.available}</span>
-            <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, marginTop: 4 }}>AVAILABLE</div>
+            <span style={{ fontFamily: DISPLAY, fontSize: "clamp(40px, 7vh, 72px)", color: INK, lineHeight: 1, background: LIME, padding: "0 14px", borderRadius: 8 }}>{proj.available}</span>
+            <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: MUTE, marginTop: 8 }}>AVAILABLE</div>
           </div>
           <div>
-            <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 4.4vh, 44px)", color: SAGE, lineHeight: 1 }}>{proj.underContract}</span>
-            <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, marginTop: 4 }}>IN CONTRACT</div>
+            <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 4.4vh, 44px)", color: INK, lineHeight: 1 }}>{proj.underContract}</span>
+            <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: MUTE, marginTop: 4 }}>IN CONTRACT</div>
           </div>
           <div>
-            <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 4.4vh, 44px)", color: IVORY, lineHeight: 1 }}>{proj.total}</span>
-            <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, marginTop: 4 }}>TOTAL UNITS</div>
+            <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 4.4vh, 44px)", color: INK, lineHeight: 1 }}>{proj.total}</span>
+            <div style={{ fontSize: 9, letterSpacing: "0.32em", fontWeight: 700, color: MUTE, marginTop: 4 }}>TOTAL UNITS</div>
           </div>
         </div>
         <MixBar available={proj.available} reserved={proj.reserved} underContract={proj.underContract} sold={proj.sold} total={proj.total} style={{ marginTop: 22 }} />
       </section>
-      <section style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", borderLeft: "1px solid rgba(244,241,228,.16)", paddingLeft: 44 }}>
-        <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: SAGE }}>THE BUILDINGS</div>
+      <section style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", borderLeft: `1px solid ${FAINT}`, paddingLeft: 44 }}>
+        <div style={{ fontSize: 9, letterSpacing: "0.42em", fontWeight: 700, color: MUTE }}>THE BUILDINGS</div>
         <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: cols === 2 ? "1fr 1fr" : "1fr", columnGap: 36, rowGap: 0, maxHeight: "62vh", overflow: "hidden" }}>
           {proj.buildings.slice(0, 16).map((b, i) => (
-            <div key={b.label} style={{ padding: "9px 0", borderBottom: "1px solid rgba(244,241,228,.08)", animation: `wIn .5s ${i * 0.04}s both`, minWidth: 0 }}>
+            <div key={b.label} style={{ padding: "9px 0", borderBottom: `1px solid ${FAINT}`, animation: `wIn .5s ${i * 0.04}s both`, minWidth: 0 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
-                <span style={{ fontFamily: DISPLAY, fontSize: 15, color: IVORY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.label}</span>
-                <span style={{ fontSize: 10, fontWeight: 700, color: b.available > 0 ? LIME : SAGE, whiteSpace: "nowrap" }}>
+                <span style={{ fontFamily: DISPLAY, fontSize: 15, color: INK, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.label}</span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: b.available > 0 ? INK : MUTE, background: b.available > 0 ? LIME : "transparent", padding: b.available > 0 ? "1px 8px" : 0, borderRadius: 999, whiteSpace: "nowrap" }}>
                   {b.available > 0 ? `${b.available} AVAIL` : b.underContract > 0 ? "IN CONTRACT" : b.sold === b.total ? "SOLD OUT" : "\u2014"}
                 </span>
               </div>
@@ -510,7 +486,7 @@ function ProjectTour({ proj }: { proj: Proj }) {
   );
 }
 
-/** FULL-BLEED map scene: no borders, no boxes; the map IS the wall. */
+/** FULL-BLEED light map; the caption card is BIG per the owner's note. */
 function WallMap({ buildings }: { buildings: MapB[] }) {
   const mapEl = useRef<HTMLDivElement>(null);
   /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -531,14 +507,14 @@ function WallMap({ buildings }: { buildings: MapB[] }) {
           zoom: 12.4,
           disableDefaultUI: true,
           styles: MAP_STYLE,
-          backgroundColor: "#161c0e",
+          backgroundColor: "#e9e6d9",
         });
       }
       const map = mapRef.current;
       markersRef.current.forEach((m) => m.setMap(null));
       markersRef.current = [];
       for (const b of buildings) {
-        const color = b.available > 0 ? LIME : b.reserved > 0 ? GOLD : b.underContract > 0 ? SAGE : "#6b7280";
+        const color = b.available > 0 ? LIME : b.reserved > 0 ? GOLD : b.underContract > 0 ? SAGE : "#a3a191";
         const marker = new g.maps.Marker({
           map,
           position: { lat: b.lat, lng: b.lng },
@@ -546,11 +522,11 @@ function WallMap({ buildings }: { buildings: MapB[] }) {
             path: g.maps.SymbolPath.CIRCLE,
             fillColor: color,
             fillOpacity: 1,
-            strokeColor: "#0E1108",
-            strokeWeight: 2,
-            scale: Math.min(15, 8 + b.total * 0.35),
+            strokeColor: INK,
+            strokeWeight: 2.5,
+            scale: Math.min(16, 9 + b.total * 0.35),
           },
-          label: b.available > 0 ? { text: String(b.available), color: "#0E1108", fontSize: "11px", fontWeight: "700" } : undefined,
+          label: b.available > 0 ? { text: String(b.available), color: INK, fontSize: "12px", fontWeight: "700" } : undefined,
         });
         markersRef.current.push(marker);
       }
@@ -584,35 +560,33 @@ function WallMap({ buildings }: { buildings: MapB[] }) {
   return (
     <main style={{ flex: 1, minHeight: 0, position: "relative", animation: "wIn .6s both" }}>
       <div ref={mapEl} style={{ position: "absolute", inset: 0 }} />
-      {/* soft cinema vignette so the masthead and ticker sit ON the map */}
-      <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "linear-gradient(180deg, rgba(14,17,8,.55) 0%, rgba(14,17,8,0) 14%, rgba(14,17,8,0) 84%, rgba(14,17,8,.55) 100%)" }} />
+      <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "linear-gradient(180deg, rgba(240,237,226,.7) 0%, rgba(240,237,226,0) 12%, rgba(240,237,226,0) 88%, rgba(240,237,226,.7) 100%)" }} />
       {current && !overview && (
-        <div key={tourIdx} style={{ position: "absolute", left: 56, top: 26, background: "rgba(14,17,8,.9)", borderLeft: `3px solid ${LIME}`, padding: "14px 22px", animation: "wIn .5s both", maxWidth: 420 }}>
-          <div style={{ fontSize: 8, letterSpacing: "0.38em", color: SAGE, fontWeight: 700 }}>{current.project.toUpperCase()}</div>
-          <div style={{ fontFamily: DISPLAY, fontSize: 26, color: IVORY, lineHeight: 1.12, marginTop: 2 }}>{current.label.toUpperCase()}</div>
-          <div style={{ display: "flex", gap: 16, marginTop: 9 }}>
-            <Legend swatch={LIME} label="AVAIL" n={current.available} />
-            <Legend swatch={GOLD} label="RES" n={current.reserved} />
-            <Legend swatch={SAGE} label="CONTRACT" n={current.underContract} />
-            {current.sold > 0 && <Legend swatch={IVORY} label="SOLD" n={current.sold} />}
+        <div key={tourIdx} style={{ position: "absolute", left: 56, top: 30, background: INK, borderLeft: `6px solid ${LIME}`, padding: "22px 34px 24px", animation: "wIn .5s both", maxWidth: 560, borderRadius: 6 }}>
+          <div style={{ fontSize: 11, letterSpacing: "0.42em", color: LIME, fontWeight: 700 }}>{current.project.toUpperCase()}</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: "clamp(30px, 4.6vh, 46px)", color: IVORY, lineHeight: 1.08, marginTop: 6 }}>{current.label.toUpperCase()}</div>
+          <div style={{ display: "flex", gap: 24, marginTop: 16 }}>
+            <BigLegend swatch={LIME} label="AVAILABLE" n={current.available} />
+            <BigLegend swatch={GOLD} label="RESERVED" n={current.reserved} />
+            <BigLegend swatch={SAGE} label="IN CONTRACT" n={current.underContract} />
+            {current.sold > 0 && <BigLegend swatch={IVORY} label="SOLD" n={current.sold} />}
           </div>
         </div>
       )}
       {overview && (
-        <div style={{ position: "absolute", left: 56, top: 26, background: "rgba(14,17,8,.9)", borderLeft: `3px solid ${LIME}`, padding: "10px 22px" }}>
-          <span style={{ fontSize: 9, letterSpacing: "0.42em", color: LIME, fontWeight: 700 }}>THE PORTFOLIO</span>
+        <div style={{ position: "absolute", left: 56, top: 30, background: INK, borderLeft: `6px solid ${LIME}`, padding: "14px 30px", borderRadius: 6 }}>
+          <span style={{ fontSize: 11, letterSpacing: "0.42em", color: LIME, fontWeight: 700 }}>THE PORTFOLIO</span>
         </div>
       )}
     </main>
   );
 }
 
-const BALLOONS = ["#C6D92E", "#C9A961", "#F4F1E4", "#8C9A73", "#e8734a", "#7fb3d5"];
+const BALLOONS = [INK, "#ffffff", GOLD, IVORY, "#e8734a", SAGE];
 
 function Celebration({ move }: { move: { unit: string; building: string } }) {
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 50, background: "rgba(14,17,8,.93)", display: "flex", alignItems: "center", justifyContent: "center", animation: "wPop 11s both", overflow: "hidden" }}>
-      {/* balloons */}
+    <div style={{ position: "fixed", inset: 0, zIndex: 50, background: LIME, display: "flex", alignItems: "center", justifyContent: "center", animation: "wPop 11s both", overflow: "hidden" }}>
       {Array.from({ length: 22 }).map((_, i) => {
         const c = BALLOONS[i % BALLOONS.length];
         const left = (i * 137) % 100;
@@ -621,20 +595,18 @@ function Celebration({ move }: { move: { unit: string; building: string } }) {
         const size = 34 + ((i * 31) % 30);
         return (
           <div key={i} style={{ position: "absolute", left: `${left}%`, bottom: 0, animation: `wBalloon ${dur}s linear ${delay}s infinite` }}>
-            <div style={{ width: size, height: size * 1.2, borderRadius: "50% 50% 48% 48%", background: c, opacity: 0.92, boxShadow: "inset -6px -8px 0 rgba(0,0,0,.12)" }} />
-            <div style={{ width: 1, height: 46, background: "rgba(244,241,228,.4)", margin: "0 auto" }} />
+            <div style={{ width: size, height: size * 1.2, borderRadius: "50% 50% 48% 48%", background: c, opacity: 0.94, boxShadow: "inset -6px -8px 0 rgba(0,0,0,.1)" }} />
+            <div style={{ width: 1, height: 46, background: "rgba(21,21,13,.4)", margin: "0 auto" }} />
           </div>
         );
       })}
       <div style={{ textAlign: "center", position: "relative" }}>
-        <div style={{ fontSize: 13, letterSpacing: "0.6em", fontWeight: 700, color: GOLD }}>ANOTHER ONE CLOSED</div>
-        <div style={{ fontFamily: DISPLAY, fontSize: "clamp(64px, 13vh, 148px)", lineHeight: 0.95, color: LIME, letterSpacing: "-0.02em", marginTop: 14 }}>
+        <div style={{ fontSize: 13, letterSpacing: "0.6em", fontWeight: 700, color: INK }}>ANOTHER ONE CLOSED</div>
+        <div style={{ fontFamily: DISPLAY, fontSize: "clamp(64px, 13vh, 148px)", lineHeight: 0.95, color: INK, letterSpacing: "-0.02em", marginTop: 14 }}>
           CONGRATULATIONS
         </div>
-        <div style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 4.6vh, 48px)", color: IVORY, marginTop: 10 }}>
-          MOUNT REALTY
-        </div>
-        <div style={{ fontSize: 14, letterSpacing: "0.3em", fontWeight: 700, color: SAGE, marginTop: 16 }}>
+        <img src={LOGO} alt="Mount Realty Group" style={{ height: 52, marginTop: 18 }} />
+        <div style={{ fontSize: 14, letterSpacing: "0.3em", fontWeight: 700, color: INK, marginTop: 18 }}>
           {move.building} · {move.unit} — SOLD
         </div>
       </div>
@@ -643,7 +615,7 @@ function Celebration({ move }: { move: { unit: string; building: string } }) {
 }
 
 function Rule() {
-  return <div style={{ width: 1, background: "rgba(244,241,228,.16)", margin: "0 22px", flexShrink: 0 }} />;
+  return <div style={{ width: 1, background: FAINT, margin: "0 22px", flexShrink: 0 }} />;
 }
 
 function Period({ label, moves, prev, against }: { label: string; moves: number; prev: number; against: string }) {
@@ -651,16 +623,16 @@ function Period({ label, moves, prev, against }: { label: string; moves: number;
   const up = delta >= 0;
   return (
     <div style={{ minWidth: 0, flex: 1 }}>
-      <div style={{ fontSize: 9, letterSpacing: "0.36em", fontWeight: 700, color: SAGE }}>{label}</div>
+      <div style={{ fontSize: 9, letterSpacing: "0.36em", fontWeight: 700, color: MUTE }}>{label}</div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 5 }}>
-        <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 3.8vh, 40px)", color: IVORY, lineHeight: 1, letterSpacing: "-0.02em" }}>
+        <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 3.8vh, 40px)", color: INK, lineHeight: 1, letterSpacing: "-0.02em" }}>
           {moves}
         </span>
-        <span style={{ fontSize: 11, fontWeight: 700, color: up ? LIME : GOLD, whiteSpace: "nowrap" }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: up ? "#5f7d16" : "#a3742a", whiteSpace: "nowrap" }}>
           {up ? "\u25b2" : "\u25bc"}{Math.abs(delta)}
         </span>
       </div>
-      <div style={{ fontSize: 8, letterSpacing: "0.16em", color: "rgba(140,154,115,.6)", fontWeight: 600, marginTop: 4, whiteSpace: "nowrap" }}>
+      <div style={{ fontSize: 8, letterSpacing: "0.16em", color: MUTE, fontWeight: 600, marginTop: 4, whiteSpace: "nowrap" }}>
         UNIT MOVES · VS {against} {prev}
       </div>
     </div>
@@ -671,12 +643,12 @@ function Line({ label, value, tone }: { label: string; value: number; tone: stri
   return (
     <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, padding: "7px 0" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-        <span style={{ width: 8, height: 8, borderRadius: 2, background: tone, flexShrink: 0 }} />
-        <span style={{ fontSize: 10, letterSpacing: "0.32em", fontWeight: 700, color: SAGE, whiteSpace: "nowrap" }}>
+        <span style={{ width: 9, height: 9, borderRadius: 2, background: tone, border: `1.5px solid ${INK}`, flexShrink: 0 }} />
+        <span style={{ fontSize: 10, letterSpacing: "0.32em", fontWeight: 700, color: MUTE, whiteSpace: "nowrap" }}>
           {label}
         </span>
       </div>
-      <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 4vh, 42px)", color: tone, lineHeight: 1, letterSpacing: "-0.02em" }}>
+      <span style={{ fontFamily: DISPLAY, fontSize: "clamp(26px, 4vh, 42px)", color: INK, lineHeight: 1, letterSpacing: "-0.02em" }}>
         {value}
       </span>
     </div>
@@ -686,9 +658,22 @@ function Line({ label, value, tone }: { label: string; value: number; tone: stri
 function Legend({ swatch, label, n }: { swatch: string; label: string; n: number }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <span style={{ width: 8, height: 8, borderRadius: 2, background: swatch }} />
-      <span style={{ fontSize: 8, letterSpacing: "0.26em", fontWeight: 700, color: SAGE }}>{label}</span>
-      <span style={{ fontFamily: DISPLAY, fontSize: 14, color: IVORY }}>{n}</span>
+      <span style={{ width: 8, height: 8, borderRadius: 2, background: swatch, border: `1px solid ${INK}` }} />
+      <span style={{ fontSize: 8, letterSpacing: "0.26em", fontWeight: 700, color: MUTE }}>{label}</span>
+      <span style={{ fontFamily: DISPLAY, fontSize: 14, color: INK }}>{n}</span>
+    </div>
+  );
+}
+
+/** Larger legend for the big map caption card (sits on ink). */
+function BigLegend({ swatch, label, n }: { swatch: string; label: string; n: number }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        <span style={{ width: 11, height: 11, borderRadius: 3, background: swatch }} />
+        <span style={{ fontFamily: DISPLAY, fontSize: 26, color: IVORY, lineHeight: 1 }}>{n}</span>
+      </div>
+      <span style={{ fontSize: 8, letterSpacing: "0.26em", fontWeight: 700, color: "rgba(244,241,228,.7)" }}>{label}</span>
     </div>
   );
 }
